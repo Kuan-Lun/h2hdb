@@ -215,10 +215,17 @@ def cleanup_specs():
     }
 
 
-def test_view_mutation_gate_rejects_dml_but_allows_table_dml() -> None:
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO catalog_read_projection VALUES (1)",
+        "UPDATE catalog_read_projection SET value = 2",
+        "DELETE FROM catalog_read_projection",
+    ],
+)
+def test_view_mutation_gate_rejects_dml_but_allows_table_dml(statement: str) -> None:
     mutations = gate.mutations_in_sql(
-        "INSERT INTO catalog_read_projection VALUES (1); "
-        "UPDATE catalog_write_table SET value = 2",
+        statement + "; UPDATE catalog_write_table SET value = 2",
         source="fixture.sql",
     )
 

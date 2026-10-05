@@ -11,13 +11,25 @@ from typing import Any
 import pytest
 from test_vnext_analysis_repository import (
     _authorities,
-    _generated_database,
     _seed_initial_snapshot,
 )
 from test_vnext_ingest_analysis import _drive, _orchestrator, _session
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_all,
+    open_generated_database,
+)
 
 import h2hdb.vnext_ingest_analysis as orchestration
-from h2hdb import VNextIngestSession, VNextIssuedAnalysisStep, VNextPreparedAnalysis
+from h2hdb import (
+    CoreConfig,
+    VNextIngestSession,
+    VNextIssuedAnalysisStep,
+    VNextPreparedAnalysis,
+)
+from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_repository import (
     AnalysisCorruptionError,
@@ -40,8 +52,8 @@ def _at_validation(issue: VNextIssuedAnalysisStep) -> bool:
     return issue._payload is not None and issue._payload.stage == _STAGE
 
 
-def _seed(path: Path) -> tuple[bytes, GateLease, IngestTurn]:
-    connector = _generated_database(path)
+def _seed(path: CoreConfig) -> tuple[bytes, GateLease, IngestTurn]:
+    connector = open_generated_database(path)
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -52,7 +64,7 @@ def _seed(path: Path) -> tuple[bytes, GateLease, IngestTurn]:
 
 
 def _start(
-    path: Path,
+    path: CoreConfig,
 ) -> tuple[
     VNextIngestAnalysisOrchestrator,
     VNextIngestSession,
@@ -100,13 +112,16 @@ def plans(
 
 
 def test_one_plan_is_reused_across_pages_and_closed_at_next_preparation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     plans: tuple[
         list[AnalysisFileDecisionValidationPlan],
         list[AnalysisFileDecisionValidationPlan],
     ],
 ) -> None:
-    driver, session, prepared, issued, _build = _start(tmp_path / "reuse.sqlite3")
+    driver, session, prepared, issued, _build = _start(
+        database_factory.config(str(tmp_path / "reuse.sqlite3"))
+    )
     created, closed = plans
     with prepared:
         row_counts: list[int] = []
@@ -131,9 +146,11 @@ def test_one_plan_is_reused_across_pages_and_closed_at_next_preparation(
 
 
 def test_reused_plan_page_preparation_opens_no_database_connection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    driver, session, prepared, issued, _build = _start(tmp_path / "local-page.sqlite3")
+    driver, session, prepared, issued, _build = _start(
+        database_factory.config(str(tmp_path / "local-page.sqlite3"))
+    )
     with prepared:
         driver.commit_analysis_step(
             session, driver.prepare_analysis_step(prepared, issued)
@@ -145,18 +162,20 @@ def test_reused_plan_page_preparation_opens_no_database_connection(
 
         with monkeypatch.context() as fault:
             fault.setattr(SQLiteConnector, "__init__", reject_connection)
+            fault.setattr(MariaDBConnector, "__init__", reject_connection)
             step = driver.prepare_analysis_step(prepared, next_issue)
         assert driver.commit_analysis_step(session, step).processed_rows == 1
 
 
 def test_reissued_committed_batch_carries_actual_prefix_from_its_start_cursor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "reissued-prefix.sqlite3"
+    path = database_factory.config(str(tmp_path / "reissued-prefix.sqlite3"))
     driver, session, prepared, issued, _build = _start(path)
     assert issued._payload is not None and issued._payload.batch_key is not None
     initial = issued._payload
-    with prepared, SQLiteConnector(str(path)) as connector:
+    with prepared, database_connector(path) as connector:
         first = driver.commit_analysis_step(
             session, driver.prepare_analysis_step(prepared, issued)
         )
@@ -167,7 +186,7 @@ def test_reissued_committed_batch_carries_actual_prefix_from_its_start_cursor(
         assert initial.batch_key is not None
         with connector.transaction():
             replay_issue = AnalysisRepository.issue_next_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=initial.analysis_id,
@@ -186,7 +205,7 @@ def test_reissued_committed_batch_carries_actual_prefix_from_its_start_cursor(
         )
         with connector.transaction():
             replay = AnalysisRepository.process_issued_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 issue=replay_issue,
@@ -199,14 +218,14 @@ def test_reissued_committed_batch_carries_actual_prefix_from_its_start_cursor(
 
 @pytest.mark.parametrize("tamper_issue", (False, True))
 def test_commit_fresh_actual_prefix_rejects_new_or_omitted_issued_orphan(
-    tmp_path: Path, *, tamper_issue: bool
+    database_factory: DatabaseFactory, tmp_path: Path, *, tamper_issue: bool
 ) -> None:
-    path = tmp_path / "fresh-actual.sqlite3"
+    path = database_factory.config(str(tmp_path / "fresh-actual.sqlite3"))
     driver, session, prepared, issued, _build = _start(path)
     assert issued._payload is not None
     payload = issued._payload
     extra = bytes(32)
-    with prepared, SQLiteConnector(str(path)) as connector:
+    with prepared, database_connector(path) as connector:
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
@@ -223,7 +242,7 @@ def test_commit_fresh_actual_prefix_rejects_new_or_omitted_issued_orphan(
             assert payload.batch_key is not None
             with connector.transaction():
                 exact = AnalysisRepository.issue_next_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=payload.analysis_id,
@@ -238,15 +257,19 @@ def test_commit_fresh_actual_prefix_rejects_new_or_omitted_issued_orphan(
                     key for key in exact.file_decision_actual_keys if key != extra
                 ),
             )
-        before = connector.fetch_all(
-            "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s", (_STAGE,)
+        before = inspect_all(
+            connector,
+            "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
+            (_STAGE,),
         )
         step = driver.prepare_analysis_step(prepared, issued)
         with pytest.raises(AnalysisCorruptionError, match="prefix changed"):
             driver.commit_analysis_step(session, step)
         assert (
-            connector.fetch_all(
-                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s", (_STAGE,)
+            inspect_all(
+                connector,
+                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
+                (_STAGE,),
             )
             == before
         )
@@ -254,6 +277,7 @@ def test_commit_fresh_actual_prefix_rejects_new_or_omitted_issued_orphan(
 
 @pytest.mark.parametrize("terminal", [False, True])
 def test_committed_response_loss_reuses_exact_page_and_plan_until_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     plans: tuple[
@@ -263,7 +287,9 @@ def test_committed_response_loss_reuses_exact_page_and_plan_until_replay(
     *,
     terminal: bool,
 ) -> None:
-    driver, session, prepared, issued, _build = _start(tmp_path / "lost.sqlite3")
+    driver, session, prepared, issued, _build = _start(
+        database_factory.config(str(tmp_path / "lost.sqlite3"))
+    )
     created, closed = plans
     original = orchestration._apply_commit_outcome
     lost = False
@@ -299,13 +325,14 @@ def test_committed_response_loss_reuses_exact_page_and_plan_until_replay(
 
 
 def test_restart_discards_plan_and_rebuilds_at_durable_validation_cursor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     plans: tuple[
         list[AnalysisFileDecisionValidationPlan],
         list[AnalysisFileDecisionValidationPlan],
     ],
 ) -> None:
-    path = tmp_path / "restart.sqlite3"
+    path = database_factory.config(str(tmp_path / "restart.sqlite3"))
     driver, session, prepared, issued, build = _start(path)
     created, closed = plans
     first = driver.commit_analysis_step(
@@ -335,6 +362,7 @@ def test_restart_discards_plan_and_rebuilds_at_durable_validation_cursor(
 
 
 def test_failed_page_preparation_discards_plan_and_preserves_original_error(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     plans: tuple[
@@ -343,7 +371,7 @@ def test_failed_page_preparation_discards_plan_and_preserves_original_error(
     ],
 ) -> None:
     driver, session, prepared, issued, _build = _start(
-        tmp_path / "prepare-failure.sqlite3"
+        database_factory.config(str(tmp_path / "prepare-failure.sqlite3"))
     )
     created, closed = plans
 
@@ -368,20 +396,23 @@ def test_failed_page_preparation_discards_plan_and_preserves_original_error(
 
 
 def test_removed_source_seal_cannot_commit_a_prepared_validation_page(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     plans: tuple[
         list[AnalysisFileDecisionValidationPlan],
         list[AnalysisFileDecisionValidationPlan],
     ],
 ) -> None:
-    path = tmp_path / "authority.sqlite3"
+    path = database_factory.config(str(tmp_path / "authority.sqlite3"))
     driver, session, prepared, issued, build = _start(path)
     created, closed = plans
     with prepared:
         step = driver.prepare_analysis_step(prepared, issued)
-        with SQLiteConnector(str(path)) as connector:
-            before = connector.fetch_all(
-                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s", (_STAGE,)
+        with database_connector(path) as connector:
+            before = inspect_all(
+                connector,
+                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
+                (_STAGE,),
             )
             connector.execute(
                 "DELETE FROM catalog_source_build_sealed_ats WHERE build_id = %s",
@@ -389,9 +420,10 @@ def test_removed_source_seal_cannot_commit_a_prepared_validation_page(
             )
         with pytest.raises(RuntimeError, match="sealed|source|build"):
             driver.commit_analysis_step(session, step)
-        with SQLiteConnector(str(path)) as connector:
+        with database_connector(path) as connector:
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
                     (_STAGE,),
                 )
@@ -401,31 +433,34 @@ def test_removed_source_seal_cannot_commit_a_prepared_validation_page(
 
 
 def test_replaced_lease_cannot_use_an_earlier_sessions_validation_plan(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     plans: tuple[
         list[AnalysisFileDecisionValidationPlan],
         list[AnalysisFileDecisionValidationPlan],
     ],
 ) -> None:
-    path = tmp_path / "replaced-lease.sqlite3"
+    path = database_factory.config(str(tmp_path / "replaced-lease.sqlite3"))
     driver, session, prepared, issued, _build = _start(path)
     created, closed = plans
     with prepared:
         step = driver.prepare_analysis_step(prepared, issued)
         takeover_now = session.ingest_lease_expires_at + 1
-        with SQLiteConnector(str(path)) as connector:
-            before = connector.fetch_all(
-                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s", (_STAGE,)
+        with database_connector(path) as connector:
+            before = inspect_all(
+                connector,
+                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
+                (_STAGE,),
             )
             with connector.transaction():
                 gate = MaintenanceGateRepository.claim_shared(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     now=takeover_now,
                     lease_duration=2_000_000,
                 )
             with connector.transaction():
                 turn = IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=b"replacement-turn",
                     now=takeover_now,
                     lease_duration=2_000_000,
@@ -434,9 +469,10 @@ def test_replaced_lease_cannot_use_an_earlier_sessions_validation_plan(
             driver.commit_analysis_step(session, step)
         with pytest.raises(ValueError, match="another ingest session"):
             driver.commit_analysis_step(_session(gate, turn), step)
-        with SQLiteConnector(str(path)) as connector:
+        with database_connector(path) as connector:
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
                     (_STAGE,),
                 )
@@ -446,9 +482,9 @@ def test_replaced_lease_cannot_use_an_earlier_sessions_validation_plan(
 
 
 def test_slow_local_validation_preparation_allows_renewal_and_updated_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "renew.sqlite3"
+    path = database_factory.config(str(tmp_path / "renew.sqlite3"))
     build, gate, turn = _seed(path)
     driver = _orchestrator(path)
     session = _session(gate, turn)
@@ -482,9 +518,11 @@ def test_slow_local_validation_preparation_allows_renewal_and_updated_receipt(
         future = executor.submit(driver.prepare_analysis_step, prepared, issued)
         try:
             assert ready.wait(timeout=5)
-            with SQLiteConnector(str(path)) as connector:
+            with database_connector(path) as connector:
                 with connector.transaction():
-                    work = VNextUnitOfWork(connector, backend="sqlite")
+                    work = VNextUnitOfWork(
+                        connector, backend=connector_backend(connector)
+                    )
                     renewed_gate = MaintenanceGateRepository.renew(
                         work, gate, now=200, lease_duration=2_000_000
                     )

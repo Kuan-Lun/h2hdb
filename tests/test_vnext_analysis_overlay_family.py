@@ -5,9 +5,16 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+    trace_statements,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_analysis_family import (
     AnalysisFamilyCollisionError,
     AnalysisFamilyPartialError,
@@ -29,9 +36,9 @@ from h2hdb.vnext_analysis_overlay_family import (
 )
 
 
-def _database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    connector.execute("PRAGMA foreign_keys = OFF")
+def _database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    set_foreign_key_checks(connector, enabled=False)
     return connector
 
 
@@ -45,41 +52,43 @@ def _insert_tables(trace: list[str], registered: tuple[str, ...]) -> tuple[str, 
 
 
 def test_shadow_families_insert_narrow_file_family_and_atomic_wide_rows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-shadow-families.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-shadow-families.sqlite3"))
+    )
     try:
         analysis = b"a" * 16
         file_sha256 = b"f" * 32
         content_sha256 = b"c" * 32
         traced: list[str] = []
-        connector.connection.set_trace_callback(traced.append)
-        ensure_analysis_file_hash_decision_shadow_family(
-            connector,
-            AnalysisFileHashDecisionShadowFamily(
-                analysis,
-                file_sha256,
-                7,
-                3,
-                2,
-            ),
-        )
-        ensure_analysis_content_owner_candidate_shadow_family(
-            connector,
-            AnalysisContentOwnerCandidateShadowFamily(
-                analysis,
-                11,
-                content_sha256,
-                1,
-                19,
-                23,
-            ),
-        )
-        ensure_analysis_content_owner_shadow_family(
-            connector,
-            AnalysisContentOwnerShadowFamily(analysis, content_sha256, 11),
-        )
-        connector.connection.set_trace_callback(None)
+        with trace_statements(connector, traced):
+            ensure_analysis_file_hash_decision_shadow_family(
+                connector,
+                AnalysisFileHashDecisionShadowFamily(
+                    analysis,
+                    file_sha256,
+                    7,
+                    3,
+                    2,
+                ),
+            )
+            ensure_analysis_content_owner_candidate_shadow_family(
+                connector,
+                AnalysisContentOwnerCandidateShadowFamily(
+                    analysis,
+                    11,
+                    content_sha256,
+                    1,
+                    19,
+                    23,
+                ),
+            )
+            ensure_analysis_content_owner_shadow_family(
+                connector,
+                AnalysisContentOwnerShadowFamily(analysis, content_sha256, 11),
+            )
         expected = (
             "catalog_a_file_decision_shadow_anchors",
             "catalog_a_file_decision_shadow_occurrences",
@@ -95,9 +104,12 @@ def test_shadow_families_insert_narrow_file_family_and_atomic_wide_rows(
 
 
 def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-provenance-page.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-provenance-page.sqlite3"))
+    )
     try:
         analysis = b"p" * 16
         contents = tuple(index.to_bytes(32, "big") for index in range(1, 257))
@@ -117,7 +129,8 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
         preflight_query, preflight_parameters = reads.call_args.args
         assert preflight_query.count("%s") == 259
         assert len(preflight_parameters) == 259
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_a_impacted_content_provenance "
             "WHERE analysis_id = %s",
             (analysis,),
@@ -168,9 +181,14 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
 
 
 def test_provenance_preflight_candidates_are_driven_by_typed_storage(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-provenance-typed-keys.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "analysis-provenance-typed-keys.sqlite3")
+        )
+    )
     try:
         analysis = b"q" * 16
         content = bytes(range(0x80, 0xA0))
@@ -235,9 +253,14 @@ def test_provenance_preflight_candidates_are_driven_by_typed_storage(
 
 
 def test_exact_provenance_replay_is_zero_dml_and_missing_witness_tuple_fails(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-provenance-corruption.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "analysis-provenance-corruption.sqlite3")
+        )
+    )
     try:
         analysis = b"r" * 16
         content = b"c" * 32
@@ -282,8 +305,12 @@ def test_exact_provenance_replay_is_zero_dml_and_missing_witness_tuple_fails(
         connector.close()
 
 
-def test_fresh_page_rejects_existing_or_future_provenance(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "analysis-provenance-future.sqlite3")
+def test_fresh_page_rejects_existing_or_future_provenance(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-provenance-future.sqlite3"))
+    )
     try:
         analysis = b"s" * 16
         content = b"d" * 32
@@ -324,12 +351,15 @@ def test_fresh_page_rejects_existing_or_future_provenance(tmp_path: Path) -> Non
     ),
 )
 def test_terminal_keyspace_rejects_orphan_atomic_or_provenance_row(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     table: str,
     columns: str,
     values: Any,
 ) -> None:
-    connector = _database(tmp_path / f"analysis-orphan-{table}.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / f"analysis-orphan-{table}.sqlite3"))
+    )
     try:
         analysis = b"t" * 16
         content = b"k" * 32
@@ -348,8 +378,12 @@ def test_terminal_keyspace_rejects_orphan_atomic_or_provenance_row(
         connector.close()
 
 
-def test_terminal_keyspace_rejects_nonminimum_witness(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "analysis-nonminimum-witness.sqlite3")
+def test_terminal_keyspace_rejects_nonminimum_witness(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-nonminimum-witness.sqlite3"))
+    )
     try:
         analysis = b"u" * 16
         content = b"m" * 32
@@ -373,8 +407,12 @@ def test_terminal_keyspace_rejects_nonminimum_witness(tmp_path: Path) -> None:
         connector.close()
 
 
-def test_exact_provenance_page_exposes_the_257th_extra_row(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "analysis-provenance-257.sqlite3")
+def test_exact_provenance_page_exposes_the_257th_extra_row(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-provenance-257.sqlite3"))
+    )
     try:
         analysis = b"v" * 16
         content = b"n" * 32

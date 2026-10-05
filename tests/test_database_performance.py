@@ -17,10 +17,15 @@ from threading import Event, get_ident
 from typing import Any
 
 import pytest
+from vnext_test_database import (
+    DatabaseFactory,
+    database_connector,
+)
 
 from h2hdb import database_performance as diagnostics
 from h2hdb.database_performance import DatabasePerformance, database_phase
 from h2hdb.ingest_performance import IngestPerformance
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector, measure_sql
 from h2hdb.sqlite_connector import SQLiteConnector
 
@@ -42,31 +47,42 @@ def _records(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
 
 
 def _performance(
-    caplog: pytest.LogCaptureFixture, *, level: int = logging.DEBUG, **kwargs: Any
+    caplog: pytest.LogCaptureFixture,
+    *,
+    level: int = logging.DEBUG,
+    backend: str = "sqlite",
+    **kwargs: Any,
 ) -> DatabasePerformance:
     logger = logging.getLogger("h2hdb.database_performance.unit")
     caplog.set_level(logging.DEBUG, logger=logger.name)
-    return DatabasePerformance(logger, backend="sqlite", level=level, **kwargs)
+    return DatabasePerformance(logger, backend=backend, level=level, **kwargs)
 
 
 def test_nested_sql_conservation_and_known_delay_attribution(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     clock = _Clock()
-    performance = _performance(caplog, clock=clock)
-    fetch = SQLiteConnector.fetch_one
+    performance = _performance(caplog, backend=database_factory.backend, clock=clock)
+    fetch = connector_type.fetch_one
 
     def delayed(
-        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, query: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         result = fetch(self, query, data)
         if query == "SELECT %s":
             clock.now += 2.0
         return result
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed)
+    monkeypatch.setattr(connector_type, "fetch_one", delayed)
     with performance.operation("audit"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connection:
+        with instrument_connector(connectors["db"]) as connection:
             connection.fetch_one("SELECT 1")
             with database_phase("outer"):
                 connection.fetch_one("SELECT 2")
@@ -111,6 +127,7 @@ def test_schema_two_preserves_exact_scope_counters(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
     """Existing consumers can project the same fields at either log level.
 
@@ -118,21 +135,27 @@ def test_schema_two_preserves_exact_scope_counters(
     calls with returned rows. INFO now includes the same bounded cumulative
     fingerprints as DEBUG; counts retain their meaning at both levels.
     """
+    connectors = {
+        "v1.db": database_connector(database_factory.config("v1.db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     clock = _Clock()
-    performance = _performance(caplog, level=level, clock=clock)
-    fetch = SQLiteConnector.fetch_all
+    performance = _performance(
+        caplog, backend=database_factory.backend, level=level, clock=clock
+    )
+    fetch = connector_type.fetch_all
     query = "SELECT %s UNION ALL SELECT %s UNION ALL SELECT %s"
 
     def delayed(
-        self: SQLiteConnector, sql: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, sql: str, data: tuple[Any, ...] = ()
     ) -> list[tuple[Any, ...]]:
         rows = fetch(self, sql, data)
         clock.now += 2.0
         return rows
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_all", delayed)
+    monkeypatch.setattr(connector_type, "fetch_all", delayed)
     with performance.operation("audit", fixture="contract"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "v1.db"))) as db:
+        with instrument_connector(connectors["v1.db"]) as db:
             with db.read_transaction():
                 assert db.fetch_all(query, (1, 2, 3)) == [(1,), (2,), (3,)]
                 with database_phase("component", validator="contract"):
@@ -142,7 +165,7 @@ def test_schema_two_preserves_exact_scope_counters(
     previous_fields = {
         "schema": 2,
         "event": "completed",
-        "backend": "sqlite",
+        "backend": database_factory.backend,
         "operation": "audit",
         "sequence": 2,
         "phase": "audit",
@@ -184,12 +207,18 @@ def test_schema_two_preserves_exact_scope_counters(
 
 @pytest.mark.parametrize("phase_count", [255, 256, 257, 520])
 def test_phase_budget_retains_slow_and_failed_work_without_losing_totals(
-    phase_count: int, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    phase_count: int,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
     clock = _Clock()
-    performance = _performance(caplog, clock=clock)
+    performance = _performance(caplog, backend=database_factory.backend, clock=clock)
     with performance.operation("cleanup"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connection:
+        with instrument_connector(connectors["db"]) as connection:
             for index in range(phase_count):
                 try:
                     with database_phase("batch", batch=index):
@@ -217,11 +246,17 @@ def test_phase_budget_retains_slow_and_failed_work_without_losing_totals(
 
 @pytest.mark.parametrize("queries", [63, 64, 65, 130])
 def test_query_capacity_and_repeated_cycles_keep_exact_total_counts(
-    queries: int, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    queries: int,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    database_factory: DatabaseFactory,
 ) -> None:
-    performance = _performance(caplog)
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    performance = _performance(caplog, backend=database_factory.backend)
     with performance.operation("audit") as span:
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connection:
+        with instrument_connector(connectors["db"]) as connection:
             for _lap in range(3):
                 for index in range(queries):
                     connection.fetch_one(f"SELECT %s AS q_{index}", ("private",))
@@ -260,17 +295,18 @@ def test_failure_preserves_exception_and_context_even_with_broken_sink(
 
 
 def test_copied_context_does_not_attribute_another_thread_to_parent(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, database_factory: DatabaseFactory
 ) -> None:
-    performance = _performance(caplog)
+    connectors = {
+        "worker": database_connector(database_factory.config("worker")),
+    }
+    performance = _performance(caplog, backend=database_factory.backend)
 
     def worker() -> None:
         with database_phase("unowned") as span:
             assert span._root is None
         with performance.operation("worker"):
-            with instrument_connector(
-                SQLiteConnector(str(tmp_path / "worker"))
-            ) as connection:
+            with instrument_connector(connectors["worker"]) as connection:
                 connection.fetch_one("SELECT 1")
 
     with performance.operation("parent"):
@@ -286,9 +322,14 @@ def test_copied_context_does_not_attribute_another_thread_to_parent(
 
 
 def test_long_operation_reports_active_phase_from_independent_thread(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, database_factory: DatabaseFactory
 ) -> None:
-    performance = _performance(caplog, interval_seconds=0.01)
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    performance = _performance(
+        caplog, backend=database_factory.backend, interval_seconds=0.01
+    )
     reported = Event()
     owner = get_ident()
     threads: list[int] = []
@@ -309,9 +350,7 @@ def test_long_operation_reports_active_phase_from_independent_thread(
     performance.logger.addHandler(handler)
     try:
         with performance.operation("audit"):
-            with instrument_connector(
-                SQLiteConnector(str(tmp_path / "db"))
-            ) as connection:
+            with instrument_connector(connectors["db"]) as connection:
                 with connection.read_transaction():
                     with database_phase("slow_validator"):
                         assert reported.wait(10), (
@@ -360,14 +399,18 @@ def test_disabled_diagnostics_leave_connector_unwrapped(
 
 
 def test_nested_ingest_instrumentation_cannot_hide_sql_from_operation(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, database_factory: DatabaseFactory
 ) -> None:
-    performance = _performance(caplog)
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    performance = _performance(caplog, backend=database_factory.backend)
     ingest = IngestPerformance(
-        logging.getLogger("h2hdb.ingest_performance.unit"), backend="sqlite"
+        logging.getLogger("h2hdb.ingest_performance.unit"),
+        backend=database_factory.backend,
     )
     with performance.operation("cleanup"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connection:
+        with instrument_connector(connectors["db"]) as connection:
             connection.fetch_one("SELECT 1")
             with database_phase("adapter"):
                 with ingest.step("publication", "prepare", "PREPARE", 1):
@@ -459,20 +502,27 @@ def test_heartbeat_releases_completed_operation_snapshots(
 
 
 @pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+@pytest.mark.backend_external(
+    reason="The CLI subprocess opens the explicit fixture-owned native database configuration."
+)
 def test_core_cli_routes_diagnostics_to_console_and_configured_file(
     level: str,
     tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     config = tmp_path / "config.json"
     log = tmp_path / "core.log"
     config.write_text(
         json.dumps(
             {
-                "database": {"sql_type": "sqlite", "database": str(tmp_path / "db")},
+                "database": database_factory.config("cli").database.model_dump(
+                    mode="json"
+                ),
                 "logger": {"level": level, "file": str(log)},
             }
         )
     )
+    config.chmod(0o600)
     for command in ("migrate", "check"):
         result = subprocess.run(
             [sys.executable, "-m", "h2hdb", command, "--config", str(config)],
@@ -489,9 +539,14 @@ def test_core_cli_routes_diagnostics_to_console_and_configured_file(
 def test_inclusive_sql_timer_excludes_nested_observer_callback_time(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     clock = _Clock()
-    fetch = SQLiteConnector.fetch_one
+    fetch = connector_type.fetch_one
 
     @dataclass
     class Recorder:
@@ -506,19 +561,18 @@ def test_inclusive_sql_timer_excludes_nested_observer_callback_time(
                 clock.now += self.callback_seconds
 
     def query(
-        self: SQLiteConnector, statement: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, statement: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         value = fetch(self, statement, data)
-        clock.now += 2
+        if statement == "SELECT 1":
+            clock.now += 2
         return value
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", query)
+    monkeypatch.setattr(connector_type, "fetch_one", query)
     outer, inner = Recorder(), Recorder(callback_seconds=3)
     with measure_sql(outer, clock=clock, observe_nested=True):
         with measure_sql(inner, clock=clock):
-            with instrument_connector(
-                SQLiteConnector(str(tmp_path / "db"))
-            ) as connection:
+            with instrument_connector(connectors["db"]) as connection:
                 connection.fetch_one("SELECT 1")
     assert inner.sql_seconds == outer.sql_seconds == 2
 
@@ -589,19 +643,32 @@ assert reference() is None, 'completed operation retained by daemon context'
 
 
 def test_info_heartbeat_identifies_blocked_sql_before_completion(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     clock = _Clock()
     performance = _performance(
-        caplog, level=logging.INFO, clock=clock, interval_seconds=0.01
+        caplog,
+        backend=database_factory.backend,
+        level=logging.INFO,
+        clock=clock,
+        interval_seconds=0.01,
     )
     reported = Event()
     reporting_threads: list[int] = []
-    fetch = SQLiteConnector.fetch_one
+    fetch = connector_type.fetch_one
 
     def blocked(
-        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, query: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
+        if query != "SELECT %s":
+            return fetch(self, query, data)
         clock.now = 12.0
         assert reported.wait(10), "pending SQL must appear before driver returns"
         return fetch(self, query, data)
@@ -618,12 +685,10 @@ def test_info_heartbeat_identifies_blocked_sql_before_completion(
 
     handler = Handler()
     performance.logger.addHandler(handler)
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", blocked)
+    monkeypatch.setattr(connector_type, "fetch_one", blocked)
     try:
         with performance.operation("claim"):
-            with instrument_connector(
-                SQLiteConnector(str(tmp_path / "db"))
-            ) as connector:
+            with instrument_connector(connectors["db"]) as connector:
                 with connector.read_transaction(), database_phase("maintenance_proof"):
                     assert connector.fetch_one("SELECT %s", ("private-payload",)) == (
                         "private-payload",
@@ -665,21 +730,31 @@ def test_slow_queries_after_fingerprint_capacity_remain_identifiable(
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     clock = _Clock()
-    performance = _performance(caplog, level=level, clock=clock)
-    fetch = SQLiteConnector.fetch_one
+    performance = _performance(
+        caplog, backend=database_factory.backend, level=level, clock=clock
+    )
+    fetch = connector_type.fetch_one
 
     def delayed(
-        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, query: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         result = fetch(self, query, data)
-        clock.now += 9.0 if data[0] == queries - 1 else 8.0 if data[0] == 64 else 0.0
+        if data:
+            clock.now += (
+                9.0 if data[0] == queries - 1 else 8.0 if data[0] == 64 else 0.0
+            )
         return result
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed)
+    monkeypatch.setattr(connector_type, "fetch_one", delayed)
     with performance.operation("audit") as span:
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+        with instrument_connector(connectors["db"]) as connector:
             for _cycle in range(3):
                 for index in range(queries):
                     connector.fetch_one(f"SELECT %s AS q_{index}", (index,))
@@ -699,12 +774,18 @@ def test_slow_queries_after_fingerprint_capacity_remain_identifiable(
 
 @pytest.mark.parametrize("keys", [63, 64, 65, 130])
 def test_phase_totals_bound_dimensions_and_preserve_repeated_work(
-    keys: int, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    keys: int,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
     clock = _Clock()
-    performance = _performance(caplog, clock=clock)
+    performance = _performance(caplog, backend=database_factory.backend, clock=clock)
     with performance.operation("cleanup"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+        with instrument_connector(connectors["db"]) as connector:
             for _cycle in range(3):
                 for index in range(keys):
                     with database_phase(
@@ -730,21 +811,29 @@ def test_placeholder_arity_does_not_hide_cumulative_sql_from_info(
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "db": database_connector(database_factory.config("db")),
+    }
+    connector_type = type(next(iter(connectors.values())))
     clock = _Clock()
-    performance = _performance(caplog, level=level, clock=clock)
-    fetch = SQLiteConnector.fetch_one
+    performance = _performance(
+        caplog, backend=database_factory.backend, level=level, clock=clock
+    )
+    fetch = connector_type.fetch_one
 
     def delayed(
-        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, query: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         result = fetch(self, query, data)
-        clock.now += 0.5
+        if data:
+            clock.now += 0.5
         return result
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed)
+    monkeypatch.setattr(connector_type, "fetch_one", delayed)
     with performance.operation("analysis"):
-        with instrument_connector(SQLiteConnector(str(tmp_path / "db"))) as connector:
+        with instrument_connector(connectors["db"]) as connector:
             with database_phase("content_decisions"):
                 for _cycle in range(3):
                     for count in range(1, 130):

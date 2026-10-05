@@ -20,13 +20,12 @@ every distinct label the matrix then:
 from __future__ import annotations
 
 import copy
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
+from vnext_database_snapshot import clone_database
 from vnext_fault_harness import open_connector, snapshot_database, snapshot_difference
 from vnext_pipeline import (
     Clock,
@@ -43,10 +42,10 @@ from vnext_pipeline import (
     stored_objects,
     takeover_clock,
 )
+from vnext_test_database import DatabaseFactory, inspect_all, inspect_one
 
 from h2hdb import (
     CoreConfig,
-    DatabaseConfig,
     VNextDownloadQueueFacade,
     VNextIngestFacade,
     VNextIngestSession,
@@ -60,7 +59,10 @@ from h2hdb.vnext_cleanup_repository import CleanupUnavailableError
 from h2hdb.vnext_download_ingest_repository import DownloadIngestUnavailableError
 from h2hdb.vnext_gallery_staging_repository import GalleryStagingNotReadyError
 from h2hdb.vnext_ingest_fence_repository import IngestFenceUnavailableError
-from h2hdb.vnext_ingest_policy_repository import VNextIngestPolicyNotReadyError
+from h2hdb.vnext_ingest_policy_repository import (
+    VNextIngestPolicyConflictError,
+    VNextIngestPolicyNotReadyError,
+)
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateUnavailableError
 from h2hdb.vnext_operational_event_repository import OperationalEffectStateError
 from h2hdb.vnext_publication_candidate_repository import (
@@ -119,10 +121,6 @@ def _corpus() -> list[Any]:
     ]
 
 
-def _sqlite_config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-
-
 def _turn(
     config: CoreConfig,
     source: MemorySource,
@@ -159,22 +157,30 @@ def _boundary_labels(
 
 
 class _Baseline:
-    def __init__(self, tmp_path: Path) -> None:
-        self.root = tmp_path
-        self.baseline = tmp_path / "baseline.sqlite3"
-        initialize_database(_sqlite_config(self.baseline))
+    """Native immutable prefix cloned into an isolated database per fault point."""
+
+    def __init__(self, databases: DatabaseFactory) -> None:
+        self.databases = databases
+        self.baseline = databases.config("takeover-baseline")
+        initialize_database(self.baseline)
         self.source = MemorySource(_corpus())
         self.library = MemoryLibrary(self.source)
         self._copies = 0
+        self._names: dict[str, str] = {}
 
     def fresh_copy(self) -> tuple[CoreConfig, MemorySource, MemoryLibrary]:
         self._copies += 1
-        path = self.root / f"point-{self._copies}.sqlite3"
-        shutil.copyfile(self.baseline, path)
+        name = f"point-{self._copies}"
+        config = self.databases.config(name)
+        self._names[config.database.database] = name
+        clone_database(self.baseline, config)
         source = copy.deepcopy(self.source)
         library = copy.deepcopy(self.library)
         library.source = source
-        return _sqlite_config(path), source, library
+        return config, source, library
+
+    def discard(self, config: CoreConfig) -> None:
+        self.databases.release(self._names.pop(config.database.database))
 
 
 @dataclass(frozen=True)
@@ -188,9 +194,11 @@ def _reference(baseline: _Baseline) -> _Reference:
     config, source, library = baseline.fresh_copy()
     _turn(config, source, library, clock=Clock())
     assert full_check(config).state == "READY"
-    return _Reference(
+    result = _Reference(
         catalog_view(config), library_view(library), stored_objects(library)
     )
+    baseline.discard(config)
+    return result
 
 
 def _assert_converged(
@@ -232,6 +240,16 @@ def _takeover_point(
         try:
             _turn(config, source, library, clock=Clock(), boundary=hook)
         except FENCE_ERRORS as error:
+            observed = type(error)
+        except VNextIngestPolicyConflictError as error:
+            # The successor claim may reclaim the abandoned turn's registry
+            # authority before the stale caller reaches its session fence.
+            # Accept only this exact authority refusal, then still prove zero
+            # writes against the post-takeover state and successor convergence.
+            if str(error) != (
+                "resolved ingest policy lacks exact durable registry authority"
+            ):
+                raise
             observed = type(error)
         except RuntimeError as error:
             # The session claim itself is the boundary: the original sees
@@ -315,6 +333,7 @@ def _deletion_point(
         drain_maintenance(facade)
     finally:
         facade.close()
+        queue.close()
     assert hook.fired, f"boundary {label!r} never occurred"
     (receipt,) = receipts
     _assert_converged(config, library, reference, label)
@@ -333,6 +352,13 @@ def _deletion_point(
     later = VNextIngestFacade(config, clock=Clock())
     try:
         run_ingest_turn(later, source=source, library=library)
+        consumed, head, commits = _deletion_facts(config)
+        assert consumed == [(receipt.request_token,)], label
+        assert head == (receipt.observed_generation,), label
+        assert sorted(commits) == [
+            (receipt.observed_generation - 1,),
+            (receipt.observed_generation,),
+        ], label
         drain_maintenance(later)
     finally:
         later.close()
@@ -340,10 +366,10 @@ def _deletion_point(
     consumed, head, commits = _deletion_facts(config)
     assert consumed == [(receipt.request_token,)], label
     assert head == (receipt.observed_generation,), label
-    assert sorted(commits) == [
-        (receipt.observed_generation - 1,),
-        (receipt.observed_generation,),
-    ], label
+    # The finalized replacement unpins the old operational commit. Cleanup
+    # must retire it while preserving the new commit's exact generation and
+    # the durable deletion-consumption event established above.
+    assert commits == [(receipt.observed_generation,)], label
 
 
 def _deletion_facts(
@@ -352,19 +378,22 @@ def _deletion_facts(
     connector = open_connector(config)
     try:
         with connector.read_transaction():
-            consumed = connector.fetch_all(
+            consumed = inspect_all(
+                connector,
                 "SELECT deletion_request_token FROM "
-                "operational_operational_deletion_consumption_events"
+                "operational_operational_deletion_consumption_events",
             )
-            head = connector.fetch_one(
+            head = inspect_one(
+                connector,
                 "SELECT current_generation "
-                "FROM operational_deletion_request_generation_heads"
+                "FROM operational_deletion_request_generation_heads",
             )
-            commits = connector.fetch_all(
+            commits = inspect_all(
+                connector,
                 "SELECT preparation.deletion_request_generation "
                 "FROM catalog_publication_commits AS published "
                 "JOIN operational_operational_preparations AS preparation "
-                "ON preparation.preparation_id = published.preparation_id"
+                "ON preparation.preparation_id = published.preparation_id",
             )
     finally:
         connector.close()
@@ -377,13 +406,14 @@ BUCKETS = 6
 @pytest.mark.parametrize("mode", ("takeover", "deletion"))
 @pytest.mark.parametrize("bucket", range(BUCKETS))
 def test_sqlite_every_fenced_boundary_fails_closed_under_takeover_and_generation_interference(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     mode: str,
     bucket: int,
 ) -> None:
-    baseline = _Baseline(tmp_path)
+    baseline = _Baseline(database_factory)
     config, source, library = baseline.fresh_copy()
     labels = _boundary_labels(config, source, library)
+    baseline.discard(config)
     assert "claim" in labels and "complete" in labels and "maintenance" in labels
     assert any(label.startswith("source.commit:") for label in labels)
     assert any(label.startswith("analysis.commit:") for label in labels)
@@ -403,9 +433,11 @@ def test_sqlite_every_fenced_boundary_fails_closed_under_takeover_and_generation
             observed[label] = None if error is None else error.__name__
         else:
             if label in {"claim", "maintenance"}:
+                baseline.discard(config)
                 continue
             _deletion_point(config, source, library, label, reference)
             observed[label] = "converged"
+        baseline.discard(config)
     assert observed
     if mode == "takeover":
         fenced = {

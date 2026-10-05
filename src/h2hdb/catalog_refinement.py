@@ -1866,10 +1866,61 @@ def _generated_catalog_relation_name(logical_relation: str) -> str | None:
     return object_name
 
 
+def _validate_retained_publication_content_references(
+    connector: SQLConnector, expected_domain: bytes
+) -> None:
+    """Validate both authorities of every retained optional content child.
+
+    Absence is valid; an existing child must have an occurrence in exactly its
+    own revision. This includes candidate and historical rows, independently
+    of the current head. Child-first cleanup preserves that same requirement.
+    Reuse this role's canonical-reference scan instead of adding a second
+    history scan or any work to the scalar publication commit boundary.
+    LIMIT bounds the result, not the retained rows examined by the engine.
+    """
+
+    invalid = connector.fetch_all(
+        """
+        SELECT occurrence_row.publication_key
+        FROM catalog_publication_contents AS reference_row
+        LEFT JOIN catalog_publication_occurrence_identities AS occurrence_row
+          ON occurrence_row.revision = reference_row.revision
+         AND occurrence_row.publication_key = reference_row.publication_key
+        LEFT JOIN catalog_canonical_value_identities AS identity_row
+          ON identity_row.value_sha256 = reference_row.content_sha256
+        LEFT JOIN catalog_canonical_value_allocations AS allocation
+          ON allocation.value_sha256 = reference_row.content_sha256
+        WHERE occurrence_row.publication_key IS NULL
+           OR identity_row.value_sha256 IS NULL
+           OR allocation.value_sha256 IS NULL
+           OR allocation.digest_domain <> %s
+        LIMIT 1
+        """,
+        (expected_domain,),
+    )
+    if invalid:
+        if invalid[0][0] is None:
+            raise CatalogSemanticValidationError(
+                "catalog_publication_content has no occurrence in its revision"
+            )
+        raise CatalogSemanticValidationError(
+            "catalog_publication_content.content_sha256 is not sealed under "
+            f"{expected_domain.decode('ascii')}"
+        )
+
+
 def _validate_retained_canonical_reference_domains(connector: SQLConnector) -> None:
-    """Reject any retained canonical FK sealed under another digest domain."""
+    """Validate retained canonical roles and their specialized authorities."""
 
     for logical_relation, attribute, expected_domain in _CANONICAL_REFERENCE_ROLES:
+        if (logical_relation, attribute) == (
+            "catalog_publication_content",
+            "content_sha256",
+        ):
+            _validate_retained_publication_content_references(
+                connector, expected_domain
+            )
+            continue
         if _SAFE_IDENTIFIER.fullmatch(attribute) is None:
             raise BuiltinSemanticRegistryError(
                 f"canonical registry has an unsafe attribute name {attribute!r}"

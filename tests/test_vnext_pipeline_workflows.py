@@ -9,7 +9,6 @@ writers produced on that backend.
 from __future__ import annotations
 
 import copy
-import shutil
 import time
 import tomllib
 from collections.abc import Callable, Iterator
@@ -29,8 +28,11 @@ from compaction_contracts import (
     retained_compaction_roots,
 )
 from test_vnext_pipeline_takeover_matrix import FENCE_ERRORS
+from vnext_database_snapshot import clone_database
 from vnext_fault_harness import (
+    backend_of,
     open_connector,
+    physical_tables,
     row_counts,
     snapshot_database,
     snapshot_difference,
@@ -41,6 +43,7 @@ from vnext_pipeline import (
     IngestTurnReceipts,
     MemoryLibrary,
     MemorySource,
+    SessionOwner,
     catalog_view,
     claim_session,
     drain_maintenance,
@@ -54,6 +57,13 @@ from vnext_pipeline import (
     stored_objects,
     takeover_clock,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    set_foreign_key_checks,
+)
 
 from h2hdb import (
     CatalogFacetKind,
@@ -62,12 +72,12 @@ from h2hdb import (
     CatalogRevisionNotFoundError,
     CatalogTagFilter,
     CoreConfig,
-    DatabaseConfig,
     VNextCatalogFacade,
     VNextCurrentOnlyMaintenanceOutcome,
     VNextDownloadQueueFacade,
     VNextIngestFacade,
     VNextIngestPolicy,
+    VNextIngestSession,
 )
 from h2hdb import (
     catalog_refinement as catalog_refinement_module,
@@ -88,6 +98,8 @@ from h2hdb.vnext_cleanup_repository import (
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_operational_event_repository import OperationalEffectStateError
 from h2hdb.vnext_publication_repository import PublicationHeadRaceError
+from h2hdb.vnext_source_build_repository import SourceBuildRepository
+from h2hdb.vnext_source_collection_repository import SourceCollectionRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
@@ -96,6 +108,7 @@ class Pipeline:
     config: CoreConfig
     source: MemorySource
     library: MemoryLibrary
+    databases: DatabaseFactory | None = None
 
     def turn(
         self,
@@ -148,10 +161,11 @@ def _corpus() -> list[Any]:
 
 
 @pytest.fixture
-def pipeline(db_config: CoreConfig) -> Iterator[Pipeline]:
-    initialize_database(db_config)
+def pipeline(database_factory: DatabaseFactory) -> Iterator[Pipeline]:
+    config = database_factory.config("pipeline")
+    initialize_database(config)
     source = MemorySource(_corpus())
-    yield Pipeline(db_config, source, MemoryLibrary(source))
+    yield Pipeline(config, source, MemoryLibrary(source), database_factory)
 
 
 def _publication_gids(view: dict[str, Any]) -> list[int]:
@@ -279,15 +293,83 @@ def test_unchanged_source_replays_exactly_without_a_new_revision(
     first = pipeline.view()
     renders = pipeline.library.render_calls
 
-    receipts, progressed = pipeline.turn()
+    # Replay creates fresh observation evidence that must be retired. Repeat
+    # the cycle to reject accumulating transient roots without mistaking that
+    # required cleanup for a new publication or analysis.
+    for _ in range(2):
+        receipts = _replay_with_exact_retirement(pipeline)
+        assert receipts.source.replayed and receipts.source.sealed
+        assert receipts.publication.terminal
+        assert pipeline.library.render_calls == renders
+        assert pipeline.view() == first
+        assert pipeline.view()["revision"] == 1
 
-    assert receipts.source.replayed and receipts.source.sealed
-    assert receipts.publication.terminal
-    assert progressed == 0
-    assert pipeline.library.render_calls == renders
-    assert pipeline.view() == first
-    assert pipeline.view()["revision"] == 1
+
+def _replay_with_exact_retirement(pipeline: Pipeline) -> IngestTurnReceipts:
+    tables = tuple(
+        name
+        for name in physical_tables(backend_of(pipeline.config))
+        if name.startswith(
+            (
+                "catalog_publication_",
+                "catalog_analysis_",
+                "catalog_a_",
+                "catalog_artifact_",
+                "catalog_prepared_",
+            )
+        )
+        or name
+        in {
+            "catalog_source_build_descriptor",
+            "catalog_source_collections",
+            "catalog_gallery_observation_allocations",
+        }
+    )
+    before = snapshot_database(pipeline.config, tables=tables)
+    with patch.object(
+        VNextCleanupRepository,
+        "advance_current_only_cycle",
+        wraps=VNextCleanupRepository.advance_current_only_cycle,
+    ) as cleanup:
+        receipts, _progressed = pipeline.turn()
+    targets = {call.kwargs["cycle"].target_kind for call in cleanup.call_args_list}
+    assert (
+        {
+            CleanupTargetKind.SOURCE_COLLECTION,
+            CleanupTargetKind.GALLERY_OBSERVATION,
+        }
+        <= targets
+        <= {
+            CleanupTargetKind.SOURCE_COLLECTION,
+            CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
+            CleanupTargetKind.GALLERY_OBSERVATION,
+        }
+    )
+    # The first replay can retire canonical uploads from the initial turn;
+    # subsequent identical turns reuse those identities without uploading them.
+    connector = open_connector(pipeline.config)
+    try:
+        assert (
+            inspect_all(
+                connector,
+                "SELECT generation FROM operational_canonical_value_uploads "
+                "WHERE generation < %s",
+                (receipts.session.ingest_generation,),
+            )
+            == []
+        )
+    finally:
+        connector.close()
+    # The exact row sets, including collection/observation roots, rule out both
+    # growing retention and deletion or recreation of existing catalog facts.
+    assert snapshot_database(pipeline.config, tables=tables) == before
+    with VNextIngestFacade(pipeline.config, clock=Clock()) as facade:
+        assert (
+            facade.drain_current_only_maintenance(LEASE_MICROSECONDS)
+            is VNextCurrentOnlyMaintenanceOutcome.DONE
+        )
     pipeline.ready()
+    return receipts
 
 
 def test_restarted_process_takes_over_expired_leases_and_replays(
@@ -370,16 +452,18 @@ def test_removed_gallery_and_deletion_request_are_consumed_as_typed_effects(
     connector = open_connector(pipeline.config)
     try:
         with connector.read_transaction():
-            events = connector.fetch_all(
+            events = inspect_all(
+                connector,
                 "SELECT event_type FROM operational_operational_events "
-                "ORDER BY sequence_no"
+                "ORDER BY sequence_no",
             )
-            removed = connector.fetch_all(
-                "SELECT gid FROM operational_operational_removed_gid_events"
+            removed = inspect_all(
+                connector, "SELECT gid FROM operational_operational_removed_gid_events"
             )
-            consumed = connector.fetch_all(
+            consumed = inspect_all(
+                connector,
                 "SELECT deletion_request_token "
-                "FROM operational_operational_deletion_consumption_events"
+                "FROM operational_operational_deletion_consumption_events",
             )
     finally:
         connector.close()
@@ -563,26 +647,30 @@ def _preparation_facts(
     connector = open_connector(config)
     try:
         with connector.read_transaction():
-            preparations = connector.fetch_all(
+            preparations = inspect_all(
+                connector,
                 "SELECT deletion_request_generation, state "
                 "FROM operational_operational_preparations "
-                "ORDER BY deletion_request_generation"
+                "ORDER BY deletion_request_generation",
             )
-            bound = connector.fetch_all(
+            bound = inspect_all(
+                connector,
                 "SELECT preparation.deletion_request_generation "
                 "FROM operational_publication_candidate_preparations AS binding "
                 "JOIN operational_operational_preparations AS preparation "
-                "ON preparation.preparation_id = binding.preparation_id"
+                "ON preparation.preparation_id = binding.preparation_id",
             )
-            committed = connector.fetch_all(
+            committed = inspect_all(
+                connector,
                 "SELECT preparation.deletion_request_generation "
                 "FROM catalog_publication_commits AS published "
                 "JOIN operational_operational_preparations AS preparation "
-                "ON preparation.preparation_id = published.preparation_id"
+                "ON preparation.preparation_id = published.preparation_id",
             )
-            consumed = connector.fetch_all(
+            consumed = inspect_all(
+                connector,
                 "SELECT deletion_request_token FROM "
-                "operational_operational_deletion_consumption_events"
+                "operational_operational_deletion_consumption_events",
             )
     finally:
         connector.close()
@@ -629,36 +717,26 @@ def test_restart_after_a_sealed_commit_finalizes_the_pending_publication(
     turn resumes the pending activation and finalization and converges to the
     same catalog as an uninterrupted turn."""
 
-    reference_path = Path(pipeline.config.database.database + ".reference")
-    reference: dict[str, Any] | None = None
+    assert pipeline.databases is not None
     if not first_revision:
         pipeline.turn()
-    if pipeline.config.database.sql_type == "sqlite":
-        # The reference is the uninterrupted turn on a copy of the same
-        # durable state.
-        shutil.copyfile(pipeline.config.database.database, reference_path)
-        copied = CoreConfig(
-            database=DatabaseConfig(sql_type="sqlite", database=str(reference_path))
-        )
-        if not first_revision:
-            pipeline.source.put(
-                gallery(1001, pages=[b"p0-a", b"p1-a-modified"], artists=["alice"])
-            )
-        clone = Pipeline(
-            copied, copy.deepcopy(pipeline.source), copy.deepcopy(pipeline.library)
-        )
-        clone.library.source = clone.source
-        clone.turn()
-        reference = catalog_view(copied)
-    elif not first_revision:
+    copied = pipeline.databases.config("sealed-commit-reference")
+    clone_database(pipeline.config, copied)
+    if not first_revision:
         pipeline.source.put(
             gallery(1001, pages=[b"p0-a", b"p1-a-modified"], artists=["alice"])
         )
+    clone = Pipeline(
+        copied, copy.deepcopy(pipeline.source), copy.deepcopy(pipeline.library)
+    )
+    clone.library.source = clone.source
+    clone.turn()
+    reference = catalog_view(copied)
+    pipeline.databases.release("sealed-commit-reference")
     _abandon_turn_before(pipeline, label)
     pipeline.turn(clock=takeover_clock())
     pipeline.ready()
-    if reference is not None:
-        assert pipeline.view() == reference
+    assert pipeline.view() == reference
     assert pipeline.view()["publication_count"] == len(pipeline.source.galleries)
 
 
@@ -686,8 +764,7 @@ def test_stale_session_cannot_register_a_policy_after_takeover(
 
 
 SHORT_LEASE_MICROSECONDS = 8_000_000
-# Live MariaDB turns take several times longer, so the lease that must
-# outlive the abandoned turn (but expire before the takeover) is longer there.
+# Keep the established per-renewal durations. Neither is a whole-turn budget.
 MARIADB_SHORT_LEASE_MICROSECONDS = 45_000_000
 
 
@@ -697,32 +774,91 @@ def _short_lease(pipeline: Pipeline) -> int:
     return SHORT_LEASE_MICROSECONDS
 
 
-def _abandon_turn_with_short_lease(pipeline: Pipeline, label: str) -> None:
-    """Abandon a turn right before ``label`` under a short lease and wait for
-    that lease to expire, so a later turn on the real clock takes over.
+def _abandon_turn_with_short_lease(
+    pipeline: Pipeline,
+    label: str,
+    *,
+    before_fault: Callable[[SessionOwner], None] | None = None,
+) -> VNextIngestSession:
+    """Heartbeat until ``label``, then stop and await the last durable lease.
 
     (A future clock would poison later real-time turns: source-build times
     are compared against the publication base committed by that clock.)"""
 
+    delayed = False
+
     def boundary(seen: str) -> None:
+        nonlocal delayed
+        if (
+            before_fault is not None
+            and not delayed
+            and seen.startswith("source.commit:")
+        ):
+            delayed = True
+            before_fault(owner)
         if seen == label:
             raise _StopAt(seen)
 
     lease = _short_lease(pipeline)
-    facade = VNextIngestFacade(pipeline.config, clock=Clock())
+    clock = Clock()
+    facade = VNextIngestFacade(pipeline.config, clock=clock)
     try:
         session = claim_session(facade, lease=lease)
+        owner = SessionOwner(facade, session, lease, clock)
         with pytest.raises(_StopAt):
             run_ingest_turn(
                 facade,
                 source=pipeline.source,
                 library=pipeline.library,
-                session=session,
+                session=owner,
                 boundary=boundary,
             )
     finally:
         facade.close()
-    time.sleep(lease / 1_000_000 + 0.5)
+    deadline = max(
+        owner.current.gate_lease_expires_at, owner.current.ingest_lease_expires_at
+    )
+    while (remaining := deadline - time.time_ns() // 1_000) > 0:
+        time.sleep(remaining / 1_000_000)
+    return owner.current
+
+
+def test_fault_owner_heartbeats_past_original_lease_then_rejects_expired_session(
+    pipeline: Pipeline,
+) -> None:
+    pipeline.turn()
+    pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
+
+    def delay_with_heartbeats(owner: SessionOwner) -> None:
+        original = owner.current
+        deadline = max(original.gate_lease_expires_at, original.ingest_lease_expires_at)
+        # Delay between issue and commit, retaining the immutable prepared
+        # handle while the legitimate client adopts renewed session authority.
+        while (remaining := deadline + 1 - time.time_ns() // 1_000) > 0:
+            owner.heartbeat()
+            time.sleep(min(remaining, owner.lease_duration // 4) / 1_000_000)
+        owner.heartbeat()
+        assert owner.renewals > 0
+        assert owner.current.gate_lease_expires_at > original.gate_lease_expires_at
+        assert owner.current.ingest_lease_expires_at > original.ingest_lease_expires_at
+        assert owner.current.ingest_generation == original.ingest_generation
+        before = snapshot_database(pipeline.config)
+        with VNextIngestFacade(pipeline.config, clock=owner.clock) as contender:
+            assert contender.try_claim_ingest(True, owner.lease_duration) is None
+        assert snapshot_database(pipeline.config) == before
+
+    expired = _abandon_turn_with_short_lease(
+        pipeline, "publication.commit:FINALIZE", before_fault=delay_with_heartbeats
+    )
+    before = snapshot_database(pipeline.config)
+    with VNextIngestFacade(pipeline.config, clock=Clock()) as facade:
+        with pytest.raises(FENCE_ERRORS):
+            facade.ensure_policy(expired, ingest_policy())
+    assert snapshot_database(pipeline.config) == before
+    recovered, _ = pipeline.turn()
+    assert recovered.session.ingest_generation > expired.ingest_generation
+    assert _publication_gids(pipeline.view()) == [1001, 1002, 1003, 1006]
+    pipeline.ready()
 
 
 def _fresh_reference(
@@ -730,19 +866,19 @@ def _fresh_reference(
     tag: str,
     *,
     policy: VNextIngestPolicy | None = None,
-) -> dict[str, Any] | None:
-    """The catalog a fresh database reaches from the current source (SQLite
-    only; MariaDB compares publication counts)."""
+) -> dict[str, Any]:
+    """Compare complete catalog semantics against a fresh native-backend ingest."""
 
-    if pipeline.config.database.sql_type != "sqlite":
-        return None
-    path = Path(pipeline.config.database.database + f".{tag}")
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    assert pipeline.databases is not None
+    name = f"fresh-reference-{tag}"
+    config = pipeline.databases.config(name)
     initialize_database(config)
     source = copy.deepcopy(pipeline.source)
     fresh = Pipeline(config, source, MemoryLibrary(source))
     fresh.turn(policy=policy)
-    return catalog_view(config)
+    result = catalog_view(config)
+    pipeline.databases.release(name)
+    return result
 
 
 @pytest.mark.parametrize("label", ("analysis.commit:content_owner",))
@@ -811,7 +947,7 @@ def test_source_change_after_a_sealed_commit_recovers_before_current_snapshot(
         assert _publication_titles(pipeline.view()) == _publication_titles(reference)
 
 
-def _sqlite_pipeline(config: CoreConfig) -> Pipeline:
+def _native_pipeline(config: CoreConfig) -> Pipeline:
     initialize_database(config)
     source = MemorySource(_corpus())
     return Pipeline(config, source, MemoryLibrary(source))
@@ -826,7 +962,7 @@ def _drain_repository_cleanup_cycle(
 ) -> None:
     with connector.transaction():
         result = VNextCleanupRepository.resume_cycle(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
             now=clock(),
@@ -837,7 +973,7 @@ def _drain_repository_cleanup_cycle(
         assert result.generation is not None
         with connector.transaction():
             result = VNextCleanupRepository.advance(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 command=CleanupBatchCommand(
@@ -850,16 +986,17 @@ def _drain_repository_cleanup_cycle(
 
 
 def test_second_revision_retires_commit_pins_and_replays_compacted_current(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     first, first_progressed = pipeline.turn()
     assert first_progressed == 0
 
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     try:
         with connector.read_transaction():
-            first_commit = connector.fetch_one(
+            first_commit = inspect_one(
+                connector,
                 "SELECT receipt_id, candidate_id, generation "
                 "FROM catalog_publication_commits WHERE revision = %s",
                 (1,),
@@ -883,10 +1020,11 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
 
     assert second.source.build_id != first.source.build_id
     assert pre_maintenance_progressed == 0
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     try:
         with connector.read_transaction():
-            current = connector.fetch_one(
+            current = inspect_one(
+                connector,
                 "SELECT committed.receipt_id, committed.candidate_id, "
                 "committed.generation "
                 "FROM catalog_publication_commit_head_receipts AS head "
@@ -897,18 +1035,21 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
             )
             assert len(current) == 3
             assert current[2] == 2
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
                 (first_receipt,),
             ) == (1,)
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT candidate_id, base_receipt_id FROM "
-                    "catalog_publication_candidate_base_publication_commits"
+                    "catalog_publication_candidate_base_publication_commits",
                 )
                 == []
             )
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT base_receipt_id FROM "
                 "catalog_source_build_base_publication_commits "
                 "WHERE build_id = %s",
@@ -918,25 +1059,27 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
         connector.close()
     pipeline.ready()
 
-    facade = VNextIngestFacade(sqlite_config, clock=Clock())
+    facade = VNextIngestFacade(db_config, clock=Clock())
     try:
         progressed = drain_maintenance(facade)
     finally:
         facade.close()
     assert progressed >= 1
 
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     try:
         with connector.read_transaction():
             assert (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
                     (first_receipt,),
                 )
                 == ()
             )
             assert (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT 1 FROM catalog_publication_candidates "
                     "WHERE candidate_id = %s",
                     (first_candidate,),
@@ -944,14 +1087,16 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
                 == ()
             )
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT candidate_id, base_receipt_id FROM "
-                    "catalog_publication_candidate_base_publication_commits"
+                    "catalog_publication_candidate_base_publication_commits",
                 )
                 == []
             )
             assert (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT base_receipt_id FROM "
                     "catalog_source_build_base_publication_commits "
                     "WHERE build_id = %s",
@@ -959,14 +1104,16 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
                 )
                 == ()
             )
-            assert connector.fetch_all(
+            assert inspect_all(
+                connector,
                 "SELECT generation FROM catalog_publication_generation_nodes "
-                "ORDER BY generation"
+                "ORDER BY generation",
             ) == [(2,)]
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT successor_generation, predecessor_generation "
-                    "FROM catalog_publication_generation_successors"
+                    "FROM catalog_publication_generation_successors",
                 )
                 == []
             )
@@ -974,11 +1121,10 @@ def test_second_revision_retires_commit_pins_and_replays_compacted_current(
         connector.close()
 
     before_replay = pipeline.view()
-    replay, replay_progressed = pipeline.turn()
+    replay = _replay_with_exact_retirement(pipeline)
 
     assert replay.source.replayed
     assert replay.publication.terminal
-    assert replay_progressed == 0
     assert pipeline.view() == before_replay
     pipeline.ready()
 
@@ -1014,22 +1160,26 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     connector = open_connector(db_config)
     try:
         with connector.read_transaction():
-            assert connector.fetch_all(
-                "SELECT revision FROM catalog_publication_commits ORDER BY revision"
+            assert inspect_all(
+                connector,
+                "SELECT revision FROM catalog_publication_commits ORDER BY revision",
             ) == [(2,)]
             assert (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT 1 FROM catalog_publication_candidates "
                     "WHERE reserved_revision = %s",
                     (1,),
                 )
                 == ()
             )
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
                 (first.source.build_id,),
             ) == ("SEALED",)
-            assert connector.fetch_all(
+            assert inspect_all(
+                connector,
                 "SELECT provenance.source_revision, state.state "
                 "FROM catalog_source_revision_provenance AS provenance "
                 "JOIN catalog_analysis_run_descriptor AS analysis "
@@ -1039,7 +1189,8 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
                 "WHERE analysis.build_id = %s",
                 (first.source.build_id,),
             ) == [(1, "COMPLETE")]
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_analysis_baselines AS baseline "
                 "JOIN catalog_analysis_run_descriptor AS analysis "
                 "ON analysis.analysis_id = baseline.base_analysis_id "
@@ -1106,13 +1257,13 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
 @pytest.mark.merge_smoke
 @pytest.mark.cleanup_acceptance
 def test_live_mariadb_compacted_snapshot_recurrence(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     """An empty historical snapshot recurs after real publication compaction."""
 
-    initialize_database(mariadb_config)
+    initialize_database(db_config)
     source = MemorySource()
-    pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
+    pipeline = Pipeline(db_config, source, MemoryLibrary(source))
     policy = ingest_policy(artifacts_required=False)
     first, _ = pipeline.turn(policy=policy)
 
@@ -1121,13 +1272,15 @@ def test_live_mariadb_compacted_snapshot_recurrence(
     second, progressed = pipeline.turn(policy=policy)
     assert progressed > 0
     assert second.source.build_id != first.source.build_id
-    connector = open_connector(mariadb_config)
+    connector = open_connector(db_config)
     try:
         with connector.read_transaction():
-            assert connector.fetch_all(
-                "SELECT revision FROM catalog_publication_commits ORDER BY revision"
+            assert inspect_all(
+                connector,
+                "SELECT revision FROM catalog_publication_commits ORDER BY revision",
             ) == [(2,)]
-            assert connector.fetch_all(
+            assert inspect_all(
+                connector,
                 "SELECT provenance.source_revision, build.state, state.state "
                 "FROM catalog_source_revision_provenance AS provenance "
                 "JOIN catalog_analysis_run_descriptor AS analysis "
@@ -1139,7 +1292,8 @@ def test_live_mariadb_compacted_snapshot_recurrence(
                 "WHERE analysis.build_id = %s",
                 (first.source.build_id,),
             ) == [(1, "SEALED", "COMPLETE")]
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_analysis_baselines AS baseline "
                 "JOIN catalog_analysis_run_descriptor AS analysis "
                 "ON analysis.analysis_id = baseline.base_analysis_id "
@@ -1157,7 +1311,7 @@ def test_live_mariadb_compacted_snapshot_recurrence(
         second.source.build_id,
     }
     assert recurring.publication.terminal
-    current = VNextCatalogFacade(mariadb_config).get_catalog_revision()
+    current = VNextCatalogFacade(db_config).get_catalog_revision()
     assert (current.revision, current.publication_count, current.artifact_count) == (
         3,
         0,
@@ -1168,11 +1322,11 @@ def test_live_mariadb_compacted_snapshot_recurrence(
 
 @pytest.mark.merge_smoke
 def test_full_check_accepts_each_durable_publication_commit_release_phase(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     """Every durable OPEN PCOM phase remains READY after its one-shot release."""
 
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     pipeline.turn()
     pipeline.source.put(
         gallery(
@@ -1184,22 +1338,23 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
     )
     second, _ = pipeline.turn(drain=False)
     clock = takeover_clock()
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     try:
-        predecessor = connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1"
+        predecessor = inspect_one(
+            connector,
+            "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1",
         )
         assert len(predecessor) == 1
         predecessor_receipt = bytes(predecessor[0])
         with connector.transaction():
             gate = MaintenanceGateRepository.claim_exclusive(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=clock(),
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
             cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
                 shard_no=predecessor_receipt[0],
@@ -1209,7 +1364,7 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
             )
         with connector.transaction():
             result = VNextCleanupRepository.resume_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 now=clock(),
@@ -1219,7 +1374,8 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
         observed_states: set[tuple[str, bytes]] = set()
         completed_checked = False
         for attempt in range(40):
-            checkpoint = connector.fetch_one(
+            checkpoint = inspect_one(
+                connector,
                 "SELECT checkpoint.phase, checkpoint.cursor_bytes, phase.phase_order "
                 "FROM operational_cleanup_checkpoints AS checkpoint "
                 "JOIN operational_cleanup_phases AS phase "
@@ -1229,7 +1385,8 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
                 (cycle.cleanup_id,),
             )
             build_base_absent = (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT 1 FROM catalog_source_build_base_publication_commits "
                     "WHERE build_id = %s",
                     (second.source.build_id,),
@@ -1240,18 +1397,18 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
                 phase = str(checkpoint[0])
                 state_key = (phase, bytes(checkpoint[1]))
                 if state_key not in observed_states:
-                    report = full_check(sqlite_config)
+                    report = full_check(db_config)
                     assert report.state == "READY"
                     observed_phases.add(phase)
                     observed_states.add(state_key)
             if result.cycle_complete:
-                assert full_check(sqlite_config).state == "READY"
+                assert full_check(db_config).state == "READY"
                 completed_checked = True
                 break
             assert result.generation is not None
             with connector.transaction():
                 result = VNextCleanupRepository.advance(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
                     command=CleanupBatchCommand(
@@ -1289,12 +1446,12 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
 )
 @pytest.mark.merge_smoke
 def test_full_check_rejects_forged_publication_commit_cleanup_proof(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     corruption: str,
 ) -> None:
     """A transient retirement gap requires the exact bounded OPEN authority."""
 
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     pipeline.turn()
     pipeline.source.put(
         gallery(
@@ -1306,22 +1463,23 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
     )
     second, _ = pipeline.turn(drain=False)
     clock = takeover_clock()
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     try:
-        predecessor = connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1"
+        predecessor = inspect_one(
+            connector,
+            "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1",
         )
         assert len(predecessor) == 1
         predecessor_receipt = bytes(predecessor[0])
         with connector.transaction():
             gate = MaintenanceGateRepository.claim_exclusive(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=clock(),
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
             cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
                 shard_no=predecessor_receipt[0],
@@ -1331,26 +1489,29 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
             )
         with connector.transaction():
             result = VNextCleanupRepository.resume_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 now=clock(),
             )
 
         for attempt in range(40):
-            checkpoint = connector.fetch_one(
+            checkpoint = inspect_one(
+                connector,
                 "SELECT phase, cursor_bytes FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s AND state = 'OPEN'",
                 (cycle.cleanup_id,),
             )
             phase = str(checkpoint[0]) if checkpoint else ""
             cursor = bytes(checkpoint[1]) if checkpoint else b""
-            predecessor_retained = connector.fetch_one(
+            predecessor_retained = inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
                 (predecessor_receipt,),
             ) == (1,)
             build_base_absent = (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT 1 FROM catalog_source_build_base_publication_commits "
                     "WHERE build_id = %s",
                     (second.source.build_id,),
@@ -1364,7 +1525,8 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                 and predecessor_retained
                 and build_base_absent
             ):
-                root_rows = connector.fetch_all(
+                root_rows = inspect_all(
+                    connector,
                     "SELECT frozen_root_key FROM operational_cleanup_cycle_roots "
                     "WHERE cleanup_id = %s ORDER BY frozen_root_key",
                     (cycle.cleanup_id,),
@@ -1397,7 +1559,7 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                         == 1
                     )
                 with pytest.raises(CatalogSemanticValidationError):
-                    full_check(sqlite_config)
+                    full_check(db_config)
                 break
             if (
                 corruption == "orphan-anchor"
@@ -1405,15 +1567,15 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                 and cursor
                 and not predecessor_retained
             ):
-                connector.execute("PRAGMA foreign_keys = OFF")
+                set_foreign_key_checks(connector, enabled=False)
                 connector.execute(
                     "INSERT INTO catalog_publication_commit_anchors (receipt_id) "
                     "VALUES (%s)",
                     (b"z" * 16,),
                 )
-                connector.execute("PRAGMA foreign_keys = ON")
+                set_foreign_key_checks(connector, enabled=True)
                 with pytest.raises(CatalogSemanticValidationError):
-                    full_check(sqlite_config)
+                    full_check(db_config)
                 break
             if (
                 corruption == "missing-orphan-anchor"
@@ -1421,21 +1583,21 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                 and cursor
                 and not predecessor_retained
             ):
-                connector.execute("PRAGMA foreign_keys = OFF")
+                set_foreign_key_checks(connector, enabled=False)
                 connector.execute(
                     "DELETE FROM catalog_publication_commit_anchors "
                     "WHERE receipt_id = %s",
                     (predecessor_receipt,),
                 )
-                connector.execute("PRAGMA foreign_keys = ON")
+                set_foreign_key_checks(connector, enabled=True)
                 with pytest.raises(CatalogSemanticValidationError):
-                    full_check(sqlite_config)
+                    full_check(db_config)
                 break
             assert not result.cycle_complete
             assert result.generation is not None
             with connector.transaction():
                 result = VNextCleanupRepository.advance(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
                     command=CleanupBatchCommand(
@@ -1452,7 +1614,7 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
 
 @pytest.mark.merge_smoke
 def test_full_check_accepts_multi_root_pcom_keyset_coverage(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A later PCOM cursor covers earlier frozen roots in canonical order."""
@@ -1467,7 +1629,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
     monkeypatch.setattr(
         publication_module, "_new_receipt_id", lambda: next(receipt_ids)
     )
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     pipeline.turn(drain=False)
     pipeline.source.put(gallery(1001, pages=[b"pcom-multi-r2"], artists=["alice"]))
     pipeline.turn(drain=False)
@@ -1487,12 +1649,13 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
         )
         pipeline.turn(drain=False)
 
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     clock = takeover_clock()
     try:
-        old_receipts = connector.fetch_all(
+        old_receipts = inspect_all(
+            connector,
             "SELECT receipt_id FROM catalog_publication_commits "
-            "WHERE revision < 3 ORDER BY receipt_id"
+            "WHERE revision < 3 ORDER BY receipt_id",
         )
         assert old_receipts == [
             (bytes.fromhex("21" + "11" * 15),),
@@ -1500,13 +1663,13 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
         ]
         with connector.transaction():
             gate = MaintenanceGateRepository.claim_exclusive(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=clock(),
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
             cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
                 shard_no=0x21,
@@ -1516,7 +1679,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
             )
         with connector.transaction():
             result = VNextCleanupRepository.resume_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 now=clock(),
@@ -1525,7 +1688,8 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
         observed: set[str] = set()
         forged_cursor_rejected = False
         for attempt in range(40):
-            checkpoint = connector.fetch_one(
+            checkpoint = inspect_one(
+                connector,
                 "SELECT phase, cursor_bytes FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s AND state = 'OPEN'",
                 (cycle.cleanup_id,),
@@ -1540,13 +1704,14 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
                 }
                 and checkpoint[1]
             ):
-                assert full_check(sqlite_config).state == "READY"
+                assert full_check(db_config).state == "READY"
                 observed.add(str(checkpoint[0]))
                 if (
                     checkpoint[0] == "PCOM_RELEASE_BUILD_BASE"
                     and not forged_cursor_rejected
                 ):
-                    receipt = connector.fetch_one(
+                    receipt = inspect_one(
+                        connector,
                         "SELECT generation, receipt_start_cursor, "
                         "receipt_prior_chain_sha256, receipt_input_sha256, "
                         "receipt_row_count, chain_sha256 "
@@ -1581,7 +1746,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
                         ),
                     )
                     with pytest.raises(CatalogSemanticValidationError):
-                        full_check(sqlite_config)
+                        full_check(db_config)
                     connector.execute(
                         "UPDATE operational_cleanup_checkpoints "
                         "SET cursor_bytes = %s, chain_sha256 = %s "
@@ -1599,7 +1764,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
             assert result.generation is not None
             with connector.transaction():
                 result = VNextCleanupRepository.advance(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
                     command=CleanupBatchCommand(
@@ -1620,33 +1785,34 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
 
 @pytest.mark.merge_smoke
 def test_full_check_accepts_each_durable_publication_generation_phase(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     """Only an exact OPEN PG cursor may explain a transient chain gap."""
 
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     pipeline.turn(drain=False)
     pipeline.source.put(
         gallery(1001, pages=[b"publication-generation-r2"], artists=["alice"])
     )
     pipeline.turn(drain=False)
     clock = takeover_clock()
-    connector = open_connector(sqlite_config)
+    connector = open_connector(db_config)
     try:
-        old_receipt_row = connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1"
+        old_receipt_row = inspect_one(
+            connector,
+            "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1",
         )
         assert len(old_receipt_row) == 1
         old_receipt = bytes(old_receipt_row[0])
         with connector.transaction():
             gate = MaintenanceGateRepository.claim_exclusive(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=clock(),
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
             commit_cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
                 shard_no=old_receipt[0],
@@ -1655,11 +1821,11 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 now=clock(),
             )
         _drain_repository_cleanup_cycle(connector, gate, commit_cycle, clock=clock)
-        assert full_check(sqlite_config).state == "READY"
+        assert full_check(db_config).state == "READY"
 
         with connector.transaction():
             generation_cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_GENERATION,
                 shard_no=0,
@@ -1667,7 +1833,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 max_rows_per_transaction=256,
                 now=clock(),
             )
-        assert full_check(sqlite_config).state == "READY"
+        assert full_check(db_config).state == "READY"
 
         def rebind_open_generation_cleanup(
             current_cleanup_id: bytes,
@@ -1676,13 +1842,15 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
         ) -> bytes:
             roots = tuple(
                 bytes(row[0])
-                for row in connector.fetch_all(
+                for row in inspect_all(
+                    connector,
                     "SELECT frozen_root_key FROM operational_cleanup_cycle_roots "
                     "WHERE cleanup_id = %s ORDER BY frozen_root_key",
                     (current_cleanup_id,),
                 )
             )
-            checkpoint = connector.fetch_one(
+            checkpoint = inspect_one(
+                connector,
                 "SELECT phase FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s",
                 (current_cleanup_id,),
@@ -1698,39 +1866,40 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 CleanupTargetKind.PUBLICATION_GENERATION,
                 shard_no,
             )
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             try:
-                connector.execute(
-                    "UPDATE operational_cleanup_cycle_roots SET cleanup_id = %s "
-                    "WHERE cleanup_id = %s",
-                    (rebound_cleanup_id, current_cleanup_id),
-                )
-                connector.execute(
-                    "UPDATE operational_cleanup_checkpoints "
-                    "SET cleanup_id = %s, chain_sha256 = %s "
-                    "WHERE cleanup_id = %s",
-                    (
-                        rebound_cleanup_id,
-                        cleanup_module._initial_chain(rebound_cleanup_id, phase),
-                        current_cleanup_id,
-                    ),
-                )
-                connector.execute(
-                    "UPDATE operational_cleanup_jobs "
-                    "SET cleanup_id = %s, target_key = %s, "
-                    "frozen_root_set_sha256 = %s WHERE cleanup_id = %s",
-                    (
-                        rebound_cleanup_id,
-                        target_key,
-                        cleanup_module._frozen_root_set_sha256(
+                with connector.transaction():
+                    connector.execute(
+                        "UPDATE operational_cleanup_cycle_roots SET cleanup_id = %s "
+                        "WHERE cleanup_id = %s",
+                        (rebound_cleanup_id, current_cleanup_id),
+                    )
+                    connector.execute(
+                        "UPDATE operational_cleanup_checkpoints "
+                        "SET cleanup_id = %s, chain_sha256 = %s "
+                        "WHERE cleanup_id = %s",
+                        (
                             rebound_cleanup_id,
-                            roots,
+                            cleanup_module._initial_chain(rebound_cleanup_id, phase),
+                            current_cleanup_id,
                         ),
-                        current_cleanup_id,
-                    ),
-                )
+                    )
+                    connector.execute(
+                        "UPDATE operational_cleanup_jobs "
+                        "SET cleanup_id = %s, target_key = %s, "
+                        "frozen_root_set_sha256 = %s WHERE cleanup_id = %s",
+                        (
+                            rebound_cleanup_id,
+                            target_key,
+                            cleanup_module._frozen_root_set_sha256(
+                                rebound_cleanup_id,
+                                roots,
+                            ),
+                            current_cleanup_id,
+                        ),
+                    )
             finally:
-                connector.execute("PRAGMA foreign_keys = ON")
+                set_foreign_key_checks(connector, enabled=True)
             return rebound_cleanup_id
 
         forged_cleanup_id = rebind_open_generation_cleanup(
@@ -1738,9 +1907,12 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
             shard_no=1,
         )
         try:
-            with pytest.raises(
-                CatalogSemanticValidationError,
-                match="slot does not match its frozen prefix floor",
+            with (
+                connector.read_transaction(),
+                pytest.raises(
+                    CatalogSemanticValidationError,
+                    match="slot does not match its frozen prefix floor",
+                ),
             ):
                 catalog_refinement_module.check_publication_atomicity_v1(connector)
         finally:
@@ -1749,24 +1921,29 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 shard_no=0,
             )
         assert restored_cleanup_id == generation_cycle.cleanup_id
-        assert full_check(sqlite_config).state == "READY"
+        assert full_check(db_config).state == "READY"
 
-        connector.execute(
-            "DELETE FROM catalog_publication_generation_successors "
-            "WHERE successor_generation = 1"
-        )
-        with pytest.raises(
-            CatalogSemanticValidationError,
-            match="successor chain is gapped",
+        with connector.transaction():
+            connector.execute(
+                "DELETE FROM catalog_publication_generation_successors "
+                "WHERE successor_generation = 1"
+            )
+        with (
+            connector.read_transaction(),
+            pytest.raises(
+                CatalogSemanticValidationError,
+                match="successor chain is gapped",
+            ),
         ):
             catalog_refinement_module.check_publication_atomicity_v1(connector)
-        connector.execute(
-            "INSERT INTO catalog_publication_generation_successors "
-            "(successor_generation, predecessor_generation) VALUES (1, 0)"
-        )
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_publication_generation_successors "
+                "(successor_generation, predecessor_generation) VALUES (1, 0)"
+            )
         with connector.transaction():
             result = VNextCleanupRepository.resume_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=generation_cycle,
                 now=clock(),
@@ -1776,7 +1953,8 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
         checked_root_forgery = False
         checked_query_bound = False
         for attempt in range(8):
-            checkpoint = connector.fetch_one(
+            checkpoint = inspect_one(
+                connector,
                 "SELECT phase, cursor_bytes FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s AND state = 'OPEN'",
                 (generation_cycle.cleanup_id,),
@@ -1785,7 +1963,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 phase = str(checkpoint[0])
                 has_cursor = bool(checkpoint[1])
                 observed.add((phase, has_cursor))
-                assert full_check(sqlite_config).state == "READY"
+                assert full_check(db_config).state == "READY"
                 if phase == "PG_EDGE" and has_cursor and not checked_query_bound:
                     original_fetch_all = connector.fetch_all
                     pg_reads: list[tuple[str, int]] = []
@@ -1799,10 +1977,13 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                             pg_reads.append((query, len(rows)))
                         return rows
 
-                    with patch.object(
-                        connector,
-                        "fetch_all",
-                        side_effect=record_pg_read,
+                    with (
+                        connector.read_transaction(),
+                        patch.object(
+                            connector,
+                            "fetch_all",
+                            side_effect=record_pg_read,
+                        ),
                     ):
                         catalog_refinement_module.check_publication_atomicity_v1(
                             connector
@@ -1812,28 +1993,33 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                     assert pg_reads[0][1] <= 256
                     checked_query_bound = True
                 if phase == "PG_ROOT" and not has_cursor and not checked_root_forgery:
-                    connector.execute(
-                        "DELETE FROM catalog_publication_generation_nodes "
-                        "WHERE generation = 0"
-                    )
-                    with pytest.raises(
-                        CatalogSemanticValidationError,
-                        match="generation nodes differ",
+                    with connector.transaction():
+                        connector.execute(
+                            "DELETE FROM catalog_publication_generation_nodes "
+                            "WHERE generation = 0"
+                        )
+                    with (
+                        connector.read_transaction(),
+                        pytest.raises(
+                            CatalogSemanticValidationError,
+                            match="generation nodes differ",
+                        ),
                     ):
                         catalog_refinement_module.check_publication_atomicity_v1(
                             connector
                         )
-                    connector.execute(
-                        "INSERT INTO catalog_publication_generation_nodes "
-                        "(generation) VALUES (0)"
-                    )
+                    with connector.transaction():
+                        connector.execute(
+                            "INSERT INTO catalog_publication_generation_nodes "
+                            "(generation) VALUES (0)"
+                        )
                     checked_root_forgery = True
             if result.cycle_complete:
                 break
             assert result.generation is not None
             with connector.transaction():
                 result = VNextCleanupRepository.advance(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=generation_cycle,
                     command=CleanupBatchCommand(
@@ -1850,15 +2036,17 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
             ("PG_ROOT", False),
             ("PG_ROOT", True),
         }
-        assert full_check(sqlite_config).state == "READY"
-        assert connector.fetch_all(
+        assert full_check(db_config).state == "READY"
+        assert inspect_all(
+            connector,
             "SELECT generation FROM catalog_publication_generation_nodes "
-            "ORDER BY generation"
+            "ORDER BY generation",
         ) == [(2,)]
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT successor_generation, predecessor_generation "
-                "FROM catalog_publication_generation_successors"
+                "FROM catalog_publication_generation_successors",
             )
             == []
         )
@@ -1869,17 +2057,17 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
 @pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
 def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     """A live READY audit accepts exact OPEN PCOM and PG crash authority."""
 
-    initialize_database(mariadb_config)
+    initialize_database(db_config)
     # These cleanup control checkpoints require two real revisions, but no
     # artifact bytes or multi-gallery selection. Keep their public pipeline
     # provenance while isolating the PCOM/PG authority from unrelated rendering.
     original = gallery(1001, pages=[], artists=[], language=None)
     source = MemorySource([original])
-    pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
+    pipeline = Pipeline(db_config, source, MemoryLibrary(source))
     policy = ingest_policy(artifacts_required=False)
     first, _ = pipeline.turn(policy=policy, drain=False)
     source.put(
@@ -1892,15 +2080,16 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
     second, _ = pipeline.turn(policy=policy, drain=False)
     assert second.source.build_id != first.source.build_id
     clock = takeover_clock()
-    connector = open_connector(mariadb_config)
+    connector = open_connector(db_config)
 
     def work() -> VNextUnitOfWork:
-        return VNextUnitOfWork(connector, backend="mariadb")
+        return VNextUnitOfWork(connector, backend=connector_backend(connector))
 
     try:
         with connector.read_transaction():
-            predecessor = connector.fetch_one(
-                "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1"
+            predecessor = inspect_one(
+                connector,
+                "SELECT receipt_id FROM catalog_publication_commits WHERE revision = 1",
             )
         assert len(predecessor) == 1
         predecessor_receipt = bytes(predecessor[0])
@@ -1932,14 +2121,16 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
         checked_open_pcom = False
         for attempt in range(40):
             with connector.read_transaction():
-                checkpoint = connector.fetch_one(
+                checkpoint = inspect_one(
+                    connector,
                     "SELECT phase, cursor_bytes FROM "
                     "operational_cleanup_checkpoints "
                     "WHERE cleanup_id = %s AND state = 'OPEN'",
                     (commit_cycle.cleanup_id,),
                 )
                 build_base_absent = (
-                    connector.fetch_one(
+                    inspect_one(
+                        connector,
                         "SELECT 1 FROM "
                         "catalog_source_build_base_publication_commits "
                         "WHERE build_id = %s",
@@ -1953,7 +2144,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
                 and bool(checkpoint[1])
                 and build_base_absent
             ):
-                assert full_check(mariadb_config).state == "READY"
+                assert full_check(db_config).state == "READY"
                 checked_open_pcom = True
             if result.cycle_complete:
                 break
@@ -1993,7 +2184,8 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
 
         for attempt in range(8):
             with connector.read_transaction():
-                checkpoint = connector.fetch_one(
+                checkpoint = inspect_one(
+                    connector,
                     "SELECT phase, cursor_bytes FROM "
                     "operational_cleanup_checkpoints "
                     "WHERE cleanup_id = %s AND state = 'OPEN'",
@@ -2004,7 +2196,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
                 and checkpoint[0] == "PG_EDGE"
                 and bool(checkpoint[1])
             ):
-                assert full_check(mariadb_config).state == "READY"
+                assert full_check(db_config).state == "READY"
                 break
             assert not result.cycle_complete
             assert result.generation is not None
@@ -2029,7 +2221,8 @@ def _generation_build(config: CoreConfig, generation: int) -> bytes | None:
     connector = open_connector(config)
     try:
         with connector.read_transaction():
-            row = connector.fetch_one(
+            row = inspect_one(
+                connector,
                 "SELECT build_id FROM operational_source_build_generations "
                 "WHERE generation = %s",
                 (generation,),
@@ -2047,14 +2240,14 @@ def _generation_build(config: CoreConfig, generation: int) -> bytes | None:
     ("publication.commit:LIBRARY_ACTIVATION", "publication.commit:FINALIZE"),
 )
 def test_receipt_scoped_recovery_publishes_before_observing_changed_source(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     label: str,
 ) -> None:
     """A new session finalizes the old immutable commit without recreating its
     filesystem snapshot or reserving its build, then uses that same generation
     to ingest the source that exists now."""
 
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     pipeline.turn()
     pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
     _abandon_turn_before(pipeline, label)
@@ -2099,10 +2292,10 @@ def test_receipt_scoped_recovery_publishes_before_observing_changed_source(
     ),
 )
 def test_receipt_scoped_recovery_replays_external_and_database_response_loss(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     lost_response: str,
 ) -> None:
-    pipeline = _sqlite_pipeline(sqlite_config)
+    pipeline = _native_pipeline(db_config)
     _abandon_turn_before(pipeline, "publication.commit:LIBRARY_ACTIVATION")
     clock = takeover_clock()
     facade = VNextIngestFacade(pipeline.config, clock=clock)
@@ -2311,19 +2504,22 @@ def _stale_build_facts(config: CoreConfig) -> dict[str, int]:
         with connector.read_transaction():
             return {
                 "working_builds": int(
-                    connector.fetch_one(
-                        "SELECT COUNT(*) FROM operational_source_working_builds"
+                    inspect_one(
+                        connector,
+                        "SELECT COUNT(*) FROM operational_source_working_builds",
                     )[0]
                 ),
                 "working_candidates": int(
-                    connector.fetch_one(
-                        "SELECT COUNT(*) FROM operational_catalog_working_candidates"
+                    inspect_one(
+                        connector,
+                        "SELECT COUNT(*) FROM operational_catalog_working_candidates",
                     )[0]
                 ),
                 "open_analyses": int(
-                    connector.fetch_one(
+                    inspect_one(
+                        connector,
                         "SELECT COUNT(*) FROM catalog_analysis_run_states "
-                        "WHERE state = 'OPEN'"
+                        "WHERE state = 'OPEN'",
                     )[0]
                 ),
             }
@@ -2354,8 +2550,9 @@ def test_spam_exclusion_flip_matches_a_fresh_ingest(pipeline: Pipeline) -> None:
     try:
         with connector.read_transaction():
             deltas = int(
-                connector.fetch_one(
-                    "SELECT COUNT(*) FROM catalog_analysis_exclusion_delta_changes"
+                inspect_one(
+                    connector,
+                    "SELECT COUNT(*) FROM catalog_analysis_exclusion_delta_changes",
                 )[0]
             )
     finally:
@@ -2370,6 +2567,9 @@ def test_spam_exclusion_flip_matches_a_fresh_ingest(pipeline: Pipeline) -> None:
 
 
 @pytest.mark.cleanup_acceptance
+@pytest.mark.backend_reference(
+    reason="Native compaction across depth sixteen is compared with an independent fresh SQLite ingest"
+)
 def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
     pipeline: Pipeline,
     tmp_path: Path,
@@ -2432,6 +2632,9 @@ def test_seventeen_incremental_revisions_compact_and_match_a_fresh_ingest(
 
 
 @pytest.mark.cleanup_acceptance
+@pytest.mark.backend_reference(
+    reason="Native policy compaction is compared with an independent fresh SQLite ingest and exact resource bytes"
+)
 def test_policy_compaction_releases_only_the_retired_chain_and_preserves_bytes(
     db_config: CoreConfig,
     tmp_path: Path,
@@ -2548,7 +2751,8 @@ def _policy_facts(config: CoreConfig) -> dict[str, Any]:
     connector = open_connector(config)
     try:
         with connector.read_transaction():
-            head = connector.fetch_one(
+            head = inspect_one(
+                connector,
                 "SELECT receipt.revision, run.build_id, run.policy_id, "
                 "build.manifest_policy_id, artifact.policy_component_sha256, "
                 "committed.display_title_policy_id, "
@@ -2569,24 +2773,28 @@ def _policy_facts(config: CoreConfig) -> dict[str, Any]:
                 "ON artifact.artifact_policy_id = committed.artifact_policy_id "
                 "JOIN catalog_display_title_policies AS display "
                 "ON display.display_title_policy_id = "
-                "committed.display_title_policy_id"
+                "committed.display_title_policy_id",
             )
-            analyses = connector.fetch_all(
+            analyses = inspect_all(
+                connector,
                 "SELECT build_id, policy_id, state FROM catalog_analysis_runs "
-                "ORDER BY started_at, analysis_id"
+                "ORDER BY started_at, analysis_id",
             )
-            builds = connector.fetch_all(
-                "SELECT build_id, state FROM catalog_source_builds ORDER BY created_at"
+            builds = inspect_all(
+                connector,
+                "SELECT build_id, state FROM catalog_source_builds ORDER BY created_at",
             )
-            commit_receipts = connector.fetch_all(
+            commit_receipts = inspect_all(
+                connector,
                 "SELECT receipt_id FROM catalog_publication_commits "
-                "ORDER BY committed_at, receipt_id"
+                "ORDER BY committed_at, receipt_id",
             )
-            working = connector.fetch_one(
-                "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+            working = inspect_one(
+                connector,
+                "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
             )
             counts = {
-                name: int(connector.fetch_one(f"SELECT COUNT(*) FROM {table}")[0])
+                name: int(inspect_one(connector, f"SELECT COUNT(*) FROM {table}")[0])
                 for name, table in (
                     ("candidates", "catalog_publication_candidates"),
                     ("commits", "catalog_publication_commits"),
@@ -2595,18 +2803,21 @@ def _policy_facts(config: CoreConfig) -> dict[str, Any]:
                 )
             }
             protected = int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM catalog_prepared_artifacts "
-                    "WHERE state IN ('PENDING', 'PREPARED')"
+                    "WHERE state IN ('PENDING', 'PREPARED')",
                 )[0]
             )
-            reserved = connector.fetch_one(
+            reserved = inspect_one(
+                connector,
                 "SELECT COALESCE(MAX(reserved_revision), 0) "
-                "FROM catalog_publication_candidates"
+                "FROM catalog_publication_candidates",
             )
-            preparations = connector.fetch_all(
+            preparations = inspect_all(
+                connector,
                 "SELECT state, COUNT(*) FROM operational_operational_preparations "
-                "GROUP BY state ORDER BY state"
+                "GROUP BY state ORDER BY state",
             )
     finally:
         connector.close()
@@ -2661,15 +2872,15 @@ def _maintenance_outcome(pipeline: Pipeline) -> VNextCurrentOnlyMaintenanceOutco
 @pytest.mark.mariadb_smoke
 @pytest.mark.merge_smoke
 def test_live_mariadb_facade_releases_abandoned_artifacts_then_cleans_candidate(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     """The public facade crosses the real MariaDB/external-release boundary."""
 
-    initialize_database(mariadb_config)
+    initialize_database(db_config)
     source = MemorySource([gallery(1001, pages=[b"p0-a", b"p1-a"], artists=["alice"])])
-    pipeline = Pipeline(mariadb_config, source, MemoryLibrary(source))
+    pipeline = Pipeline(db_config, source, MemoryLibrary(source))
     _abandon_turn_before(pipeline, "publication.commit:VALIDATE_PREPARED")
-    crashed = _policy_facts(mariadb_config)
+    crashed = _policy_facts(db_config)
     assert crashed["protected"] > 0
 
     pipeline.turn(
@@ -2681,7 +2892,7 @@ def test_live_mariadb_facade_releases_abandoned_artifacts_then_cleans_candidate(
     release_calls_before = len(pipeline.library.release_calls)
 
     assert _maintenance_outcome(pipeline) is VNextCurrentOnlyMaintenanceOutcome.DONE
-    assert _policy_facts(mariadb_config)["protected"] == 0
+    assert _policy_facts(db_config)["protected"] == 0
     assert len(pipeline.library.release_calls) > release_calls_before
     assert library_view(pipeline.library) == current_before_release
     pipeline.ready()
@@ -2849,22 +3060,25 @@ def _seed_superseded_preparations_of_the_working_build(
     try:
         with connector.read_transaction():
             build = bytes(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT build_id FROM operational_source_working_builds "
-                    "WHERE slot = 1"
+                    "WHERE slot = 1",
                 )[0]
             )
             policy = int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT operational_policy_id FROM operational_operational_policys "
-                    "ORDER BY operational_policy_id LIMIT 1"
+                    "ORDER BY operational_policy_id LIMIT 1",
                 )[0]
             )
             head = int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT current_generation "
                     "FROM operational_deletion_request_generation_heads "
-                    "WHERE singleton_id = 1"
+                    "WHERE singleton_id = 1",
                 )[0]
             )
         assert head == count
@@ -2895,7 +3109,8 @@ def _preparations_of(config: CoreConfig, build_id: bytes) -> int:
     try:
         with connector.read_transaction():
             return int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM operational_operational_preparations "
                     "WHERE build_id = %s",
                     (build_id,),
@@ -2972,9 +3187,10 @@ def test_retiring_build_preparations_drain_through_the_public_facade(
     """A retiring build's attempts drain through the public source protocol:
     a build sealed by a turn that died mid-analysis, then loaded with more
     than one page of attempts, is retired by a turn that scanned a changed
-    snapshot through exactly ceil(count/128) bounded ROOT_HANDOFF commits, the
-    last of which also reserves the new build; the new snapshot publishes and
-    cleanup reclaims the retired build's attempts under READY."""
+    snapshot through one collection root handoff followed by exactly
+    ceil(count/128) bounded build handoff commits. The last build handoff also
+    reserves the new build; the new snapshot publishes and cleanup reclaims
+    the retired build's attempts under READY."""
 
     pipeline.turn()
     pipeline.source.put(gallery(1006, pages=[b"p0-f"], artists=["frank"]))
@@ -2989,19 +3205,34 @@ def test_retiring_build_preparations_drain_through_the_public_facade(
     labels: list[str] = []
     facade = VNextIngestFacade(pipeline.config, clock=takeover_clock())
     try:
-        receipts = run_ingest_turn(
-            facade,
-            source=pipeline.source,
-            library=pipeline.library,
-            boundary=labels.append,
-        )
+        with (
+            patch.object(
+                SourceCollectionRepository,
+                "handoff_root",
+                wraps=SourceCollectionRepository.handoff_root,
+            ) as collection_handoffs,
+            patch.object(
+                SourceBuildRepository,
+                "handoff_root_or_drain",
+                wraps=SourceBuildRepository.handoff_root_or_drain,
+            ) as build_handoffs,
+        ):
+            receipts = run_ingest_turn(
+                facade,
+                source=pipeline.source,
+                library=pipeline.library,
+                boundary=labels.append,
+            )
         drain_maintenance(facade)
     finally:
         facade.close()
-    # ceil(count / 128) handoff commits: each non-final page is its own
-    # re-issued ROOT_HANDOFF; the final page drains the build and the same
-    # transaction releases its roots and reserves the new build.
-    assert labels.count("source.commit:ROOT_HANDOFF") == -(-count // 128)
+    # Both protocols share the action label. Preserve the original build-page
+    # bound, independently accounting for the collection's one root handoff.
+    assert collection_handoffs.call_count == 1
+    assert build_handoffs.call_count == -(-count // 128)
+    assert labels.count("source.commit:ROOT_HANDOFF") == (
+        collection_handoffs.call_count + build_handoffs.call_count
+    )
     assert receipts.source.build_id != stale_build
     assert _stale_build_facts(pipeline.config) == {
         "working_builds": 0,

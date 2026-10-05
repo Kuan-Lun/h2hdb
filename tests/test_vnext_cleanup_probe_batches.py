@@ -8,9 +8,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 import h2hdb.vnext_cleanup_repository as cleanup
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
     CleanupBatchCommand,
@@ -61,12 +69,15 @@ def _query_roots(
 
 @pytest.mark.parametrize("root_count", [1, 256])
 def test_all_terminal_plans_execute_below_a_999_variable_connection_limit(
-    tmp_path: Path, root_count: int
+    database_factory: DatabaseFactory, tmp_path: Path, root_count: int
 ) -> None:
     with closing(
-        open_generated_sqlite_database(tmp_path / "probe-budget.sqlite3")
+        open_generated_database(
+            database_factory.config(str(tmp_path / "probe-budget.sqlite3"))
+        )
     ) as connector:
-        connector.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        if isinstance(connector, SQLiteConnector):
+            connector.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
         for kind, plan in cleanup._STATIC_PLANS.items():
             roots = _query_roots(plan, root_count)
             predicate, bindings = cleanup._frozen_root_predicate(plan, roots)
@@ -91,25 +102,34 @@ def test_all_terminal_plans_execute_below_a_999_variable_connection_limit(
                 assert len(parameters) <= 900
                 assert query.count(" LIMIT 1)") <= 8
                 assert len(query.encode("utf-8")) < 64 * 1024
-                assert connector.fetch_all("EXPLAIN QUERY PLAN " + query, parameters)
-                assert connector.fetch_one(query, parameters) == ()
+                assert inspect_all(
+                    connector,
+                    (
+                        "EXPLAIN QUERY PLAN "
+                        if connector_backend(connector) == "sqlite"
+                        else "EXPLAIN "
+                    )
+                    + query,
+                    parameters,
+                )
+                assert inspect_one(connector, query, parameters) == ()
 
 
-def _claim(connector: SQLiteConnector) -> GateLease:
+def _claim(connector: SQLConnector) -> GateLease:
     with connector.transaction():
         return MaintenanceGateRepository.claim_exclusive(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=1,
             lease_duration=100_000,
         )
 
 
 def _advance(
-    connector: SQLiteConnector, gate: GateLease, cycle: CleanupCycle, *, now: int
+    connector: SQLConnector, gate: GateLease, cycle: CleanupCycle, *, now: int
 ) -> None:
     with connector.transaction():
         VNextCleanupRepository.advance(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
             command=CleanupBatchCommand(now.to_bytes(32, "big"), 1),
@@ -127,6 +147,7 @@ def _advance(
     ids=["first-overlay-family", "middle-overlay-family", "last-overlay-family"],
 )
 def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     table: str,
@@ -135,11 +156,13 @@ def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
 ) -> None:
     analysis_id = b"\x01" + b"a" * 15
     with closing(
-        open_generated_sqlite_database(tmp_path / "hidden-family.sqlite3")
+        open_generated_database(
+            database_factory.config(str(tmp_path / "hidden-family.sqlite3"))
+        )
     ) as connector:
         # Fault fixture isolates analysis cleanup from unrelated parent planes;
         # the public repository still freezes and seals its own cycle authority.
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "INSERT INTO catalog_analysis_run_descriptor "
             "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
@@ -155,11 +178,11 @@ def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
             f"INSERT INTO {table} (analysis_id, {key_column}) VALUES (%s, %s)",
             (analysis_id, key),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         gate = _claim(connector)
         with connector.transaction():
             cycle = VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.ANALYSIS_RUN,
                 shard_no=1,
@@ -174,7 +197,7 @@ def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
             "UPDATE catalog_analysis_run_states SET state = 'OPEN' WHERE analysis_id = %s",
             (analysis_id,),
         )
-        before = connector.fetch_all("SELECT * FROM operational_cleanup_checkpoints")
+        before = inspect_all(connector, "SELECT * FROM operational_cleanup_checkpoints")
         probes: list[str] = []
         original = connector.fetch_one
 
@@ -189,11 +212,13 @@ def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
         assert probes
         assert any(" OR EXISTS (" in sql for sql in probes)
         assert (
-            connector.fetch_all("SELECT * FROM operational_cleanup_checkpoints")
+            inspect_all(connector, "SELECT * FROM operational_cleanup_checkpoints")
             == before
         )
-        assert connector.fetch_one(
-            f"SELECT {key_column} FROM {table} WHERE analysis_id = %s", (analysis_id,)
+        assert inspect_one(
+            connector,
+            f"SELECT {key_column} FROM {table} WHERE analysis_id = %s",
+            (analysis_id,),
         ) == (key,)
         connector.execute(
             "UPDATE catalog_analysis_run_states SET state = 'ABANDONED' "
@@ -202,7 +227,8 @@ def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
         )
         _advance(connector, gate, cycle, now=6)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 f"SELECT {key_column} FROM {table} WHERE analysis_id = %s",
                 (analysis_id,),
             )

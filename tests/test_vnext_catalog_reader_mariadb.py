@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from itertools import batched, groupby
-from typing import Any
 from unicodedata import unidata_version
 
 import pytest
 from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb import (
     CatalogArtifact,
@@ -21,16 +27,14 @@ from h2hdb import (
     CatalogSubjectFilter,
     CatalogTagFilter,
     CatalogTimestampRange,
-    CoreConfig,
     StorageObjectDescriptor,
     StorageObjectKey,
     VNextCatalogFacade,
     catalog_refinement,
 )
 from h2hdb import vnext_identity as identity
-from h2hdb._generated_vnext_schema import ARTIFACT
-from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.repository import RepositoryContext
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_catalog_reader_repository import (
     VNextCatalogReaderRepository,
     VNextCatalogReadError,
@@ -48,28 +52,7 @@ from h2hdb.vnext_publication_family import (
 )
 
 
-def _generated_mariadb(config: CoreConfig) -> MariaDBConnector:
-    database = config.database
-    connector = MariaDBConnector(
-        host=database.host,
-        port=database.port,
-        user=database.user,
-        password=database.password,
-        database=database.database,
-    )
-    connector.connect()
-    payload: Any = ARTIFACT["backends"]
-    payload = payload["mariadb"]
-    for _slice_id, statements in payload["slices"]:
-        for _statement_id, _kind, _name, sql in statements:
-            connector.execute(sql)
-    for sql, seeds in groupby(payload["bootstrap_seeds"], key=lambda seed: seed["sql"]):
-        for batch in batched(seeds, 128, strict=False):
-            connector.execute_many(sql, [seed["parameters"] for seed in batch])
-    return connector
-
-
-def _canonical(connector: MariaDBConnector, domain: str, payload: bytes) -> bytes:
+def _canonical(connector: SQLConnector, domain: str, payload: bytes) -> bytes:
     value_sha256 = identity.canonical_value_digest(domain, payload)
     entries = () if not payload else (identity.CanonicalValueChunk(0, payload),)
     page = identity.CanonicalValuePage(
@@ -94,9 +77,10 @@ def _canonical(connector: MariaDBConnector, domain: str, payload: bytes) -> byte
 
 
 def test_mariadb_ready_resource_queries_compile_without_reserved_aliases(
-    mariadb_config: CoreConfig,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = _generated_mariadb(mariadb_config)
+    config = database_factory.config()
+    connector = open_generated_database(config)
     publication_key = identity.publication_key(1)
     try:
         with connector.read_transaction():
@@ -131,9 +115,10 @@ def test_mariadb_ready_resource_queries_compile_without_reserved_aliases(
 
 
 def test_mariadb_selected_cte_preserves_binary_publication_keys(
-    mariadb_config: CoreConfig,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = _generated_mariadb(mariadb_config)
+    config = database_factory.config()
+    connector = open_generated_database(config)
     publication_key = b"\x80\xff" + b"publication-key-binary-value!".ljust(30, b"!")
     artifact_sha256 = b"\x81" + b"artifact-digest-value".ljust(31, b"!")
     semantics_sha256 = b"\x82" + b"semantics-digest-value".ljust(31, b"!")
@@ -146,7 +131,7 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
         )
     )
     try:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_artifact_blobs "
@@ -167,9 +152,9 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
                     b"application/vnd.comicbook+zip",
                 ),
             )
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
 
-        reader = VNextCatalogReaderRepository(backend="mariadb")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             facts = reader._artifact_facts_for_publications(
                 connector,
@@ -190,9 +175,10 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
 
 
 def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
-    mariadb_config: CoreConfig,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = _generated_mariadb(mariadb_config)
+    config = database_factory.config()
+    connector = open_generated_database(config)
     gid = 17
     publication = CatalogPublicationFamily(
         revision=1,
@@ -220,7 +206,7 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
         upload_time=9,
     )
     try:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_gallery_source_name_accesses "
@@ -240,40 +226,40 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
             assert ensure_catalog_publication_family(
                 connector,
                 publication,
-                backend="mariadb",
+                backend=connector_backend(connector),
             ) == (publication, True)
             assert ensure_catalog_publication_download_time_family(
                 connector,
                 download_time,
-                backend="mariadb",
+                backend=connector_backend(connector),
             ) == (download_time, True)
             assert ensure_catalog_publication_upload_time_family(
-                connector, upload_time, backend="mariadb"
+                connector, upload_time, backend=connector_backend(connector)
             ) == (upload_time, True)
             assert ensure_catalog_publication_title_family(
                 connector,
                 title,
-                backend="mariadb",
+                backend=connector_backend(connector),
             ) == (title, False)
 
         with connector.transaction():
             assert ensure_catalog_publication_family(
                 connector,
                 publication,
-                backend="mariadb",
+                backend=connector_backend(connector),
             ) == (publication, False)
             assert ensure_catalog_publication_download_time_family(
                 connector,
                 download_time,
-                backend="mariadb",
+                backend=connector_backend(connector),
             ) == (download_time, False)
             assert ensure_catalog_publication_upload_time_family(
-                connector, upload_time, backend="mariadb"
+                connector, upload_time, backend=connector_backend(connector)
             ) == (upload_time, False)
             assert ensure_catalog_publication_title_family(
                 connector,
                 title,
-                backend="mariadb",
+                backend=connector_backend(connector),
             ) == (title, False)
 
         changed = CatalogPublicationFamily(
@@ -295,7 +281,7 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
             ensure_catalog_publication_family(
                 connector,
                 changed,
-                backend="mariadb",
+                backend=connector_backend(connector),
             )
 
         assert connector.fetch_one(
@@ -319,16 +305,17 @@ def test_mariadb_catalog_publication_rows_are_atomic_and_exact_replayable(
             (title.revision, title.publication_key),
         ) == (title.source_title_sha256, title.source_gallery_name)
     finally:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
         connector.close()
 
 
 @pytest.mark.mariadb_smoke
 def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
-    mariadb_config: CoreConfig,
+    database_factory: DatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_mariadb(mariadb_config)
+    config = database_factory.config()
+    connector = open_generated_database(config)
     gid = 31
     publication_key = identity.publication_key(gid)
     source_title = _canonical(
@@ -357,7 +344,7 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
     thumbnail_key = StorageObjectKey("mariadb-reader-v2", ("thumbnail", "31"))
 
     try:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_source_revision_descriptors "
@@ -413,7 +400,7 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                     modified_at=3_000_000,
                     source_title_sha256=source_title,
                 ),
-                backend="mariadb",
+                backend=connector_backend(connector),
             )
             ensure_catalog_publication_download_time_family(
                 connector,
@@ -422,14 +409,14 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                     publication_key=publication_key,
                     download_time=2_500_000,
                 ),
-                backend="mariadb",
+                backend=connector_backend(connector),
             )
             ensure_catalog_publication_upload_time_family(
                 connector,
                 CatalogPublicationUploadTimeFamily(
                     revision=1, publication_key=publication_key, upload_time=2_000_000
                 ),
-                backend="mariadb",
+                backend=connector_backend(connector),
             )
             ensure_catalog_publication_title_family(
                 connector,
@@ -439,7 +426,7 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                     source_title_sha256=source_title,
                     source_gallery_name=b"gallery-31",
                 ),
-                backend="mariadb",
+                backend=connector_backend(connector),
             )
             connector.execute(
                 "INSERT INTO catalog_publication_order "
@@ -613,9 +600,9 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 "INSERT INTO catalog_discovery_seals (revision, policy_id) "
                 "VALUES (1, 1)"
             )
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
 
-        reader = VNextCatalogReaderRepository(backend="mariadb")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         uploaded_at = datetime(1970, 1, 1, 0, 0, 2, tzinfo=UTC)
         downloaded_at = uploaded_at + timedelta(microseconds=500_000)
         query = CatalogDiscoveryQuery(
@@ -697,36 +684,41 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
 
         stable_events: list[tuple[str, int]] = []
 
-        class TracedMariaDBConnector(MariaDBConnector):
-            def __init__(self, *, events: list[tuple[str, int]]) -> None:
-                database = mariadb_config.database
-                super().__init__(
-                    host=database.host,
-                    port=database.port,
-                    user=database.user,
-                    password=database.password,
-                    database=database.database,
-                )
-                self._events = events
-                self._read_count = 0
+        def traced_connector(
+            events: list[tuple[str, int]],
+            before_second_read: Callable[[], None] | None = None,
+        ) -> SQLConnector:
+            native = database_connector(config)
+            original_connect = native.connect
+            original_begin_read = native.begin_read
+            original_close = native.close
+            read_count = 0
 
-            def connect(self) -> None:
-                super().connect()
-                self._events.append(("connect", id(self)))
+            def connect() -> None:
+                original_connect()
+                events.append(("connect", id(native)))
 
-            def begin_read(self) -> None:
-                self._read_count += 1
-                self._events.append((f"begin-read-{self._read_count}", id(self)))
-                super().begin_read()
+            def begin_read() -> None:
+                nonlocal read_count
+                if read_count == 1 and before_second_read is not None:
+                    before_second_read()
+                read_count += 1
+                events.append((f"begin-read-{read_count}", id(native)))
+                original_begin_read()
 
-            def close(self) -> None:
-                self._events.append(("close", id(self)))
-                super().close()
+            def close() -> None:
+                events.append(("close", id(native)))
+                original_close()
 
-        base_context = RepositoryContext.from_config(mariadb_config)
+            monkeypatch.setattr(native, "connect", connect)
+            monkeypatch.setattr(native, "begin_read", begin_read)
+            monkeypatch.setattr(native, "close", close)
+            return native
+
+        base_context = RepositoryContext.from_config(config)
         stable_context = replace(
             base_context,
-            SQLConnector=lambda: TracedMariaDBConnector(events=stable_events),
+            SQLConnector=lambda: traced_connector(stable_events),
         )
         monkeypatch.setattr(
             RepositoryContext,
@@ -734,9 +726,9 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
             classmethod(lambda cls, value: stable_context),
         )
 
-        stable_bundle = VNextCatalogFacade(
-            mariadb_config
-        ).discover_publications_with_facets(limit=1, facet_limit=1)
+        stable_bundle = VNextCatalogFacade(config).discover_publications_with_facets(
+            limit=1, facet_limit=1
+        )
 
         assert len(stable_bundle.page.publications) == 1
         assert [event for event, _connector_id in stable_events] == [
@@ -747,7 +739,7 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         ]
         assert len({connector_id for _event, connector_id in stable_events}) == 1
 
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_source_revision_descriptors "
@@ -768,23 +760,20 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
                 "VALUES (%s, %s, 2, 2, 2, %s, 1, 1, 1, 0, 0, 1, 0, 4000000)",
                 (b"s" * 16, b"d" * 16, b"q" * 16),
             )
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
 
         race_events: list[tuple[str, int]] = []
 
-        class RacingMariaDBConnector(TracedMariaDBConnector):
-            def begin_read(self) -> None:
-                if self._read_count == 1:
-                    connector.execute(
-                        "UPDATE catalog_publication_commit_head_receipts "
-                        "SET receipt_id = %s WHERE channel = %s",
-                        (b"s" * 16, b"default"),
-                    )
-                super().begin_read()
+        def advance_head() -> None:
+            connector.execute(
+                "UPDATE catalog_publication_commit_head_receipts "
+                "SET receipt_id = %s WHERE channel = %s",
+                (b"s" * 16, b"default"),
+            )
 
         race_context = replace(
             base_context,
-            SQLConnector=lambda: RacingMariaDBConnector(events=race_events),
+            SQLConnector=lambda: traced_connector(race_events, advance_head),
         )
         monkeypatch.setattr(
             RepositoryContext,
@@ -793,7 +782,7 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         )
 
         with pytest.raises(VNextCatalogReadError, match="head advanced"):
-            VNextCatalogFacade(mariadb_config).discover_publications_with_facets(
+            VNextCatalogFacade(config).discover_publications_with_facets(
                 limit=1,
                 facet_limit=1,
             )
@@ -806,15 +795,16 @@ def test_mariadb_discovery_facets_and_presentation_hydrate_real_rows(
         ]
         assert len({connector_id for _event, connector_id in race_events}) == 1
     finally:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
         connector.close()
 
 
 def test_mariadb_recent_artifact_window_executes_dynamic_download_order(
-    mariadb_config: CoreConfig,
+    database_factory: DatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_mariadb(mariadb_config)
+    config = database_factory.config()
+    connector = open_generated_database(config)
     gid = 23
     publication_key = identity.publication_key(gid)
     occurrence_sha256 = b"o" * 32
@@ -853,7 +843,7 @@ def test_mariadb_recent_artifact_window_executes_dynamic_download_order(
         ),
     )
     try:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_source_revision_descriptors "
@@ -935,9 +925,9 @@ def test_mariadb_recent_artifact_window_executes_dynamic_download_order(
                     b"application/vnd.comicbook+zip",
                 ),
             )
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
 
-        reader = VNextCatalogReaderRepository(backend="mariadb")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         monkeypatch.setattr(
             reader,
             "_hydrate_publications",
@@ -953,5 +943,5 @@ def test_mariadb_recent_artifact_window_executes_dynamic_download_order(
         assert window.order is CatalogRecentOrder.DOWNLOADED
         assert window.publications == (publication,)
     finally:
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
+        set_foreign_key_checks(connector, enabled=True)
         connector.close()

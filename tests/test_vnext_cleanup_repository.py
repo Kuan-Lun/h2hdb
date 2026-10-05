@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from mysql.connector.errors import DatabaseError as MariaDBDatabaseError
 from vnext_analysis_fixtures import seed_analysis_run
 from vnext_canonical_value_fixtures import (
     seed_canonical_allocation,
@@ -29,7 +30,6 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_bounds,
     seed_gallery_page_descriptor,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_gallery_manifest,
     seed_sealed_source_build,
@@ -41,13 +41,26 @@ from vnext_publication_fixtures import (
     seed_publication_commit,
     seed_publication_finalization,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_foreign_key_integrity,
+    atomic_fixture,
+    connector_backend,
+    fixture_transaction,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_check_constraints,
+    set_foreign_key_checks,
+    trace_statements,
+)
 
 import h2hdb.operational_refinement as operational_refinement_module
 import h2hdb.vnext_cleanup_repository as cleanup_module
+from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb.domain import CurrentOnlyCleanupTerminalState
-from h2hdb.sql_connector import DatabaseDuplicateKeyError
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_cleanup_repository import (
     CatalogPublicationMaintenanceState,
     CleanupBatchCommand,
@@ -69,11 +82,11 @@ _ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
 _ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
-def _database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
-def _exclusive(connector: SQLiteConnector, *, token: bytes = b"x" * 16) -> GateLease:
+def _exclusive(connector: SQLConnector, *, token: bytes = b"x" * 16) -> GateLease:
     with (
         connector.transaction(),
         patch(
@@ -82,14 +95,14 @@ def _exclusive(connector: SQLiteConnector, *, token: bytes = b"x" * 16) -> GateL
         ),
     ):
         return MaintenanceGateRepository.claim_exclusive(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=1,
             lease_duration=100_000,
         )
 
 
 def _begin(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     kind: CleanupTargetKind,
     shard: int,
@@ -99,7 +112,7 @@ def _begin(
 ) -> CleanupCycle:
     with connector.transaction():
         return VNextCleanupRepository.begin_cycle(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             target_kind=kind,
             shard_no=shard,
@@ -110,7 +123,7 @@ def _begin(
 
 
 def _advance(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     cycle: CleanupCycle,
     generation: int,
@@ -120,7 +133,7 @@ def _advance(
 ) -> CleanupBatchResult:
     with connector.transaction():
         return VNextCleanupRepository.advance(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
             command=CleanupBatchCommand(batch_key, generation),
@@ -129,7 +142,7 @@ def _advance(
 
 
 def _drain(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     cycle: CleanupCycle,
     *,
@@ -142,7 +155,7 @@ def _drain(
         if current_only:
             with connector.transaction():
                 batch = VNextCleanupRepository.advance_current_only_cycle(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
                     now=now + attempt,
@@ -168,21 +181,21 @@ def _drain(
 
 
 def _fixture_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     statements: list[tuple[str, tuple[object, ...]]],
 ) -> None:
     """Install isolated cleanup fixtures without fabricating all parent planes."""
 
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
         for sql, parameters in statements:
             connector.execute(sql, parameters)
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
 def _seed_terminal_retirement_authority(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     staging_id: bytes,
     build_id: bytes,
@@ -195,7 +208,8 @@ def _seed_terminal_retirement_authority(
     """Seed the exact durable facts generic staging cleanup must revalidate."""
 
     seed_manifest_policy(connector)
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
         (build_id,),
     ):
@@ -221,7 +235,8 @@ def _seed_terminal_retirement_authority(
         for observation_id in dict.fromkeys(
             (provisional_observation_id, final_observation_id)
         )
-        if not connector.fetch_one(
+        if not inspect_one(
+            connector,
             "SELECT 1 FROM catalog_gallery_observation_allocations "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, observation_id),
@@ -316,7 +331,8 @@ def _seed_terminal_retirement_authority(
         ),
         computed_at=1,
     )
-    link = connector.fetch_one(
+    link = inspect_one(
+        connector,
         "SELECT observation_id FROM catalog_source_build_galleries "
         "WHERE build_id = %s AND gallery_id = %s",
         (build_id, gallery_id),
@@ -329,7 +345,8 @@ def _seed_terminal_retirement_authority(
         )
     elif link != (final_observation_id,):
         raise AssertionError("terminal retirement fixture link differs")
-    request_count = connector.fetch_one(
+    request_count = inspect_one(
+        connector,
         "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests "
         "WHERE staging_id = %s",
         (staging_id,),
@@ -346,7 +363,7 @@ def _seed_terminal_retirement_authority(
 
 
 def _seed_publication_commit_cleanup_history(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     finalize_replacement: bool = True,
     additional_old_receipt: bytes | None = None,
@@ -516,42 +533,43 @@ def _seed_publication_commit_cleanup_history(
 
 
 def _seed_finalized_cleanup_publication_commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     receipt_id: bytes,
     candidate_id: bytes,
     source_revision: int = 1,
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
-        seed_publication_commit(
-            connector,
-            receipt_id=receipt_id,
-            candidate_id=candidate_id,
-            revision=source_revision,
-            source_revision=source_revision,
-            generation=source_revision,
-            preparation_id=b"p" * 16,
-            operational_policy_id=1,
-            artifact_policy_id=1,
-            display_title_policy_id=1,
-            new_galleries=0,
-            changed_galleries=0,
-            removed_galleries=0,
-            duplicate_losers=0,
-            committed_at=1,
-        )
-        connector.execute(
-            "INSERT INTO catalog_publication_commit_finalizations "
-            "(receipt_id) VALUES (%s)",
-            (receipt_id,),
-        )
+        with fixture_transaction(connector):
+            seed_publication_commit(
+                connector,
+                receipt_id=receipt_id,
+                candidate_id=candidate_id,
+                revision=source_revision,
+                source_revision=source_revision,
+                generation=source_revision,
+                preparation_id=b"p" * 16,
+                operational_policy_id=1,
+                artifact_policy_id=1,
+                display_title_policy_id=1,
+                new_galleries=0,
+                changed_galleries=0,
+                removed_galleries=0,
+                duplicate_losers=0,
+                committed_at=1,
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_commit_finalizations "
+                "(receipt_id) VALUES (%s)",
+                (receipt_id,),
+            )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
 def _seed_publication_commit_source_build_base(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     base_receipt: bytes,
     handoff_receipt: bytes,
@@ -561,7 +579,8 @@ def _seed_publication_commit_source_build_base(
     published_analysis_index: int | None = 0,
     working: bool = False,
 ) -> tuple[bytes, tuple[bytes, ...]]:
-    handoff = connector.fetch_one(
+    handoff = inspect_one(
+        connector,
         "SELECT source_revision FROM catalog_publication_commits WHERE receipt_id = %s",
         (handoff_receipt,),
     )
@@ -726,7 +745,7 @@ _CATALOG_PUBLICATION_PAYLOAD_COUNTS.update(
 
 
 def _finalize_publication_receipt(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     receipt_id: bytes,
     cursor: bytes,
@@ -743,7 +762,7 @@ def _finalize_publication_receipt(
 
 
 def _seed_catalog_publication_cleanup_fixture(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     finalize_current: bool = True,
 ) -> tuple[bytes, bytes, bytes]:
@@ -947,47 +966,48 @@ def _seed_catalog_publication_cleanup_fixture(
             )
         )
     _fixture_rows(connector, statements)
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
-        for receipt_id, revision in ((old_receipt, 1), (current_receipt, 2)):
-            seed_publication_commit(
-                connector,
-                receipt_id=receipt_id,
-                candidate_id=bytes((96 + revision,)) * 16,
-                revision=revision,
-                source_revision=revision,
-                generation=revision,
-                preparation_id=bytes((112 + revision,)) * 16,
-                operational_policy_id=1,
-                artifact_policy_id=1,
-                display_title_policy_id=1,
-                new_galleries=1,
-                changed_galleries=0,
-                removed_galleries=0,
-                duplicate_losers=0,
-                committed_at=revision,
-                channel=None,
-            )
-            if revision == 1 or finalize_current:
-                _finalize_publication_receipt(
+        with fixture_transaction(connector):
+            for receipt_id, revision in ((old_receipt, 1), (current_receipt, 2)):
+                seed_publication_commit(
                     connector,
                     receipt_id=receipt_id,
-                    cursor=publication_key,
-                    processed_count=1,
-                    finalized_at=10 + revision,
+                    candidate_id=bytes((96 + revision,)) * 16,
+                    revision=revision,
+                    source_revision=revision,
+                    generation=revision,
+                    preparation_id=bytes((112 + revision,)) * 16,
+                    operational_policy_id=1,
+                    artifact_policy_id=1,
+                    display_title_policy_id=1,
+                    new_galleries=1,
+                    changed_galleries=0,
+                    removed_galleries=0,
+                    duplicate_losers=0,
+                    committed_at=revision,
+                    channel=None,
                 )
-        connector.execute(
-            "INSERT INTO catalog_publication_commit_head_receipts "
-            "(channel, receipt_id) VALUES (%s, %s)",
-            (b"default", current_receipt),
-        )
+                if revision == 1 or finalize_current:
+                    _finalize_publication_receipt(
+                        connector,
+                        receipt_id=receipt_id,
+                        cursor=publication_key,
+                        processed_count=1,
+                        finalized_at=10 + revision,
+                    )
+            connector.execute(
+                "INSERT INTO catalog_publication_commit_head_receipts "
+                "(channel, receipt_id) VALUES (%s, %s)",
+                (b"default", current_receipt),
+            )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
     return publication_key, old_receipt, current_receipt
 
 
 def _seed_analysis_overlay_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     analysis_id: bytes,
 ) -> None:
     file_sha256 = b"f" * 32
@@ -1110,11 +1130,12 @@ def _seed_analysis_overlay_rows(
 
 
 def _analysis_overlay_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     analysis_id: bytes,
 ) -> tuple[tuple[object, ...], ...]:
     return tuple(
-        connector.fetch_one(
+        inspect_one(
+            connector,
             f"SELECT COUNT(*) FROM {table} WHERE analysis_id = %s",
             (analysis_id,),
         )
@@ -1127,8 +1148,9 @@ _GALLERY_PAGE_DELETE_PHASE_BY_TABLE = {
 }
 
 
+@atomic_fixture
 def _seed_cleanup_gallery_page(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     parent: bytes,
     child: bytes,
@@ -1163,7 +1185,7 @@ def _seed_cleanup_gallery_page(
 
 
 def _gallery_page_group_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     parent: bytes,
     tables: tuple[str, ...],
@@ -1172,7 +1194,8 @@ def _gallery_page_group_rows(
     for table in tables:
         key = "parent_sha256" if table.endswith("_children") else "page_sha256"
         rows.append(
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 f"SELECT * FROM {table} WHERE {key} = %s",
                 (parent,),
             )
@@ -1180,8 +1203,9 @@ def _gallery_page_group_rows(
     return tuple(rows)
 
 
+@atomic_fixture
 def _seed_minimal_canonical_value(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     value_sha256: bytes,
     page_sha256: bytes,
@@ -1198,8 +1222,9 @@ def _seed_minimal_canonical_value(
     )
 
 
+@atomic_fixture
 def _seed_source_build_scope(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     discriminator: int,
 ) -> bytes:
@@ -1217,8 +1242,9 @@ def _seed_source_build_scope(
     ).scope_key
 
 
+@atomic_fixture
 def _seed_cleanup_sealed_source_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     scope_key: bytes,
@@ -1246,8 +1272,9 @@ def _seed_cleanup_sealed_source_build(
     )
 
 
+@atomic_fixture
 def _seed_abandoned_analysis_for_cleanup(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     discriminator: int,
 ) -> bytes:
@@ -1279,7 +1306,7 @@ def _seed_abandoned_analysis_for_cleanup(
 
 
 def _position_analysis_cleanup_at_overlay(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     cycle: CleanupCycle,
     *,
@@ -1302,26 +1329,26 @@ def _position_analysis_cleanup_at_overlay(
 
 
 def _cleanup_protocol_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
     return (
-        connector.fetch_all(
-            "SELECT * FROM operational_cleanup_jobs ORDER BY cleanup_id"
+        inspect_all(
+            connector, "SELECT * FROM operational_cleanup_jobs ORDER BY cleanup_id"
         ),
-        connector.fetch_all("SELECT * FROM operational_cleanup_checkpoints"),
+        inspect_all(connector, "SELECT * FROM operational_cleanup_checkpoints"),
     )
 
 
 def _source_scope_family_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[list[tuple[Any, ...]], ...]:
-    return (connector.fetch_all("SELECT * FROM catalog_source_scopes"),)
+    return (inspect_all(connector, "SELECT * FROM catalog_source_scopes"),)
 
 
 def _artifact_policy_semantics_family_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[list[tuple[Any, ...]], ...]:
-    return (connector.fetch_all("SELECT * FROM catalog_artifact_policy_semantics"),)
+    return (inspect_all(connector, "SELECT * FROM catalog_artifact_policy_semantics"),)
 
 
 _CANONICAL_PAGE_COMPONENT_TABLES = (
@@ -1333,12 +1360,14 @@ _CANONICAL_PAGE_COMPONENT_TABLES = (
 )
 
 
+@atomic_fixture
 def _canonical_page_component_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     page_sha256: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return tuple(
-        connector.fetch_all(
+        inspect_all(
+            connector,
             f"SELECT * FROM {table} WHERE page_sha256 = %s",
             (page_sha256,),
         )
@@ -1347,37 +1376,39 @@ def _canonical_page_component_rows(
 
 
 def _seed_cleanup_candidate(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
     reserved_revision: int = 1,
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
-        seed_publication_candidate(
-            connector,
-            candidate_id=candidate_id,
-            analysis_id=b"a" * 16,
-            reserved_revision=reserved_revision,
-            artifact_policy_id=1,
-            display_title_policy_id=1,
-            artifacts_required=False,
-            created_at=0,
-        )
+        with fixture_transaction(connector):
+            seed_publication_candidate(
+                connector,
+                candidate_id=candidate_id,
+                analysis_id=b"a" * 16,
+                reserved_revision=reserved_revision,
+                artifact_policy_id=1,
+                display_title_policy_id=1,
+                artifacts_required=False,
+                created_at=0,
+            )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
 _CANDIDATE_DEFINITION_DELETE_ORDER = ("catalog_publication_candidates",)
 
 
 def _candidate_definition_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return tuple(
-        connector.fetch_all(
+        inspect_all(
+            connector,
             f"SELECT * FROM {table} WHERE candidate_id = %s",
             (candidate_id,),
         )
@@ -1386,7 +1417,7 @@ def _candidate_definition_rows(
 
 
 def _advance_to_cleanup_phase(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     cycle: CleanupCycle,
     target_phase: str,
@@ -1410,7 +1441,7 @@ def _advance_to_cleanup_phase(
 
 
 def _seed_prepared_artifact_family(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
     publication_key: bytes,
@@ -1460,23 +1491,26 @@ def _seed_prepared_artifact_family(
 
 
 def _prepared_artifact_family_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
     publication_key: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return (
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT * FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT * FROM catalog_prepared_resource_blob "
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT * FROM catalog_prepared_storage_objects "
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
@@ -1485,7 +1519,7 @@ def _prepared_artifact_family_rows(
 
 
 def _seed_artifact_semantic_input_family(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     artifact_semantics_sha256: bytes,
 ) -> None:
@@ -1506,12 +1540,13 @@ def _seed_artifact_semantic_input_family(
 
 
 def _artifact_semantic_input_family_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     artifact_semantics_sha256: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return (
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT * FROM catalog_artifact_semantic_inputs "
             "WHERE artifact_semantics_sha256 = %s",
             (artifact_semantics_sha256,),
@@ -1520,17 +1555,18 @@ def _artifact_semantic_input_family_rows(
 
 
 def _source_build_discovery_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[list[tuple[object, ...]], ...]:
-    return (connector.fetch_all("SELECT * FROM catalog_source_build_discoveries"),)
+    return (inspect_all(connector, "SELECT * FROM catalog_source_build_discoveries"),)
 
 
 def _analysis_run_family_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     analysis_id: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return tuple(
-        connector.fetch_all(
+        inspect_all(
+            connector,
             f"SELECT * FROM {table} WHERE analysis_id = %s",
             (analysis_id,),
         )
@@ -1543,9 +1579,14 @@ def _analysis_run_family_rows(
 
 
 def test_analysis_cleanup_retains_only_latest_abandoned_recovery_proof(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-latest-recovery-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "analysis-latest-recovery-retention.sqlite3")
+        )
+    )
     try:
         seed_analysis_policy(connector)
         old_scope = _seed_source_build_scope(connector, discriminator=95)
@@ -1677,9 +1718,14 @@ def test_cleanup_predicates_fail_closed_for_sibling_analysis_corruption() -> Non
 
 
 def test_candidate_cleanup_retains_historical_source_build_base_lineage(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "candidate-source-base-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "candidate-source-base-retention.sqlite3")
+        )
+    )
     try:
         candidate_id = bytes((103,)) + b"c" * 15
         receipt_id = b"R" * 16
@@ -1738,9 +1784,12 @@ def test_candidate_cleanup_retains_historical_source_build_base_lineage(
 
 
 def test_current_only_source_build_waits_for_publication_base_release_then_rewinds(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "current-only-priority-rewind.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "current-only-priority-rewind.sqlite3"))
+    )
     try:
         candidate_id = bytes((105,)) + b"c" * 15
         build_id = bytes((106,)) + b"b" * 15
@@ -1774,7 +1823,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
         gate = _exclusive(connector)
         with connector.transaction():
             first = VNextCleanupRepository.next_current_only_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=2,
@@ -1782,11 +1831,13 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
         # A retained build without historical publication/artifact payload is
         # a quiescent fixed point, not a blocked publication cleanup.
         assert first is CurrentOnlyCleanupTerminalState.DONE
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
             (build_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
@@ -1799,7 +1850,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
         )
         with connector.transaction():
             second = VNextCleanupRepository.next_current_only_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=100,
@@ -1811,7 +1862,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
 
         with connector.transaction():
             third = VNextCleanupRepository.next_current_only_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=200,
@@ -1820,7 +1871,8 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
         assert third.target_kind is CleanupTargetKind.SOURCE_BUILD
         _drain(connector, gate, third, now=201)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
                 (build_id,),
             )
@@ -1831,9 +1883,14 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
 
 
 def test_analysis_cleanup_retains_historical_source_build_base_provenance(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-source-base-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "analysis-source-base-retention.sqlite3")
+        )
+    )
     try:
         scope_key = _seed_source_build_scope(connector, discriminator=104)
         seed_analysis_policy(connector)
@@ -1912,9 +1969,14 @@ def test_analysis_cleanup_retains_historical_source_build_base_provenance(
 
 
 def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "source-retirement-mapping-order.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "source-retirement-mapping-order.sqlite3")
+        )
+    )
     try:
         older_scope = _seed_source_build_scope(connector, discriminator=105)
         newer_scope = _seed_source_build_scope(connector, discriminator=106)
@@ -1988,7 +2050,8 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
             max_rows=32,
         )
         _drain(connector, gate, blocked_cycle)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (2,),
@@ -2015,7 +2078,8 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
         )
         _drain(connector, gate, released_cycle, now=201)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT build_id FROM operational_source_build_generations "
                 "WHERE generation = %s",
                 (2,),
@@ -2023,7 +2087,8 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT build_id FROM catalog_source_build_descriptor "
                 "WHERE build_id = %s",
                 (newer_build,),
@@ -2035,13 +2100,14 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
 
 
 def _observation_vertical_rows(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
 ) -> tuple[list[tuple[object, ...]], ...]:
     return tuple(
-        connector.fetch_all(
+        inspect_all(
+            connector,
             query + " WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, observation_id),
         )
@@ -2059,8 +2125,12 @@ def _observation_vertical_rows(
     )
 
 
-def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "content-cleanup.sqlite3")
+def test_content_blob_sweep_is_bounded_replayable_and_reusable(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "content-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         first_key = bytes((5,)) + b"a" * 31
@@ -2086,14 +2156,16 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
             first_key,
         )
         assert not page_one.phase_complete
-        before = connector.fetch_all(
-            "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256"
+        before = inspect_all(
+            connector,
+            "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
         )
         replay = _advance(connector, gate, cycle, 1, b"a" * 32, now=4)
         assert replay.replayed
         assert (
-            connector.fetch_all(
-                "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256"
+            inspect_all(
+                connector,
+                "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
             )
             == before
         )
@@ -2107,12 +2179,13 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
         completed = _advance(connector, gate, cycle, 3, b"c" * 32, now=6)
         assert completed.cycle_complete
         assert completed.deleted_count == 2
-        assert connector.fetch_all(
-            "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256"
+        assert inspect_all(
+            connector,
+            "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
         ) == [(outside_shard,)]
         with connector.transaction():
             resumed = VNextCleanupRepository.resume_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 now=7,
@@ -2130,7 +2203,8 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
         assert next_cycle.cycle_generation == 2
         assert next_cycle.cleanup_id != cycle.cleanup_id
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_cleanup_jobs "
                 "WHERE cleanup_id = %s AND state = 'COMPLETE'",
                 (cycle.cleanup_id,),
@@ -2142,9 +2216,12 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
 
 
 def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identity(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "cleanup-successor-identity.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "cleanup-successor-identity.sqlite3"))
+    )
     kind = CleanupTargetKind.ARTIFACT_BLOB
     shard = 52
     try:
@@ -2157,7 +2234,7 @@ def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identit
         with pytest.raises(RuntimeError, match="abort cleanup successor"):
             with connector.transaction():
                 successor = VNextCleanupRepository.begin_cycle(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     target_kind=kind,
                     shard_no=shard,
@@ -2222,6 +2299,7 @@ def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identit
     ),
 )
 def test_leaf_identity_strategies_delete_only_their_fixed_shard(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     kind: CleanupTargetKind,
     table: str,
@@ -2229,7 +2307,9 @@ def test_leaf_identity_strategies_delete_only_their_fixed_shard(
     values: tuple[object, ...],
     key: bytes,
 ) -> None:
-    connector = _database(tmp_path / f"{kind.value}.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / f"{kind.value}.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         if kind is CleanupTargetKind.FILE_NAME_IDENTITY:
@@ -2251,15 +2331,20 @@ def test_leaf_identity_strategies_delete_only_their_fixed_shard(
         assert first.row_count == 1 and first.cursor == key
         completed = _advance(connector, gate, cycle, 2, b"e" * 32, now=4)
         assert completed.cycle_complete and completed.deleted_count == 1
-        assert connector.fetch_all(f"SELECT * FROM {table}") == []
+        assert inspect_all(connector, f"SELECT * FROM {table}") == []
     finally:
         connector.close()
 
 
 def test_publication_selection_retains_its_derived_publication_identity(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-selection-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-selection-retention.sqlite3")
+        )
+    )
     try:
         gid = 17
         publication_key = identity.publication_key(gid)
@@ -2324,7 +2409,8 @@ def test_publication_selection_retains_its_derived_publication_identity(
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid FROM catalog_publication_identities WHERE publication_key = %s",
             (publication_key,),
         ) == (gid,)
@@ -2333,9 +2419,14 @@ def test_publication_selection_retains_its_derived_publication_identity(
 
 
 def test_publication_identity_retains_its_gid_identity(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-upload-time-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-upload-time-retention.sqlite3")
+        )
+    )
     try:
         gid = 23
         publication_key = identity.publication_key(gid)
@@ -2358,7 +2449,8 @@ def test_publication_identity_retains_its_gid_identity(
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s",
             (gid,),
         ) == (gid,)
@@ -2367,9 +2459,12 @@ def test_publication_identity_retains_its_gid_identity(
 
 
 def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "cleanup-fail-closed.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "cleanup-fail-closed.sqlite3"))
+    )
     try:
         with (
             connector.transaction(),
@@ -2379,7 +2474,7 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
             ),
         ):
             shared = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=1,
                 lease_duration=100_000,
             )
@@ -2390,7 +2485,7 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
                 CleanupTargetKind.CONTENT_BLOB,
                 0,
             )
-        assert connector.fetch_all("SELECT 1 FROM operational_cleanup_jobs") == []
+        assert inspect_all(connector, "SELECT 1 FROM operational_cleanup_jobs") == []
 
         # Let the shared capability expire before acquiring the exclusive gate.
         with (
@@ -2401,7 +2496,7 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
             ),
         ):
             exclusive = MaintenanceGateRepository.claim_exclusive(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=100_001,
                 lease_duration=100_000,
             )
@@ -2415,12 +2510,13 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
                 CleanupTargetKind.CONTENT_BLOB,
                 0,
             )
-        assert connector.fetch_all("SELECT 1 FROM operational_cleanup_jobs") == []
+        assert inspect_all(connector, "SELECT 1 FROM operational_cleanup_jobs") == []
     finally:
         connector.close()
 
 
 def test_all_strategies_match_the_closed_phase_registry(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     expected = {
@@ -2565,7 +2661,9 @@ def test_all_strategies_match_the_closed_phase_registry(
         kind: strategy.phases for kind, strategy in cleanup_module._STRATEGIES.items()
     } == expected
 
-    connector = _database(tmp_path / "all-empty-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "all-empty-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         for kind in CleanupTargetKind:
@@ -2578,9 +2676,14 @@ def test_all_strategies_match_the_closed_phase_registry(
 
 
 def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "cleanup-frozen-root-corruption.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "cleanup-frozen-root-corruption.sqlite3")
+        )
+    )
     source = bytes((37,)) + b"s" * 31
     fingerprint = b"f" * 32
     try:
@@ -2609,7 +2712,8 @@ def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
             37,
             max_rows=8,
         )
-        frame_row = connector.fetch_one(
+        frame_row = inspect_one(
+            connector,
             "SELECT frozen_root_key FROM operational_cleanup_cycle_roots "
             "WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
@@ -2617,7 +2721,8 @@ def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
         assert frame_row is not None
         frame = cast(bytes, frame_row[0])
         assert len(frame) == 72
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT frozen_root_count FROM operational_cleanup_jobs "
             "WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
@@ -2633,8 +2738,9 @@ def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
                 CleanupTargetKind.CONTENT_BLOB,
                 0,
             )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'",
         ) == (1,)
 
         with connector.transaction():
@@ -2645,7 +2751,8 @@ def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
             )
         with pytest.raises(CleanupCorruptionError, match="codec|digest"):
             _advance(connector, gate, cycle, 1, b"i" * 32, now=3)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT file_sha256 FROM operational_file_hash_caches "
             "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
             (source, fingerprint),
@@ -2701,14 +2808,18 @@ def test_frozen_root_source_gallery_name_has_exact_260_byte_boundary() -> None:
         cleanup_module._validate_frozen_root_values(plan, (b"x" * 256,))
 
 
-def test_frozen_root_set_accepts_exact_256_root_boundary(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "cleanup-frozen-root-256.sqlite3")
+def test_frozen_root_set_accepts_exact_256_root_boundary(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "cleanup-frozen-root-256.sqlite3"))
+    )
     fingerprint = b"f" * 32
     roots = [
         (bytes((37,)) + index.to_bytes(31, "big"), fingerprint) for index in range(256)
     ]
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute_many(
                 "INSERT INTO operational_hash_cache_observations "
@@ -2717,7 +2828,7 @@ def test_frozen_root_set_accepts_exact_256_root_boundary(tmp_path: Path) -> None
                 roots,
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         gate = _exclusive(connector)
         cycle = _begin(
             connector,
@@ -2726,12 +2837,14 @@ def test_frozen_root_set_accepts_exact_256_root_boundary(tmp_path: Path) -> None
             37,
             max_rows=256,
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT frozen_root_count FROM operational_cleanup_jobs "
             "WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
         ) == (256,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_cleanup_cycle_roots "
             "WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
@@ -2741,8 +2854,8 @@ def test_frozen_root_set_accepts_exact_256_root_boundary(tmp_path: Path) -> None
         assert file_terminal.phase == "HC_ROOT" and file_terminal.generation == 1
         deleted = _advance(connector, gate, cycle, 1, b"r" * 32, now=4)
         assert deleted.row_count == 256 and deleted.generation == 2
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_hash_cache_observations"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_hash_cache_observations"
         ) == (0,)
 
         assert cleanup_module._require_frozen_root_count(256) == 256
@@ -2753,9 +2866,12 @@ def test_frozen_root_set_accepts_exact_256_root_boundary(tmp_path: Path) -> None
 
 
 def test_frozen_root_terminal_completion_rolls_back_atomically(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "cleanup-frozen-root-rollback.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "cleanup-frozen-root-rollback.sqlite3"))
+    )
     source = bytes((38,)) + b"s" * 31
     fingerprint = b"f" * 32
     try:
@@ -2795,7 +2911,7 @@ def test_frozen_root_terminal_completion_rolls_back_atomically(
         with pytest.raises(RuntimeError, match="abort frozen completion"):
             with connector.transaction():
                 result = VNextCleanupRepository.advance(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
                     command=command,
@@ -2804,16 +2920,19 @@ def test_frozen_root_terminal_completion_rolls_back_atomically(
                 assert result.cycle_complete
                 raise RuntimeError("abort frozen completion")
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM operational_cleanup_jobs WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
         ) == ("OPEN",)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_cleanup_cycle_roots "
             "WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT final_chain_sha256, final_deleted_count "
             "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
             (cycle.cleanup_id,),
@@ -2824,7 +2943,8 @@ def test_frozen_root_terminal_completion_rolls_back_atomically(
         replay = _advance(connector, gate, cycle, 2, b"4" * 32, now=8)
         assert replay.cycle_complete and replay.replayed
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
                 (cycle.cleanup_id,),
             )
@@ -2835,9 +2955,12 @@ def test_frozen_root_terminal_completion_rolls_back_atomically(
 
 
 def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "cleanup-hash-handoff.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "cleanup-hash-handoff.sqlite3"))
+    )
     source = bytes((39,)) + b"s" * 31
     fingerprint = b"f" * 32
     try:
@@ -2861,7 +2984,7 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
             max_rows=1,
         )
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             assert (
                 VNextCleanupRepository.current_only_maintenance_state(
                     work,
@@ -2872,7 +2995,7 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
                 is CatalogPublicationMaintenanceState.ACTIONABLE
             )
             resumed = VNextCleanupRepository.next_current_only_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=3,
@@ -2885,9 +3008,12 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
 
 
 def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-commit-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
@@ -2924,7 +3050,8 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
         with pytest.raises(CleanupUnavailableError, match="generation is stale"):
             _advance(connector, gate, cycle, 1, b"b" * 32, now=5)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_source_build_base_publication_commits "
                 "WHERE build_id = %s",
                 (build_id,),
@@ -2935,7 +3062,8 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
             "catalog_publication_commit_finalizations",
             "catalog_publication_commits",
         ):
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 f"SELECT 1 FROM {retained_parent} WHERE receipt_id = %s",
                 (old_receipt,),
             ) == (1,)
@@ -2983,11 +3111,13 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
             "catalog_publication_finalization_checkpoints",
             "catalog_publication_commit_anchors",
         ):
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {table} WHERE receipt_id = %s",
                 (old_receipt,),
             ) == (0,)
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {table} WHERE receipt_id = %s",
                 (replacement_receipt,),
             ) == (1,)
@@ -3001,36 +3131,43 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
             "operational_operational_preparation_effect_seals",
             "operational_operational_events",
         ):
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {table} WHERE preparation_id = %s",
                 (old_preparation,),
             ) == (0,)
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {table} WHERE preparation_id = %s",
                 (replacement_preparation,),
             ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_operational_removed_gid_events "
             "WHERE event_id = %s",
             (bytes((61,)) * 16,),
         ) == (0,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_operational_removed_gid_events "
             "WHERE event_id = %s",
             (bytes((62,)) * 16,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_publication_candidate_preparations "
             "WHERE preparation_id = %s",
             (old_preparation,),
         ) == (0,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_publication_candidate_preparations "
             "WHERE preparation_id = %s",
             (replacement_preparation,),
         ) == (1,)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_source_build_base_publication_commits "
                 "WHERE build_id = %s",
                 (build_id,),
@@ -3040,7 +3177,7 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
 
         with connector.transaction():
             completed = VNextCleanupRepository.resume_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
                 now=50,
@@ -3051,9 +3188,14 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
 
 
 def test_publication_commit_frozen_root_binds_exact_preparation_authority(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-frozen-preparation.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-frozen-preparation.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3092,10 +3234,11 @@ def test_publication_commit_frozen_root_binds_exact_preparation_authority(
             operational_refinement_module.OperationalSemanticValidationError,
             match="differs from frozen authority",
         ):
-            operational_refinement_module._validate_open_pcom_event_transition(
-                connector,
-                "sqlite",
-            )
+            with connector.read_transaction():
+                operational_refinement_module._validate_open_pcom_event_transition(
+                    connector,
+                    connector_backend(connector),
+                )
     finally:
         connector.close()
 
@@ -3105,10 +3248,15 @@ def test_publication_commit_frozen_root_binds_exact_preparation_authority(
     ("missing_subtype", "wrong_subtype", "both_subtypes", "missing_base"),
 )
 def test_publication_commit_event_phase_rejects_partial_or_mismatched_coordinates(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
-    connector = _database(tmp_path / f"publication-event-{corruption}.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"publication-event-{corruption}.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3147,7 +3295,7 @@ def test_publication_commit_event_phase_rejects_partial_or_mismatched_coordinate
             )
         _fixture_rows(connector, statements)
         before = tuple(
-            connector.fetch_all(f"SELECT * FROM {table}")
+            inspect_all(connector, f"SELECT * FROM {table}")
             for table in (
                 "operational_operational_events",
                 "operational_operational_removed_gid_events",
@@ -3159,7 +3307,7 @@ def test_publication_commit_event_phase_rejects_partial_or_mismatched_coordinate
             _advance(connector, gate, cycle, 1, b"e" * 32, now=80)
 
         after = tuple(
-            connector.fetch_all(f"SELECT * FROM {table}")
+            inspect_all(connector, f"SELECT * FROM {table}")
             for table in (
                 "operational_operational_events",
                 "operational_operational_removed_gid_events",
@@ -3173,11 +3321,14 @@ def test_publication_commit_event_phase_rejects_partial_or_mismatched_coordinate
 
 @pytest.mark.parametrize("failing_delete", ("subtype", "event"))
 def test_publication_commit_event_compound_delete_fault_rolls_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     failing_delete: str,
 ) -> None:
     connector = _database(
-        tmp_path / f"publication-event-fault-{failing_delete}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"publication-event-fault-{failing_delete}.sqlite3")
+        )
     )
     try:
         gate = _exclusive(connector)
@@ -3210,11 +3361,13 @@ def test_publication_commit_event_compound_delete_fault_rolls_back(
         ):
             _advance(connector, gate, cycle, 1, b"f" * 32, now=80)
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_events WHERE event_id = %s",
             (event_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_removed_gid_events "
             "WHERE event_id = %s",
             (event_id,),
@@ -3225,10 +3378,15 @@ def test_publication_commit_event_compound_delete_fault_rolls_back(
 
 @pytest.mark.parametrize("failing_delete", ("commit", "seal", "stream"))
 def test_publication_commit_effect_root_fault_rolls_back_all_three_rows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     failing_delete: str,
 ) -> None:
-    connector = _database(tmp_path / f"publication-root-fault-{failing_delete}.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"publication-root-fault-{failing_delete}.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3269,16 +3427,19 @@ def test_publication_commit_effect_root_fault_rolls_back_all_three_rows(
         ):
             _advance(connector, gate, cycle, 1, b"g" * 32, now=90)
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
             (old_receipt,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_preparation_effect_seals "
             "WHERE preparation_id = %s",
             (preparation_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_event_streams "
             "WHERE preparation_id = %s",
             (preparation_id,),
@@ -3288,9 +3449,12 @@ def test_publication_commit_effect_root_fault_rolls_back_all_three_rows(
 
 
 def test_publication_commit_effect_root_rejects_missing_uncovered_triple(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-root-missing.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-root-missing.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3325,11 +3489,13 @@ def test_publication_commit_effect_root_rejects_missing_uncovered_triple(
         ):
             _advance(connector, gate, cycle, 1, b"r" * 32, now=90)
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
             (old_receipt,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_event_streams "
             "WHERE preparation_id = %s",
             (preparation_id,),
@@ -3339,9 +3505,14 @@ def test_publication_commit_effect_root_rejects_missing_uncovered_triple(
 
 
 def test_publication_commit_event_cursor_rejects_covered_reappearance(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-event-reappearance.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-event-reappearance.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3397,10 +3568,15 @@ def test_publication_commit_event_cursor_rejects_covered_reappearance(
     ),
 )
 def test_publication_commit_event_receipt_corruption_fails_full_check(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
-    connector = _database(tmp_path / f"publication-event-receipt-{corruption}.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"publication-event-receipt-{corruption}.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3414,7 +3590,7 @@ def test_publication_commit_event_receipt_corruption_fails_full_check(
         _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
         event_batch = _advance(connector, gate, cycle, 1, b"s" * 32, now=80)
         assert event_batch.row_count == 1 and event_batch.generation == 2
-        connector.execute("PRAGMA ignore_check_constraints = ON")
+        set_check_constraints(connector, enabled=False)
         match corruption:
             case "output":
                 statement = (
@@ -3454,10 +3630,11 @@ def test_publication_commit_event_receipt_corruption_fails_full_check(
             operational_refinement_module.OperationalSemanticValidationError,
             match="cleanup receipt",
         ):
-            operational_refinement_module._validate_fixed_cleanup_state(
-                connector,
-                "sqlite",
-            )
+            with connector.read_transaction():
+                operational_refinement_module._validate_fixed_cleanup_state(
+                    connector,
+                    connector_backend(connector),
+                )
         with pytest.raises(CleanupCorruptionError, match="cleanup latest receipt"):
             _advance(
                 connector,
@@ -3472,9 +3649,12 @@ def test_publication_commit_event_receipt_corruption_fails_full_check(
 
 
 def test_publication_commit_open_transition_full_check_accepts_exact_receipt_proof(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-transition-check.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-transition-check.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -3488,10 +3668,11 @@ def test_publication_commit_open_transition_full_check_accepts_exact_receipt_pro
         _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
         event_batch = _advance(connector, gate, cycle, 1, b"j" * 32, now=80)
         assert event_batch.row_count == 1 and event_batch.generation == 2
-        operational_refinement_module._validate_open_pcom_event_transition(
-            connector,
-            "sqlite",
-        )
+        with connector.read_transaction():
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                connector_backend(connector),
+            )
 
         event_terminal = _advance(
             connector,
@@ -3510,10 +3691,11 @@ def test_publication_commit_open_transition_full_check_accepts_exact_receipt_pro
         )
         root_batch = _advance(connector, gate, cycle, 1, b"l" * 32, now=90)
         assert root_batch.row_count == 1 and root_batch.generation == 2
-        operational_refinement_module._validate_open_pcom_event_transition(
-            connector,
-            "sqlite",
-        )
+        with connector.read_transaction():
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                connector_backend(connector),
+            )
 
         later = _advance(
             connector,
@@ -3524,18 +3706,22 @@ def test_publication_commit_open_transition_full_check_accepts_exact_receipt_pro
             now=91,
         )
         assert later.phase == "PCOM_FINALIZATION_CHECKPOINT"
-        operational_refinement_module._validate_open_pcom_event_transition(
-            connector,
-            "sqlite",
-        )
+        with connector.read_transaction():
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                connector_backend(connector),
+            )
     finally:
         connector.close()
 
 
 def test_empty_publication_commit_cycle_is_full_check_valid_in_every_phase(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-empty-cycle.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-empty-cycle.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         cycle = _begin(
@@ -3559,19 +3745,22 @@ def test_empty_publication_commit_cycle_is_full_check_valid_in_every_phase(
             "PCOM_ANCHOR",
         )
         for attempt, expected_phase in enumerate(expected_phases, start=1):
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT phase FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s AND state = 'OPEN'",
                 (cycle.cleanup_id,),
             ) == (expected_phase,)
-            operational_refinement_module._validate_fixed_cleanup_state(
-                connector,
-                "sqlite",
-            )
-            operational_refinement_module._validate_open_pcom_event_transition(
-                connector,
-                "sqlite",
-            )
+            with connector.read_transaction():
+                operational_refinement_module._validate_fixed_cleanup_state(
+                    connector,
+                    connector_backend(connector),
+                )
+            with connector.read_transaction():
+                operational_refinement_module._validate_open_pcom_event_transition(
+                    connector,
+                    connector_backend(connector),
+                )
             result = _advance(
                 connector,
                 gate,
@@ -3581,22 +3770,27 @@ def test_empty_publication_commit_cycle_is_full_check_valid_in_every_phase(
                 now=80 + attempt,
             )
         assert result.cycle_complete
-        operational_refinement_module._validate_fixed_cleanup_state(
-            connector,
-            "sqlite",
-        )
-        operational_refinement_module._validate_open_pcom_event_transition(
-            connector,
-            "sqlite",
-        )
+        with connector.read_transaction():
+            operational_refinement_module._validate_fixed_cleanup_state(
+                connector,
+                connector_backend(connector),
+            )
+        with connector.read_transaction():
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                connector_backend(connector),
+            )
     finally:
         connector.close()
 
 
 def test_publication_commit_multi_root_and_zero_event_retirement(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-multi-root.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-multi-root.sqlite3"))
+    )
     second_old = bytes.fromhex("21" + "23" * 15)
     try:
         gate = _exclusive(connector)
@@ -3635,17 +3829,23 @@ def test_publication_commit_multi_root_and_zero_event_retirement(
             result.phase == "PCOM_COMMIT_EFFECT_ROOT" and result.row_count == 2
             for result in results
         )
-        assert connector.fetch_all(
-            "SELECT receipt_id FROM catalog_publication_commits ORDER BY receipt_id"
+        assert inspect_all(
+            connector,
+            "SELECT receipt_id FROM catalog_publication_commits ORDER BY receipt_id",
         ) == [(replacement,)]
     finally:
         connector.close()
 
 
 def test_publication_commit_compound_proof_rejects_each_reappearing_frozen_pair(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-multi-root-reappearance.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-multi-root-reappearance.sqlite3")
+        )
+    )
     first_receipt = bytes.fromhex("21" * 16)
     second_receipt = bytes.fromhex("21" + "23" * 15)
     first_preparation = bytes((51,)) * 16
@@ -3702,10 +3902,11 @@ def test_publication_commit_compound_proof_rejects_each_reappearing_frozen_pair(
             operational_refinement_module.OperationalSemanticValidationError,
             match="commit reappeared",
         ):
-            operational_refinement_module._validate_open_pcom_event_transition(
-                connector,
-                "sqlite",
-            )
+            with connector.read_transaction():
+                operational_refinement_module._validate_open_pcom_event_transition(
+                    connector,
+                    connector_backend(connector),
+                )
         with pytest.raises(CleanupCorruptionError, match="commit reappeared"):
             _advance(
                 connector,
@@ -3720,9 +3921,14 @@ def test_publication_commit_compound_proof_rejects_each_reappearing_frozen_pair(
 
 
 def test_publication_commit_compound_proof_rejects_recreated_preparation_chain(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-recreated-preparation.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-recreated-preparation.sqlite3")
+        )
+    )
     preparation_id = bytes((51,)) * 16
     event_id = bytes((61,)) * 16
     try:
@@ -3783,10 +3989,11 @@ def test_publication_commit_compound_proof_rejects_recreated_preparation_chain(
             operational_refinement_module.OperationalSemanticValidationError,
             match="compound-covered authority reappeared",
         ):
-            operational_refinement_module._validate_open_pcom_event_transition(
-                connector,
-                "sqlite",
-            )
+            with connector.read_transaction():
+                operational_refinement_module._validate_open_pcom_event_transition(
+                    connector,
+                    connector_backend(connector),
+                )
         with pytest.raises(CleanupCorruptionError, match="authority reappeared"):
             _advance(
                 connector,
@@ -3818,11 +4025,14 @@ def test_publication_commit_compound_proof_rejects_recreated_preparation_chain(
     ),
 )
 def test_publication_commit_post_compound_phase_rejects_every_reappearing_family(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     reappearing_family: str,
 ) -> None:
     connector = _database(
-        tmp_path / f"publication-post-compound-{reappearing_family}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"publication-post-compound-{reappearing_family}.sqlite3")
+        )
     )
     receipt_id = bytes.fromhex("21" * 16)
     candidate_id = bytes((41,)) * 16
@@ -4015,7 +4225,8 @@ def test_publication_commit_post_compound_phase_rejects_every_reappearing_family
         }
         _fixture_rows(connector, statements_by_family[reappearing_family])
         assert checkpoint.generation is not None
-        before = connector.fetch_one(
+        before = inspect_one(
+            connector,
             "SELECT phase, generation, cursor_bytes, deleted_count, state "
             "FROM operational_cleanup_checkpoints "
             "WHERE cleanup_id = %s AND state = 'OPEN'",
@@ -4031,7 +4242,8 @@ def test_publication_commit_post_compound_phase_rejects_every_reappearing_family
                 now=95,
             )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT phase, generation, cursor_bytes, deleted_count, state "
                 "FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s AND state = 'OPEN'",
@@ -4044,9 +4256,14 @@ def test_publication_commit_post_compound_phase_rejects_every_reappearing_family
 
 
 def test_publication_commit_cleanup_waits_for_finalized_replacement(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-finalization.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-commit-finalization.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
@@ -4102,11 +4319,14 @@ def test_publication_commit_cleanup_waits_for_finalized_replacement(
     ],
 )
 def test_publication_commit_cleanup_honors_every_exact_dynamic_pin(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     blocker_insert: str,
     blocker_delete: str,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-blocker.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-commit-blocker.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
@@ -4128,7 +4348,8 @@ def test_publication_commit_cleanup_honors_every_exact_dynamic_pin(
             max_rows=8,
         )
         assert _drain(connector, gate, blocked)[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_publication_commits WHERE receipt_id = %s",
             (old_receipt,),
         ) == (1,)
@@ -4188,6 +4409,7 @@ def test_publication_commit_cleanup_honors_every_exact_dynamic_pin(
     ],
 )
 def test_publication_commit_build_base_release_fails_closed_without_safe_handoff(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     build_state: str | None,
     analysis_states: tuple[str | None, ...],
@@ -4195,7 +4417,11 @@ def test_publication_commit_build_base_release_fails_closed_without_safe_handoff
     working: bool,
     handoff_is_current: bool,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-unsafe-build-base.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-commit-unsafe-build-base.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
@@ -4221,13 +4447,15 @@ def test_publication_commit_build_base_release_fails_closed_without_safe_handoff
             max_rows=8,
         )
         assert _drain(connector, gate, cycle)[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
             (build_id,),
         ) == (old_receipt,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT receipt_id FROM catalog_publication_commits WHERE receipt_id = %s",
             (old_receipt,),
         ) == (old_receipt,)
@@ -4236,9 +4464,12 @@ def test_publication_commit_build_base_release_fails_closed_without_safe_handoff
 
 
 def test_publication_commit_build_base_release_rolls_back_resumes_and_replays(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-base-fault.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-commit-base-fault.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
@@ -4278,7 +4509,8 @@ def test_publication_commit_build_base_release_rolls_back_resumes_and_replays(
             pytest.raises(RuntimeError, match="build-base release fault"),
         ):
             _advance(connector, gate, cycle, 1, b"f" * 32, now=3)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
@@ -4293,7 +4525,8 @@ def test_publication_commit_build_base_release_rolls_back_resumes_and_replays(
         assert replayed.row_count == resumed.row_count
         assert replayed.cursor == resumed.cursor
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_source_build_base_publication_commits "
                 "WHERE build_id = %s",
                 (build_id,),
@@ -4318,7 +4551,8 @@ def test_publication_commit_build_base_release_rolls_back_resumes_and_replays(
         else:
             raise AssertionError("resumed publication-commit cleanup did not finish")
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
                 (old_receipt,),
             )
@@ -4329,9 +4563,14 @@ def test_publication_commit_build_base_release_rolls_back_resumes_and_replays(
 
 
 def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-dynamic-pin.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "publication-commit-dynamic-pin.sqlite3")
+        )
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
@@ -4361,7 +4600,8 @@ def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
             ],
         )
 
-        before = connector.fetch_one(
+        before = inspect_one(
+            connector,
             "SELECT phase, generation, cursor_bytes, deleted_count, state "
             "FROM operational_cleanup_checkpoints "
             "WHERE cleanup_id = %s AND state = 'OPEN'",
@@ -4371,7 +4611,8 @@ def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
         with pytest.raises(CleanupRetentionBlockedError, match="still owns rows"):
             _advance(connector, gate, cycle, 1, b"p" * 32, now=3)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT phase, generation, cursor_bytes, deleted_count, state "
                 "FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s AND state = 'OPEN'",
@@ -4379,7 +4620,8 @@ def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
             )
             == before
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
@@ -4391,7 +4633,8 @@ def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
         assert resumed.phase == "PCOM_RELEASE_BUILD_BASE"
         assert resumed.row_count == 1 and resumed.generation == 2
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_source_build_base_publication_commits "
                 "WHERE build_id = %s",
                 (build_id,),
@@ -4403,9 +4646,12 @@ def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
 
 
 def test_publication_commit_build_base_release_exactly_rechecks_active_retry(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "publication-commit-base-race.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "publication-commit-base-race.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
@@ -4451,14 +4697,16 @@ def test_publication_commit_build_base_release_exactly_rechecks_active_retry(
         ):
             _advance(connector, gate, cycle, 1, b"x" * 32, now=3)
         assert injected
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
             (build_id,),
         ) == (old_receipt,)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_source_working_builds WHERE build_id = %s",
                 (build_id,),
             )
@@ -4469,9 +4717,12 @@ def test_publication_commit_build_base_release_exactly_rechecks_active_retry(
 
 
 def test_state_parent_cleanup_uses_contiguous_generation_prefixes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "state-parent-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "state-parent-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         _fixture_rows(
@@ -4541,22 +4792,26 @@ def test_state_parent_cleanup_uses_contiguous_generation_prefixes(
             now=20,
         )
         assert _drain(connector, gate, source_cycle, now=21)[-1].deleted_count == 1
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_revision_descriptors WHERE revision = 11"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM catalog_revision_descriptors WHERE revision = 11",
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_source_revision_descriptors "
-            "WHERE source_revision = 11"
+            "WHERE source_revision = 11",
         ) == (1,)
 
         generation_results: list[CleanupBatchResult] = []
         generation_cycle_index = 0
-        while connector.fetch_one(
+        while inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
-            "WHERE generation < 5"
+            "WHERE generation < 5",
         ) != (0,):
-            oldest = connector.fetch_one(
-                "SELECT MIN(generation) FROM catalog_publication_generation_nodes"
+            oldest = inspect_one(
+                connector,
+                "SELECT MIN(generation) FROM catalog_publication_generation_nodes",
             )
             assert len(oldest) == 1 and isinstance(oldest[0], int)
             generation_cycle = _begin(
@@ -4579,14 +4834,16 @@ def test_state_parent_cleanup_uses_contiguous_generation_prefixes(
             assert generation_cycle_index <= 3
         assert all(result.row_count <= 2 for result in generation_results)
         assert generation_cycle_index == 3
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT generation FROM catalog_publication_generation_nodes "
-            "ORDER BY generation"
+            "ORDER BY generation",
         ) == [(5,)]
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT successor_generation, predecessor_generation "
-                "FROM catalog_publication_generation_successors"
+                "FROM catalog_publication_generation_successors",
             )
             == []
         )
@@ -4600,18 +4857,22 @@ def test_state_parent_cleanup_uses_contiguous_generation_prefixes(
             now=100,
         )
         assert _drain(connector, gate, retained_floor, now=101)[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
-            "WHERE generation = 5"
+            "WHERE generation = 5",
         ) == (1,)
     finally:
         connector.close()
 
 
 def test_publication_generation_keeps_genesis_until_generation_one_is_compacted(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "generation-one-floor.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "generation-one-floor.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         _fixture_rows(
@@ -4650,22 +4911,27 @@ def test_publication_generation_keeps_genesis_until_generation_one_is_compacted(
             max_rows=8,
         )
         assert _drain(connector, gate, cycle)[-1].deleted_count == 0
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT generation FROM catalog_publication_generation_nodes "
-            "ORDER BY generation"
+            "ORDER BY generation",
         ) == [(0,), (1,)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT successor_generation, predecessor_generation "
-            "FROM catalog_publication_generation_successors"
+            "FROM catalog_publication_generation_successors",
         ) == [(1, 0)]
     finally:
         connector.close()
 
 
 def test_catalog_publication_cleanup_removes_only_historical_payload(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "catalog-publication-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "catalog-publication-cleanup.sqlite3"))
+    )
     try:
         publication_key, old_receipt, _current_receipt = (
             _seed_catalog_publication_cleanup_fixture(connector)
@@ -4698,19 +4964,23 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
                 )
             else:
                 selector = f"SELECT COUNT(*) FROM {table} WHERE revision = %s"
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 selector,
                 (1,),
             ) == (0,)
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 selector,
                 (2,),
             ) == (_CATALOG_PUBLICATION_PAYLOAD_COUNTS[table],)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT publication_count FROM catalog_revision_descriptors "
-            "WHERE revision = 1"
+            "WHERE revision = 1",
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT revision FROM catalog_publication_commits WHERE receipt_id = %s",
             (old_receipt,),
         ) == (1,)
@@ -4719,9 +4989,12 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
 
 
 def test_catalog_publication_next_shard_prioritizes_interrupted_cycle(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "catalog-next-shard.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "catalog-next-shard.sqlite3"))
+    )
     try:
         publication_key, _old_receipt, _current_receipt = (
             _seed_catalog_publication_cleanup_fixture(connector)
@@ -4730,7 +5003,7 @@ def test_catalog_publication_next_shard_prioritizes_interrupted_cycle(
         with connector.transaction():
             assert (
                 VNextCleanupRepository.catalog_publication_next_maintenance_shard(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     now=2,
                 )
@@ -4748,14 +5021,15 @@ def test_catalog_publication_next_shard_prioritizes_interrupted_cycle(
         with connector.transaction():
             assert (
                 VNextCleanupRepository.catalog_publication_next_maintenance_shard(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     now=4,
                 )
                 == interrupted_shard
             )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'",
         ) == (1,)
     finally:
         connector.close()
@@ -4763,11 +5037,14 @@ def test_catalog_publication_next_shard_prioritizes_interrupted_cycle(
 
 @pytest.mark.parametrize("damaged_revision", ("historical", "current"))
 def test_catalog_publication_cleanup_requires_fully_finalized_old_and_current_receipts(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     damaged_revision: str,
 ) -> None:
     connector = _database(
-        tmp_path / f"catalog-partial-finalization-{damaged_revision}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"catalog-partial-finalization-{damaged_revision}.sqlite3")
+        )
     )
     try:
         publication_key, old_receipt, current_receipt = (
@@ -4782,7 +5059,8 @@ def test_catalog_publication_cleanup_requires_fully_finalized_old_and_current_re
             (damaged_receipt,),
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT state, finalized_at FROM catalog_publication_receipts "
                 "WHERE receipt_id = %s",
                 (damaged_receipt,),
@@ -4799,7 +5077,8 @@ def test_catalog_publication_cleanup_requires_fully_finalized_old_and_current_re
             max_rows=1,
         )
         assert all(result.row_count == 0 for result in _drain(connector, gate, cycle))
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publications "
             "WHERE revision = 1 AND publication_key = %s",
             (publication_key,),
@@ -4809,9 +5088,12 @@ def test_catalog_publication_cleanup_requires_fully_finalized_old_and_current_re
 
 
 def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "catalog-current-db-committed.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "catalog-current-db-committed.sqlite3"))
+    )
     try:
         publication_key, _old_receipt, current_receipt = (
             _seed_catalog_publication_cleanup_fixture(
@@ -4819,7 +5101,8 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
                 finalize_current=False,
             )
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (current_receipt,),
@@ -4834,7 +5117,8 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
             max_rows=1,
         )
         assert all(result.row_count == 0 for result in _drain(connector, gate, blocked))
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publications "
             "WHERE revision = 1 AND publication_key = %s",
             (publication_key,),
@@ -4862,12 +5146,14 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
                 now=51,
             )
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (committed_candidate,),
         ) == (committed_candidate,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publications "
             "WHERE revision = 1 AND publication_key = %s",
             (publication_key,),
@@ -4880,7 +5166,8 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
             processed_count=1,
             finalized_at=100,
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (current_receipt,),
@@ -4895,14 +5182,16 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
         )
         _drain(connector, gate, released, now=102)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publications "
                 "WHERE revision = 1 AND publication_key = %s",
                 (publication_key,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publications "
             "WHERE revision = 2 AND publication_key = %s",
             (publication_key,),
@@ -4913,10 +5202,13 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
 
 @pytest.mark.parametrize("predecessor", ("candidate", "build"))
 def test_catalog_publication_cleanup_preserves_live_predecessor_base(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     predecessor: str,
 ) -> None:
-    connector = _database(tmp_path / f"catalog-live-{predecessor}.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / f"catalog-live-{predecessor}.sqlite3"))
+    )
     try:
         publication_key, old_receipt, _current_receipt = (
             _seed_catalog_publication_cleanup_fixture(connector)
@@ -4955,7 +5247,8 @@ def test_catalog_publication_cleanup_preserves_live_predecessor_base(
             max_rows=1,
         )
         assert all(result.row_count == 0 for result in _drain(connector, gate, blocked))
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_publications "
             "WHERE revision = 1 AND publication_key = %s",
             (publication_key,),
@@ -4972,7 +5265,8 @@ def test_catalog_publication_cleanup_preserves_live_predecessor_base(
         )
         _drain(connector, gate, released, now=21)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publications "
                 "WHERE revision = 1 AND publication_key = %s",
                 (publication_key,),
@@ -5079,9 +5373,12 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
 
 
 def test_source_analysis_and_candidate_strategies_delete_child_first(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "rooted-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "rooted-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
 
@@ -5138,13 +5435,16 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
         source_results = _drain(connector, gate, source_cycle)
         assert source_results[-1].deleted_count == 7
         assert (
-            connector.fetch_one(
-                "SELECT 1 FROM catalog_source_builds WHERE build_id = %s", (build_id,)
+            inspect_one(
+                connector,
+                "SELECT 1 FROM catalog_source_builds WHERE build_id = %s",
+                (build_id,),
             )
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE generation = 1 AND value_sha256 = %s",
                 (upload_value,),
@@ -5215,7 +5515,8 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
         analysis_results = _drain(connector, gate, analysis_cycle, now=50)
         assert analysis_results[-1].deleted_count == 8
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_analysis_runs WHERE analysis_id = %s",
                 (analysis_id,),
             )
@@ -5227,7 +5528,8 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             "catalog_analysis_run_descriptor",
         ):
             assert (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     f"SELECT 1 FROM {table} WHERE analysis_id = %s",
                     (analysis_id,),
                 )
@@ -5303,7 +5605,8 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
         candidate_results = _drain(connector, gate, candidate_cycle, now=100)
         assert candidate_results[-1].deleted_count == 5
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publication_selection_storage "
                 "WHERE selection_occurrence_sha256 = %s",
                 (selection_occurrence,),
@@ -5311,7 +5614,8 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 "
                 "FROM catalog_publication_selection_occurrence_identities "
                 "WHERE selection_occurrence_sha256 = %s",
@@ -5320,13 +5624,15 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publication_candidates WHERE candidate_id = %s",
                 (candidate_id,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid FROM catalog_publication_identities WHERE publication_key = %s",
             (publication_key,),
         ) == (gid,)
@@ -5337,11 +5643,16 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
 @pytest.mark.parametrize("state", ("PENDING", "PREPARED"))
 @pytest.mark.parametrize("current_only", [False, True])
 def test_candidate_cleanup_retains_unresolved_protection_families(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     state: str,
     current_only: bool,
 ) -> None:
-    connector = _database(tmp_path / f"candidate-{state.lower()}-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"candidate-{state.lower()}-cleanup.sqlite3")
+        )
+    )
     try:
         candidate_id = bytes((20,)) + state.encode("ascii")[:1] * 15
         publication_key = state.encode("ascii")[:1] * 32
@@ -5359,13 +5670,14 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
             candidate_id=candidate_id,
             publication_key=publication_key,
         )
-        assert (
-            VNextCleanupRepository.current_only_maintenance_state(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                cycle_cutoff_at=100,
+        with connector.read_transaction():
+            assert (
+                VNextCleanupRepository.current_only_maintenance_state(
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    cycle_cutoff_at=100,
+                )
+                is CatalogPublicationMaintenanceState.BLOCKED
             )
-            is CatalogPublicationMaintenanceState.BLOCKED
-        )
         gate = _exclusive(connector)
         cycle = _begin(
             connector,
@@ -5376,7 +5688,8 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
         )
         results = _drain(connector, gate, cycle, current_only=current_only)
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
@@ -5395,13 +5708,14 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
         )
-        assert (
-            VNextCleanupRepository.current_only_maintenance_state(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                cycle_cutoff_at=100,
+        with connector.read_transaction():
+            assert (
+                VNextCleanupRepository.current_only_maintenance_state(
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    cycle_cutoff_at=100,
+                )
+                is CatalogPublicationMaintenanceState.ACTIONABLE
             )
-            is CatalogPublicationMaintenanceState.ACTIONABLE
-        )
         released = _begin(
             connector,
             gate,
@@ -5417,9 +5731,12 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
 
 
 def test_candidate_cleanup_deletes_committed_prepared_family_child_first(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "candidate-committed-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "candidate-committed-cleanup.sqlite3"))
+    )
     try:
         candidate_id = bytes((21,)) + b"c" * 15
         publication_key = b"p" * 32
@@ -5472,9 +5789,14 @@ def test_candidate_cleanup_deletes_committed_prepared_family_child_first(
 
 
 def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "candidate-reserved-projection-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "candidate-reserved-projection-cleanup.sqlite3")
+        )
+    )
     try:
         candidate_id = bytes((29,)) + b"c" * 15
         revision = 29
@@ -5591,9 +5913,9 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
         results = _drain(connector, gate, cycle)
         assert results[-1].cycle_complete
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
-            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_tag_directory_order"
+            assert inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_tag_directory_order"
         ) == (0,)
         assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
     finally:
@@ -5601,20 +5923,32 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
 
 
 def test_candidate_cleanup_has_no_partial_prepared_row_surface(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "candidate-partial-prepared.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "candidate-partial-prepared.sqlite3"))
+    )
     try:
         candidate_id = bytes((22,)) + b"c" * 15
         publication_key = b"p" * 32
         _seed_cleanup_candidate(connector, candidate_id=candidate_id)
-        with pytest.raises(DatabaseDuplicateKeyError):
-            connector.execute(
-                "INSERT INTO catalog_prepared_artifacts "
-                "(candidate_id, publication_key) VALUES (%s, %s)",
-                (candidate_id, publication_key),
-            )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifacts")
+        with pytest.raises(
+            (DatabaseDuplicateKeyError, MariaDBDatabaseError)
+        ) as refusal:
+            with connector.transaction():
+                connector.execute(
+                    "INSERT INTO catalog_prepared_artifacts "
+                    "(candidate_id, publication_key) VALUES (%s, %s)",
+                    (candidate_id, publication_key),
+                )
+        if connector_backend(connector) == "mariadb":
+            assert isinstance(refusal.value, MariaDBDatabaseError)
+            assert refusal.value.errno == 1364
+            assert "resource_kind" in str(refusal.value)
+        else:
+            assert isinstance(refusal.value, DatabaseDuplicateKeyError)
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_prepared_artifacts")
         gate = _exclusive(connector)
         cycle = _begin(
             connector,
@@ -5630,9 +5964,14 @@ def test_candidate_cleanup_has_no_partial_prepared_row_surface(
 
 
 def test_candidate_prepared_row_delete_fault_rolls_back_atomically(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "candidate-prepared-delete-faults.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "candidate-prepared-delete-faults.sqlite3")
+        )
+    )
     try:
         candidate_id = bytes((23,)) + b"c" * 15
         publication_key = b"p" * 32
@@ -5703,9 +6042,14 @@ def test_candidate_prepared_row_delete_fault_rolls_back_atomically(
 
 
 def test_candidate_wide_root_cleanup_rolls_back_and_retries_atomically(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "candidate-definition-delete-faults.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "candidate-definition-delete-faults.sqlite3")
+        )
+    )
     try:
         candidate_id = bytes((24,)) + b"c" * 15
         _seed_cleanup_candidate(connector, candidate_id=candidate_id)
@@ -5775,9 +6119,12 @@ def test_candidate_wide_root_cleanup_rolls_back_and_retries_atomically(
 
 
 def test_source_build_cleanup_explicitly_rejects_open_family(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "open-source-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "open-source-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         build_id = bytes((51,)) + b"o" * 15
@@ -5799,11 +6146,13 @@ def test_source_build_cleanup_explicitly_rejects_open_family(
         results = _drain(connector, gate, cycle)
         assert results[-1].cycle_complete
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (build_id,),
         ) == ("OPEN",)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM catalog_source_build_descriptor WHERE build_id = %s",
             (build_id,),
         ) == (build_id,)
@@ -5812,9 +6161,12 @@ def test_source_build_cleanup_explicitly_rejects_open_family(
 
 
 def test_source_build_cleanup_deletes_sealed_build_manifest_child_first(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "sealed-source-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "sealed-source-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         build_id = bytes((52,)) + b"s" * 15
@@ -5847,7 +6199,8 @@ def test_source_build_cleanup_deletes_sealed_build_manifest_child_first(
             "catalog_source_build_descriptor",
         ):
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     f"SELECT 1 FROM {table} WHERE build_id = %s",
                     (build_id,),
                 )
@@ -5858,9 +6211,12 @@ def test_source_build_cleanup_deletes_sealed_build_manifest_child_first(
 
 
 def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "snapshot-manifest-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "snapshot-manifest-cleanup.sqlite3"))
+    )
     try:
         snapshot = bytes((53,)) + b"m" * 31
         _seed_minimal_canonical_value(
@@ -5894,7 +6250,8 @@ def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
             ("catalog_canonical_value_allocation_anchors", "value_sha256"),
         ):
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     f"SELECT 1 FROM {table} WHERE {key_column} = %s",
                     (snapshot,),
                 )
@@ -5909,10 +6266,15 @@ def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
     ("language", "contributor", "subject", "tag_directory"),
 )
 def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     facet_family: str,
 ) -> None:
-    connector = _database(tmp_path / f"retained-{facet_family}-facet.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"retained-{facet_family}-facet.sqlite3")
+        )
+    )
     try:
         value_sha256 = b"y" + facet_family.encode().ljust(31, b"-")
         digest_domain = {
@@ -5999,7 +6361,8 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
         retained_results = _drain(connector, gate, retained_cycle)
         assert retained_results[-1].cycle_complete
         assert retained_results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_canonical_value_allocation_anchors "
             "WHERE value_sha256 = %s",
             (value_sha256,),
@@ -6017,7 +6380,8 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
         released_results = _drain(connector, gate, released_cycle, now=1_001)
         assert released_results[-1].cycle_complete
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_canonical_value_allocation_anchors "
                 "WHERE value_sha256 = %s",
                 (value_sha256,),
@@ -6026,18 +6390,23 @@ def test_canonical_cleanup_retains_values_referenced_by_revision_facets(
         )
         if facet_family in {"subject", "tag_directory"}:
             assert (
-                connector.fetch_one("SELECT 1 FROM catalog_tag_terms WHERE tag_id = 99")
+                inspect_one(
+                    connector, "SELECT 1 FROM catalog_tag_terms WHERE tag_id = 99"
+                )
                 == ()
             )
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
     finally:
         connector.close()
 
 
 def test_operational_preparation_cleanup_preserves_every_complete_preparation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "preparation-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "preparation-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         activated = bytes((20,)) + b"a" * 15
@@ -6142,26 +6511,31 @@ def test_operational_preparation_cleanup_preserves_every_complete_preparation(
         )
         _drain(connector, gate, cycle)
 
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT preparation_id FROM operational_operational_preparations "
-            "ORDER BY preparation_id"
+            "ORDER BY preparation_id",
         ) == [(activated,), (unactivated,)]
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_event_streams "
             "WHERE preparation_id = %s",
             (activated,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_preparation_effect_seals "
             "WHERE preparation_id = %s",
             (activated,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_operational_events WHERE event_id = %s",
             (active_event,),
         ) == (1,)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_operational_event_streams "
                 "WHERE preparation_id = %s",
                 (abandoned,),
@@ -6169,7 +6543,8 @@ def test_operational_preparation_cleanup_preserves_every_complete_preparation(
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_operational_events WHERE event_id = %s",
                 (abandoned_event,),
             )
@@ -6180,9 +6555,12 @@ def test_operational_preparation_cleanup_preserves_every_complete_preparation(
 
 
 def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "observation-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "observation-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         staging_id = bytes((21,)) + b"s" * 15
@@ -6250,21 +6628,24 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
         )
         _drain(connector, gate, staging_cycle)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_gallery_observation_stagings "
                 "WHERE staging_id = %s",
                 (staging_id,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT observation_id FROM catalog_source_build_galleries "
             "WHERE build_id = %s AND gallery_id = 21",
             (build_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_gallery_observation_allocations "
-            "WHERE gallery_id = 21 AND observation_id = 1"
+            "WHERE gallery_id = 21 AND observation_id = 1",
         ) == (1,)
 
         reused_staging = bytes((30,)) + b"u" * 15
@@ -6421,13 +6802,15 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
         )
         _drain(connector, gate, observation_cycle, now=100)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_allocations "
-                "WHERE gallery_id = 24 AND observation_id = 2"
+                "WHERE gallery_id = 24 AND observation_id = 2",
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT observation_id FROM catalog_source_build_galleries "
             "WHERE build_id = %s AND gallery_id = 24",
             (reused_build,),
@@ -6441,36 +6824,41 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
         assert all(rows == [] for rows in vertical_rows)
         for table in ("catalog_gallery_manifests",):
             assert (
-                connector.fetch_all(
-                    f"SELECT 1 FROM {table} WHERE gallery_id = 24 AND observation_id = 2"
+                inspect_all(
+                    connector,
+                    f"SELECT 1 FROM {table} WHERE gallery_id = 24 AND observation_id = 2",
                 )
                 == []
             )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_directories "
-                "WHERE gallery_id = 24 AND observation_id = 2"
+                "WHERE gallery_id = 24 AND observation_id = 2",
             )
             == []
         )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_stat "
-                "WHERE gallery_id = 24 AND observation_id = 2"
+                "WHERE gallery_id = 24 AND observation_id = 2",
             )
             == []
         )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_scans "
-                "WHERE gallery_id = 24 AND observation_id = 2"
+                "WHERE gallery_id = 24 AND observation_id = 2",
             )
             == []
         )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_file_filesystem "
-                "WHERE gallery_id = 24 AND observation_id = 2"
+                "WHERE gallery_id = 24 AND observation_id = 2",
             )
             == []
         )
@@ -6479,9 +6867,12 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
 
 
 def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_locations(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "metadata-reachability-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "metadata-reachability-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         source_name = b"shared-gallery"
@@ -6631,46 +7022,57 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
         _drain(connector, gate, cycle, now=100)
 
         for table, column, value in qualification_facts:
-            assert connector.fetch_all(
+            assert inspect_all(
+                connector,
                 f"SELECT gallery_id, observation_id, {column} FROM {table} "
-                "ORDER BY gallery_id, observation_id"
+                "ORDER BY gallery_id, observation_id",
             ) == [(42, 2, value), (298, 1, value)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id, observation_id "
             "FROM catalog_gallery_observation_metadata_locals "
-            "ORDER BY gallery_id, observation_id"
+            "ORDER BY gallery_id, observation_id",
         ) == [(42, 2), (298, 1)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id, observation_id, gid, upload_time, download_time, "
             "modified_time FROM catalog_gallery_observation_metadata "
-            "ORDER BY gallery_id, observation_id"
+            "ORDER BY gallery_id, observation_id",
         ) == [
             (42, 2, gid, 10, 12, 22),
             (298, 1, gid, 10, 13, 23),
         ]
-        assert connector.fetch_all(
-            "SELECT gid FROM catalog_gallery_gid_identities"
+        assert inspect_all(
+            connector, "SELECT gid FROM catalog_gallery_gid_identities"
         ) == [(gid,)]
-        assert connector.fetch_all(
-            "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids"
+        assert inspect_all(
+            connector,
+            "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids",
         ) == [(source_name, gid)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id, source_gallery_name "
-            "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id"
+            "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id",
         ) == [(42, source_name), (298, source_name)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id, observation_id "
             "FROM catalog_gallery_observation_allocations "
-            "ORDER BY gallery_id, observation_id"
+            "ORDER BY gallery_id, observation_id",
         ) == [(42, 2), (298, 1)]
     finally:
         connector.close()
 
 
 def test_gallery_gid_identity_cleanup_honors_analysis_impacted_gid_storage(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "upload-time-analysis-gid-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "upload-time-analysis-gid-retention.sqlite3")
+        )
+    )
     try:
         gid = 9_101
         connector.execute(
@@ -6696,7 +7098,8 @@ def test_gallery_gid_identity_cleanup_honors_analysis_impacted_gid_storage(
             max_rows=8,
         )
         assert _drain(connector, gate, retained)[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s",
             (gid,),
         ) == (gid,)
@@ -6715,7 +7118,8 @@ def test_gallery_gid_identity_cleanup_honors_analysis_impacted_gid_storage(
         )
         assert _drain(connector, gate, reclaim, now=101)[-1].deleted_count == 1
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT gid FROM catalog_gallery_gid_identities WHERE gid = %s",
                 (gid,),
             )
@@ -6726,9 +7130,12 @@ def test_gallery_gid_identity_cleanup_honors_analysis_impacted_gid_storage(
 
 
 def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "shared-metadata-cleanup-order.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "shared-metadata-cleanup-order.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         source_name = b"a"
@@ -6785,7 +7192,7 @@ def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
         )
         assert _drain(connector, gate, identity)[-1].deleted_count == 2
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_gallery_source_name_accesses")
+            inspect_all(connector, "SELECT 1 FROM catalog_gallery_source_name_accesses")
             == []
         )
 
@@ -6805,15 +7212,22 @@ def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
             max_rows=8,
         )
         assert _drain(connector, gate, upload)[-1].deleted_count == 1
-        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_gid_identities") == []
+        assert (
+            inspect_all(connector, "SELECT 1 FROM catalog_gallery_gid_identities") == []
+        )
     finally:
         connector.close()
 
 
 def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "gallery-identity-witness-retention.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "gallery-identity-witness-retention.sqlite3")
+        )
+    )
     try:
         content_gallery_id = 45
         gid_gallery_id = content_gallery_id + 256
@@ -6867,7 +7281,8 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
         )
         blocked = _drain(connector, gate, blocked_cycle)
         assert blocked[-1].deleted_count == 0
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id FROM catalog_gallery_identities "
             "WHERE MOD(gallery_id, 256) = %s ORDER BY gallery_id",
             (content_gallery_id,),
@@ -6894,7 +7309,8 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
         unblocked = _drain(connector, gate, unblocked_cycle, now=201)
         assert unblocked[-1].deleted_count == 2
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT gallery_id FROM catalog_gallery_identities "
                 "WHERE MOD(gallery_id, 256) = %s ORDER BY gallery_id",
                 (content_gallery_id,),
@@ -6906,9 +7322,12 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
 
 
 def test_foreign_owner_predecessor_blocks_staging_compaction(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "predecessor-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "predecessor-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         selected = bytes((22,)) + b"a" * 15
@@ -6974,12 +7393,14 @@ def test_foreign_owner_predecessor_blocks_staging_compaction(
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_gallery_observation_stagings "
             "WHERE staging_id = %s",
             (selected,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_gallery_observation_staging_request_predecessors "
             "WHERE request_sha256 = %s",
             (next_request,),
@@ -6989,9 +7410,14 @@ def test_foreign_owner_predecessor_blocks_staging_compaction(
 
 
 def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_deletes_family(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "canonical-source-root-retained.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "canonical-source-root-retained.sqlite3")
+        )
+    )
     try:
         source_root = bytes((71,)) + b"r" * 31
         _seed_minimal_canonical_value(
@@ -7039,13 +7465,15 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             locator_sha256=locator,
         )
         before = (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_canonical_value_allocations "
                 "WHERE value_sha256 = %s",
                 (source_root,),
             ),
             _canonical_page_component_rows(connector, b"R" * 32),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_canonical_value_identities "
                 "WHERE value_sha256 = %s",
                 (source_root,),
@@ -7074,13 +7502,15 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
         assert results[-1].cycle_complete
         assert results[-1].deleted_count == 0
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_canonical_value_allocations "
                 "WHERE value_sha256 = %s",
                 (source_root,),
             ),
             _canonical_page_component_rows(connector, b"R" * 32),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_canonical_value_identities "
                 "WHERE value_sha256 = %s",
                 (source_root,),
@@ -7116,16 +7546,16 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             now=300,
         )
         traced: list[str] = []
-        connector.connection.set_trace_callback(traced.append)
-        results = _drain(connector, gate, unreferenced_cycle, now=301)
-        connector.connection.set_trace_callback(None)
+        with trace_statements(connector, traced):
+            results = _drain(connector, gate, unreferenced_cycle, now=301)
         assert results[-1].cycle_complete
         # Two source-scope family candidates plus eight narrow canonical
         # identity/page/allocation candidates are removed child-first.
         assert results[-1].deleted_count == 10
         assert _source_scope_family_rows(connector) == ([],)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_canonical_value_allocations "
                 "WHERE value_sha256 = %s",
                 (source_root,),
@@ -7136,7 +7566,8 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             not rows for rows in _canonical_page_component_rows(connector, b"R" * 32)
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_canonical_value_identities "
                 "WHERE value_sha256 = %s",
                 (source_root,),
@@ -7156,9 +7587,12 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
 
 
 def test_canonical_cleanup_removes_wide_policy_semantics_atomically(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "canonical-wide-policy.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "canonical-wide-policy.sqlite3"))
+    )
     try:
         policy = identity.artifact_policy_digest(
             2,
@@ -7193,7 +7627,8 @@ def test_canonical_cleanup_removes_wide_policy_semantics_atomically(
         assert results[-1].cycle_complete
         assert _artifact_policy_semantics_family_rows(connector) == ([],)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_canonical_value_allocations "
                 "WHERE value_sha256 = %s",
                 (policy,),
@@ -7206,11 +7641,14 @@ def test_canonical_cleanup_removes_wide_policy_semantics_atomically(
 
 @pytest.mark.parametrize("max_rows", (1, 256))
 def test_canonical_cleanup_deduplicates_orphan_title_cache_multi_root_join(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     max_rows: int,
 ) -> None:
     connector = _database(
-        tmp_path / f"canonical-title-cache-multi-root-{max_rows}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"canonical-title-cache-multi-root-{max_rows}.sqlite3")
+        )
     )
     try:
         seed_title_sort_policy(connector)
@@ -7247,7 +7685,8 @@ def test_canonical_cleanup_deduplicates_orphan_title_cache_multi_root_join(
         gate = _exclusive(connector)
         all_results: list[CleanupBatchResult] = []
         cycle_index = 0
-        while connector.fetch_one(
+        while inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_canonical_value_allocation_anchors "
             "WHERE value_sha256 IN (%s, %s, %s)",
             (source_title, display_title, sort_title),
@@ -7296,11 +7735,14 @@ def test_canonical_cleanup_deduplicates_orphan_title_cache_multi_root_join(
             assert cycle_index <= 3
         assert all(result.row_count <= max_rows for result in all_results)
         assert cycle_index == (3 if max_rows == 1 else 1)
-        assert connector.fetch_all("SELECT * FROM catalog_display_title_choices") == []
-        assert connector.fetch_all("SELECT * FROM catalog_title_sorts") == []
+        assert (
+            inspect_all(connector, "SELECT * FROM catalog_display_title_choices") == []
+        )
+        assert inspect_all(connector, "SELECT * FROM catalog_title_sorts") == []
         for value in (source_title, display_title, sort_title):
             assert (
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT value_sha256 "
                     "FROM catalog_canonical_value_allocation_anchors "
                     "WHERE value_sha256 = %s",
@@ -7308,15 +7750,18 @@ def test_canonical_cleanup_deduplicates_orphan_title_cache_multi_root_join(
                 )
                 == ()
             )
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
     finally:
         connector.close()
 
 
 def test_canonical_source_scope_delete_faults_roll_back_every_child_boundary(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "canonical-source-scope-faults.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "canonical-source-scope-faults.sqlite3"))
+    )
     try:
         source_root = bytes((73,)) + b"r" * 31
         _seed_minimal_canonical_value(
@@ -7382,9 +7827,12 @@ def test_canonical_source_scope_delete_faults_roll_back_every_child_boundary(
 
 
 def test_analysis_overlay_cleanup_observes_exact_child_first_order(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-overlay-order.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-overlay-order.sqlite3"))
+    )
     try:
         analysis_id = _seed_abandoned_analysis_for_cleanup(
             connector,
@@ -7407,80 +7855,79 @@ def test_analysis_overlay_cleanup_observes_exact_child_first_order(
         )
 
         traced: list[str] = []
-        connector.connection.set_trace_callback(traced.append)
-        overlay = _advance(
-            connector,
-            gate,
-            cycle,
-            1,
-            b"o" * 32,
-            now=20,
-        )
-        overlay_terminal = _advance(
-            connector,
-            gate,
-            cycle,
-            2,
-            b"t" * 32,
-            now=21,
-        )
-        file_values = _advance(
-            connector,
-            gate,
-            cycle,
-            1,
-            b"v" * 32,
-            now=22,
-        )
-        file_values_terminal = _advance(
-            connector,
-            gate,
-            cycle,
-            2,
-            b"w" * 32,
-            now=23,
-        )
-        provenance = _advance(
-            connector,
-            gate,
-            cycle,
-            1,
-            b"p" * 32,
-            now=24,
-        )
-        provenance_terminal = _advance(
-            connector,
-            gate,
-            cycle,
-            2,
-            b"q" * 32,
-            now=25,
-        )
-        file_anchor = _advance(
-            connector,
-            gate,
-            cycle,
-            1,
-            b"a" * 32,
-            now=26,
-        )
-        file_anchor_terminal = _advance(
-            connector,
-            gate,
-            cycle,
-            2,
-            b"b" * 32,
-            now=27,
-        )
-        evidence = _advance(
-            connector,
-            gate,
-            cycle,
-            1,
-            b"e" * 32,
-            now=28,
-        )
-        connector.connection.set_trace_callback(None)
+        with trace_statements(connector, traced):
+            overlay = _advance(
+                connector,
+                gate,
+                cycle,
+                1,
+                b"o" * 32,
+                now=20,
+            )
+            overlay_terminal = _advance(
+                connector,
+                gate,
+                cycle,
+                2,
+                b"t" * 32,
+                now=21,
+            )
+            file_values = _advance(
+                connector,
+                gate,
+                cycle,
+                1,
+                b"v" * 32,
+                now=22,
+            )
+            file_values_terminal = _advance(
+                connector,
+                gate,
+                cycle,
+                2,
+                b"w" * 32,
+                now=23,
+            )
+            provenance = _advance(
+                connector,
+                gate,
+                cycle,
+                1,
+                b"p" * 32,
+                now=24,
+            )
+            provenance_terminal = _advance(
+                connector,
+                gate,
+                cycle,
+                2,
+                b"q" * 32,
+                now=25,
+            )
+            file_anchor = _advance(
+                connector,
+                gate,
+                cycle,
+                1,
+                b"a" * 32,
+                now=26,
+            )
+            file_anchor_terminal = _advance(
+                connector,
+                gate,
+                cycle,
+                2,
+                b"b" * 32,
+                now=27,
+            )
+            evidence = _advance(
+                connector,
+                gate,
+                cycle,
+                1,
+                b"e" * 32,
+                now=28,
+            )
 
         expected_order = _ALL_ANALYSIS_OVERLAY_TABLES + (
             "catalog_analysis_impacted_galleries",
@@ -7514,7 +7961,8 @@ def test_analysis_overlay_cleanup_observes_exact_child_first_order(
             row == (0,) for row in _analysis_overlay_rows(connector, analysis_id)
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_analysis_impacted_galleries "
                 "WHERE analysis_id = %s",
                 (analysis_id,),
@@ -7522,14 +7970,18 @@ def test_analysis_overlay_cleanup_observes_exact_child_first_order(
             == ()
         )
     finally:
-        connector.connection.set_trace_callback(None)
         connector.close()
 
 
 def test_static_terminal_rejects_earlier_spec_reappearance_after_later_cursor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-overlay-earlier-reappearance.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "analysis-overlay-earlier-reappearance.sqlite3")
+        )
+    )
     file_sha256 = b"f" * 32
     try:
         analysis_id = _seed_abandoned_analysis_for_cleanup(
@@ -7630,9 +8082,12 @@ def test_static_terminal_rejects_earlier_spec_reappearance_after_later_cursor(
 
 
 def test_analysis_overlay_delete_faults_roll_back_every_table_boundary(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-overlay-faults.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-overlay-faults.sqlite3"))
+    )
     try:
         analysis_id = _seed_abandoned_analysis_for_cleanup(
             connector,
@@ -7715,7 +8170,8 @@ def test_analysis_overlay_delete_faults_roll_back_every_table_boundary(
             assert committed.phase == phase_name
             assert committed.row_count == len(phase_tables)
             assert all(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     f"SELECT COUNT(*) FROM {table} WHERE analysis_id = %s",
                     (analysis_id,),
                 )
@@ -7737,7 +8193,8 @@ def test_analysis_overlay_delete_faults_roll_back_every_table_boundary(
             )
             assert terminal.phase == expected_next
             assert terminal.row_count == 0
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_analysis_impacted_galleries "
                 "WHERE analysis_id = %s",
                 (analysis_id,),
@@ -7751,9 +8208,12 @@ def test_analysis_overlay_delete_faults_roll_back_every_table_boundary(
 
 
 def test_analysis_overlay_cleanup_removes_atomic_and_orphan_rows_by_phase(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-overlay-partial.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-overlay-partial.sqlite3"))
+    )
     try:
         analysis_id = _seed_abandoned_analysis_for_cleanup(
             connector,
@@ -7896,9 +8356,12 @@ def test_analysis_overlay_cleanup_removes_atomic_and_orphan_rows_by_phase(
 
 
 def test_analysis_wide_root_delete_fault_rolls_back_and_retries(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "analysis-root-family-faults.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "analysis-root-family-faults.sqlite3"))
+    )
     try:
         analysis_id = bytes((91,)) + b"a" * 15
         build_id = b"R" * 16
@@ -8007,9 +8470,12 @@ def test_analysis_wide_root_delete_fault_rolls_back_and_retries(
 
 
 def test_canonical_policy_delete_faults_roll_back_every_child_boundary(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "canonical-policy-faults.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "canonical-policy-faults.sqlite3"))
+    )
     try:
         policy = identity.artifact_policy_digest(
             2,
@@ -8084,9 +8550,14 @@ def test_canonical_policy_delete_faults_roll_back_every_child_boundary(
 
 
 def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "canonical-semantic-family-faults.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "canonical-semantic-family-faults.sqlite3")
+        )
+    )
     try:
         semantics = bytes((24,)) + b"s" * 31
         _seed_minimal_canonical_value(
@@ -8181,13 +8652,18 @@ def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
 )
 @pytest.mark.parametrize("current_only", [False, True])
 def test_canonical_cleanup_retains_physical_artifact_semantic_consumers(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     blocker_table: str,
     blocker_sql: str,
     blocker_parameters: tuple[object, ...],
     current_only: bool,
 ) -> None:
-    connector = _database(tmp_path / f"semantic-retained-{blocker_table}.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"semantic-retained-{blocker_table}.sqlite3")
+        )
+    )
     try:
         semantics = bytes((26,)) + b"s" * 31
         _seed_minimal_canonical_value(
@@ -8225,7 +8701,8 @@ def test_canonical_cleanup_retains_physical_artifact_semantic_consumers(
             )
             == family_before
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT value_sha256 FROM catalog_canonical_value_allocation_anchors "
             "WHERE value_sha256 = %s",
             (semantics,),
@@ -8235,9 +8712,12 @@ def test_canonical_cleanup_retains_physical_artifact_semantic_consumers(
 
 
 def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "digest-cleanup.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "digest-cleanup.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
 
@@ -8301,7 +8781,8 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
         _drain(connector, gate, canonical_cycle)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_canonical_value_allocations "
                 "WHERE value_sha256 = %s",
                 (value,),
@@ -8352,13 +8833,15 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
         _drain(connector, gate, page_cycle, now=50)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_pages WHERE page_sha256 = %s",
                 (page,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_gallery_observation_pages WHERE page_sha256 = %s",
             (child,),
         ) == (1,)
@@ -8384,8 +8867,9 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
         _drain(connector, gate, gallery_cycle, now=100)
         assert (
-            connector.fetch_one(
-                "SELECT 1 FROM catalog_gallery_identities WHERE gallery_id = 34"
+            inspect_one(
+                connector,
+                "SELECT 1 FROM catalog_gallery_identities WHERE gallery_id = 34",
             )
             == ()
         )
@@ -8428,7 +8912,8 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
         _drain(connector, gate, upload_cycle, now=150)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE generation = 5 AND value_sha256 = %s",
                 (upload,),
@@ -8452,7 +8937,8 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
         _drain(connector, gate, artifact_cycle, now=200)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_artifact_blobs WHERE artifact_sha256 = %s",
                 (artifact,),
             )
@@ -8487,7 +8973,8 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
         _drain(connector, gate, cache_cycle, now=250)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_hash_cache_observations "
                 "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
                 (source, fingerprint),
@@ -8520,12 +9007,17 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
     ),
 )
 def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     blocker_table: str,
     blocker_sql: str,
     blocker_parameters: tuple[object, ...],
 ) -> None:
-    connector = _database(tmp_path / f"artifact-retained-{blocker_table}.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / f"artifact-retained-{blocker_table}.sqlite3")
+        )
+    )
     try:
         artifact_sha256 = bytes((25,)) + b"a" * 31
         _fixture_rows(
@@ -8549,7 +9041,8 @@ def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT artifact_sha256 FROM catalog_artifact_blobs "
             "WHERE artifact_sha256 = %s",
             (artifact_sha256,),
@@ -8563,10 +9056,13 @@ def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
     tuple(_GALLERY_PAGE_DELETE_PHASE_BY_TABLE),
 )
 def test_gallery_page_cleanup_fault_rolls_back_its_complete_child_first_phase(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     failed_table: str,
 ) -> None:
-    connector = _database(tmp_path / "gallery-page-cleanup-fault.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "gallery-page-cleanup-fault.sqlite3"))
+    )
     try:
         parent = bytes((80,)) + b"p" * 31
         child = bytes((81,)) + b"c" * 31
@@ -8619,9 +9115,12 @@ def test_gallery_page_cleanup_fault_rolls_back_its_complete_child_first_phase(
 
 
 def test_gallery_page_cleanup_exact_delete_order_and_partial_family_support(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "gallery-page-cleanup-order.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "gallery-page-cleanup-order.sqlite3"))
+    )
     try:
         parent = bytes((80,)) + b"p" * 31
         child = bytes((81,)) + b"c" * 31
@@ -8635,9 +9134,8 @@ def test_gallery_page_cleanup_exact_delete_order_and_partial_family_support(
             max_rows=32,
         )
         traced: list[str] = []
-        connector.connection.set_trace_callback(traced.append)
-        results = _drain(connector, gate, cycle)
-        connector.connection.set_trace_callback(None)
+        with trace_statements(connector, traced):
+            results = _drain(connector, gate, cycle)
         expected_order = (
             "catalog_gallery_observation_page_children",
             "catalog_gallery_observation_page_key_bounds_seals",
@@ -8660,14 +9158,16 @@ def test_gallery_page_cleanup_exact_delete_order_and_partial_family_support(
         assert observed_order == expected_order
         assert results[-1].deleted_count == len(expected_order)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_page_descriptor_anchors "
                 "WHERE page_sha256 = %s",
                 (parent,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_gallery_observation_page_descriptor_seals "
             "WHERE page_sha256 = %s",
             (child,),
@@ -8703,7 +9203,8 @@ def test_gallery_page_cleanup_exact_delete_order_and_partial_family_support(
         partial_results = _drain(connector, gate, partial_cycle, now=101)
         assert partial_results[-1].deleted_count == 8
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_gallery_observation_page_descriptor_anchors "
                 "WHERE page_sha256 = %s",
                 (partial,),
@@ -8715,9 +9216,12 @@ def test_gallery_page_cleanup_exact_delete_order_and_partial_family_support(
 
 
 def test_live_generation_upload_incoming_page_and_redownload_roots_block(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "retention-blockers.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "retention-blockers.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         build = bytes((40,)) + b"b" * 15
@@ -8810,33 +9314,41 @@ def test_live_generation_upload_incoming_page_and_redownload_roots_block(
             results = _drain(connector, gate, cycle, now=20 + shard)
             assert results[-1].deleted_count == 0
 
-        assert connector.fetch_one(
-            "SELECT 1 FROM catalog_source_builds WHERE build_id = %s", (build,)
+        assert inspect_one(
+            connector,
+            "SELECT 1 FROM catalog_source_builds WHERE build_id = %s",
+            (build,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_canonical_value_uploads "
             "WHERE generation = 10 AND value_sha256 = %s",
             (value,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_canonical_value_allocations WHERE value_sha256 = %s",
             (value,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_gallery_observation_pages WHERE page_sha256 = %s",
             (page,),
         ) == (1,)
-        assert connector.fetch_one(
-            "SELECT 1 FROM catalog_gallery_identities WHERE gallery_id = 44"
+        assert inspect_one(
+            connector, "SELECT 1 FROM catalog_gallery_identities WHERE gallery_id = 44"
         ) == (1,)
     finally:
         connector.close()
 
 
 def test_latest_receipt_corruption_and_stale_attempts_fail_before_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "receipt-corruption.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "receipt-corruption.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         first = bytes((45,)) + b"a" * 31
@@ -8849,15 +9361,17 @@ def test_latest_receipt_corruption_and_stale_attempts_fail_before_writes(
         cycle = _begin(connector, gate, CleanupTargetKind.CONTENT_BLOB, 45, max_rows=1)
         committed = _advance(connector, gate, cycle, 1, b"a" * 32, now=3)
         assert committed.cursor == first
-        remaining = connector.fetch_all(
-            "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256"
+        remaining = inspect_all(
+            connector,
+            "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
         )
 
         with pytest.raises(CleanupUnavailableError, match="stale"):
             _advance(connector, gate, cycle, 1, b"b" * 32, now=4)
         assert (
-            connector.fetch_all(
-                "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256"
+            inspect_all(
+                connector,
+                "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
             )
             == remaining
         )
@@ -8870,8 +9384,9 @@ def test_latest_receipt_corruption_and_stale_attempts_fail_before_writes(
         with pytest.raises(CleanupCorruptionError, match="receipt"):
             _advance(connector, gate, cycle, 1, b"a" * 32, now=5)
         assert (
-            connector.fetch_all(
-                "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256"
+            inspect_all(
+                connector,
+                "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
             )
             == remaining
         )
@@ -8880,9 +9395,12 @@ def test_latest_receipt_corruption_and_stale_attempts_fail_before_writes(
 
 
 def test_empty_terminal_response_loss_is_zero_write_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "terminal-transition-replay.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "terminal-transition-replay.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         cycle = _begin(connector, gate, CleanupTargetKind.ARTIFACT_BLOB, 47, max_rows=8)
@@ -8891,12 +9409,14 @@ def test_empty_terminal_response_loss_is_zero_write_replay(
         assert committed.phase_complete and committed.cycle_complete
         assert not committed.replayed
         before = (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s ORDER BY phase",
                 (cycle.cleanup_id,),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT state, completed_at, final_chain_sha256, final_deleted_count "
                 "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
                 (cycle.cleanup_id,),
@@ -8915,12 +9435,14 @@ def test_empty_terminal_response_loss_is_zero_write_replay(
             replayed=True,
         )
         after = (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM operational_cleanup_checkpoints "
                 "WHERE cleanup_id = %s ORDER BY phase",
                 (cycle.cleanup_id,),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT state, completed_at, final_chain_sha256, final_deleted_count "
                 "FROM operational_cleanup_jobs WHERE cleanup_id = %s",
                 (cycle.cleanup_id,),
@@ -8933,10 +9455,13 @@ def test_empty_terminal_response_loss_is_zero_write_replay(
 
 @pytest.mark.parametrize("current_only", [False, True])
 def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     current_only: bool,
 ) -> None:
-    connector = _database(tmp_path / "retention-race.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "retention-race.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         file_sha256 = bytes((48,)) + b"f" * 31
@@ -8964,7 +9489,9 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
             if current_only:
                 with connector.transaction():
                     VNextCleanupRepository.advance_current_only_cycle(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         cycle=cycle,
                         now=now,
@@ -9000,12 +9527,14 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
             pytest.raises(CleanupRetentionBlockedError, match="retention root"),
         ):
             advance(now=3)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_content_blobs WHERE file_sha256 = %s",
             (file_sha256,),
         ) == (1,)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_file_hash_caches "
                 "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
                 (source, fingerprint),
@@ -9015,7 +9544,8 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
 
         with pytest.raises(RuntimeError, match="stale or expired"):
             advance(now=100_002)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_content_blobs WHERE file_sha256 = %s",
             (file_sha256,),
         ) == (1,)
@@ -9024,9 +9554,12 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
 
 
 def test_staging_identity_delete_rolls_back_on_write_fault(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "paired-delete-fault.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "paired-delete-fault.sqlite3"))
+    )
     try:
         gate = _exclusive(connector)
         staging = bytes((46,)) + b"s" * 15
@@ -9117,7 +9650,8 @@ def test_staging_identity_delete_rolls_back_on_write_fault(
             pytest.raises(RuntimeError, match="injected"),
         ):
             _advance(connector, gate, cycle, 1, b"4" * 32, now=6)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM operational_gallery_observation_staging_requests "
             "WHERE request_sha256 = %s",
             (request,),
@@ -9126,7 +9660,8 @@ def test_staging_identity_delete_rolls_back_on_write_fault(
         committed = _advance(connector, gate, cycle, 1, b"4" * 32, now=7)
         assert committed.row_count == 1
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_gallery_observation_staging_requests "
                 "WHERE request_sha256 = %s",
                 (request,),
@@ -9138,6 +9673,7 @@ def test_staging_identity_delete_rolls_back_on_write_fault(
 
 
 def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     source = Path(cleanup_module.__file__).read_text(encoding="utf-8").upper()
@@ -9154,7 +9690,9 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
     ):
         assert removed_surface not in source
 
-    connector = _database(tmp_path / "cleanup-explain.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "cleanup-explain.sqlite3"))
+    )
     try:
         target = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
         spec = target.phases["AR_ROOT"][0]
@@ -9182,9 +9720,21 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
                 hash_cache_max_age_microseconds=0,
             ),
         ) + (8,)
-        plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
-        assert plan
-        assert any("INDEX" in str(row[-1]).upper() for row in plan)
+        if connector_backend(connector) == "sqlite":
+            plan = inspect_all(connector, "EXPLAIN QUERY PLAN " + sql, parameters)
+            assert plan
+            assert any("INDEX" in str(row[-1]).upper() for row in plan)
+        else:
+            plan = inspect_all(connector, "EXPLAIN " + sql, parameters)
+            roots = [
+                row for row in plan if row[1] == "PRIMARY" and row[2] in {"c", "r"}
+            ]
+            assert {row[2] for row in roots} == {"c", "r"}, plan
+            assert all(
+                row[3] in {"eq_ref", "ref", "range"} and row[5] for row in roots
+            ), plan
+        # This empty-fixture plan is only a syntax/index-shape oracle. It does
+        # not bound physical work in the reachability subqueries or at scale.
     finally:
         connector.close()
 

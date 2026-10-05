@@ -79,6 +79,8 @@
 - Breaking API、CLI、config、schema、protocol、資料格式或 Python/platform
   support變更必須提高 compatibility lane或 major。
 - tests、一般文件、IDE、hooks、CI與 dev-only tooling 單獨變更時不升版。
+- 整個 task只判定一次升版；commit的 breaking／feature訊號僅在該 commit
+  實際修改 release surface時影響 project version，不由 dev-only訊號升版。
 - 未分類路徑必須明確判定 impact，不得靜默當作 `none`。
 - 已證實不改 artifact或行為的格式化、註解或重構可在 task commits加入
   `Version-Impact: none` 與非空白的 `Version-Reason:`；最終回覆也必須揭露。
@@ -215,6 +217,19 @@
 ## 測試與例外
 
 - runtime行為變更必須新增或更新測試；bug fix必須有 regression test。
+- 可攜的 SQL、交易、恢復與成本情境必須共用同一組測試主體及非 backend
+  參數，透過登記的 fixture同時收集 SQLite與 MariaDB版本；不得只新增其中
+  一種，再以其他情境的 smoke作為替代。Core與受影響 consumer都須檢查。
+  `--check-backend-pairs`在執行前核對完整 collection；test-only native
+  Core connector connection guard拒絕未分類或繞過所選 backend的連線。
+  直接呼叫 driver的檢查及 subprocess不在攔截範圍，必須另外檢查其實際
+  database authority，不能以相鄰 SQLite檔案代替 MariaDB狀態。真正的引擎專屬
+  契約須在個別測試或參數以 `backend_specific(backend=..., reason=...)`
+  記錄具體理由，禁止從 module/class 繼承整批豁免；collection 檢查標記
+  來源，測試內容是否真正專屬仍須 code review。SQLite
+  VM、MariaDB server crash可以使用不同原生 oracle，但不得豁免可攜語義。
+  Subprocess的明確 backend輸入與跨 backend reference另行審查；collection
+  配對、原生連線 guard及兩個引擎實際執行是不同證據，skip不算完成。
 - 新功能涵蓋正常、邊界與錯誤路徑。
 - 數值測試固定隨機種子；容許誤差需有依據。
 - flaky test視為失敗，不得以重跑掩蓋。
@@ -300,6 +315,15 @@ application facades。
 - Consumers只使用 `VNextDatabaseAdminFacade`、`VNextCatalogFacade`、
   `VNextIngestFacade`、`VNextDownloadQueueFacade`與公開 immutable values，
   不得直接使用 connector、repository、generated schema或 table internals。
+  僅開發期 backend coverage guard、隔離 fixture與獨立 database oracle可
+  使用 native connector驗證實際 backend或測試資料；synthetic probe的資料
+  複製工具可讀取 generated schema dependency order。以上例外只適用本機
+  合成、可拋棄的測試資料庫，不得進入 shipped consumer runtime，不授權
+  production或 live帳號的直接 SQL，也不得形成第二個 schema authoring surface。
+  本機合成資料庫的 consumer故障測試可對原生稽核 database clock結果、公開
+  ingest facade clock及 adapter session clock套用同一時間偏移；只在 owner
+  資源停止後推進到期，保留原生時間查詢、SQL、鎖定與 fencing判斷，並驗證
+  到期前接管拒絕及接管後舊 token拒絕。此時鐘例外不得進入 shipped runtime。
 - 不得重新加入 `H2HDB`、`MigrationRunner`、numbered migration ledger、legacy
   hand-written catalog repositories、compatibility view或 dual-write path。
 - Public administration與 catalog-opening entry points只能使用 wheel-resident
@@ -488,7 +512,8 @@ Schema變更依序進行：
   epoch/version/manifest probe。Provider blocker必須在開啟或修改 database前
   fail；consumers不得初始化 schema。
 - Shared schema、transaction、connector、validator或 repository變更都須測
-  SQLite。MariaDB cases以 `H2HDB_TEST_MARIADB=1`啟用 testcontainers，並固定
+  SQLite與 MariaDB；與修改相關的案例必須在兩個 backend實際執行。
+  MariaDB cases以 `H2HDB_TEST_MARIADB=1`啟用 testcontainers，並固定
   MariaDB 10.11.11，對應 Synology package build 10.11.11-1551。
 - bounded merge profile只執行明列的少量 `mariadb_smoke`；其餘 MariaDB cases
   屬於手動 deep profile，不得由 release receipt推稱已執行。

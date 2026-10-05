@@ -9,10 +9,17 @@ from unittest.mock import patch
 import pytest
 import test_vnext_publication_candidate_repository as fixture
 from vnext_catalog_identity_fixtures import seed_tag_term
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_one,
+    set_foreign_key_checks,
+)
 
+from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb import vnext_publication_candidate_repository as module
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_ingest_fence_repository import IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import GateLease
 from h2hdb.vnext_publication_candidate_repository import (
@@ -31,19 +38,19 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 
 @contextmanager
 def _catalog(
-    path: Path,
+    config: CoreConfig,
     *,
     count: int = 1,
 ) -> Iterator[
     tuple[
-        SQLiteConnector,
+        SQLConnector,
         PublicationCatalogProjectionPlan,
         PublicationCatalogProjectionPlan,
         GateLease,
         IngestTurn,
     ]
 ]:
-    connector = fixture._generated_database(path)
+    connector = fixture._generated_database(config)
     try:
         gate, turn = fixture._authorities(connector)
         with connector.transaction():
@@ -81,7 +88,7 @@ def _catalog(
         fixture._complete_selection(connector, gate, turn)
         with connector.transaction():
             authority = Repository.issue_projection_authority(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=fixture._CANDIDATE,
@@ -90,12 +97,12 @@ def _catalog(
         with ExitStack() as stack:
             plan = stack.enter_context(
                 Repository.prepare_catalog_projection(
-                    connector, backend="sqlite", authority=authority
+                    connector, backend=connector_backend(connector), authority=authority
                 )
             )
             validation = stack.enter_context(
                 Repository.prepare_catalog_projection_validation(
-                    connector, backend="sqlite", authority=authority
+                    connector, backend=connector_backend(connector), authority=authority
                 )
             )
             fixture._upload_projection_canonical_values(
@@ -104,7 +111,9 @@ def _catalog(
             for index in range(plan.child_count // 128 + 2):
                 with connector.transaction():
                     batch = Repository.process_catalog_projection_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         candidate_id=fixture._CANDIDATE,
@@ -134,9 +143,12 @@ def _children(
 
 
 def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with _catalog(tmp_path / "bounded.sqlite3", count=64) as (
+    with _catalog(
+        database_factory.config(str(tmp_path / "bounded.sqlite3")), count=64
+    ) as (
         connector,
         plan,
         validation,
@@ -149,7 +161,7 @@ def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
             if child.kind == module._CatalogChildKind.SUBJECT
         )
         assert len(subjects) == 128
-        work = VNextUnitOfWork(connector, backend="sqlite")
+        work = VNextUnitOfWork(connector, backend=connector_backend(connector))
         with connector.transaction():
             authority = module._load_projection_authority(work, plan.authority)
             publications = tuple(
@@ -198,9 +210,12 @@ def test_subject_128_child_comparison_and_persistence_each_use_one_statement(
 
 
 def test_physical_publication_batch_rejects_129_rows_before_query(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = fixture._generated_database(tmp_path / "family-bound.sqlite3")
+    connector = fixture._generated_database(
+        database_factory.config(str(tmp_path / "family-bound.sqlite3"))
+    )
     try:
         family = CatalogPublicationFamily(
             1, b"p" * 32, 1, b"s" * 32, b"l" * 32, 1, b"t" * 32
@@ -234,20 +249,20 @@ def test_physical_publication_batch_rejects_129_rows_before_query(
     ],
 )
 def test_batched_comparison_rejects_corruption_without_checkpoint_progress(
-    tmp_path: Path, corruption: str
+    database_factory: DatabaseFactory, tmp_path: Path, corruption: str
 ) -> None:
-    with _catalog(tmp_path / "corruption.sqlite3") as (
+    with _catalog(database_factory.config(str(tmp_path / "corruption.sqlite3"))) as (
         connector,
         _,
         validation,
         gate,
         turn,
     ):
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(corruption)
         with pytest.raises(PublicationCandidateConflictError), connector.transaction():
             Repository.validate_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=fixture._CANDIDATE,
@@ -255,23 +270,31 @@ def test_batched_comparison_rejects_corruption_without_checkpoint_progress(
                 batch_key=b"corrupt",
                 now=10_000,
             )
-        assert connector.fetch_one(
-            "SELECT generation, cursor, processed_count, state FROM catalog_publication_checkpoints WHERE candidate_id = %s AND stage = %s",
+        assert inspect_one(
+            connector,
+            "SELECT generation, `cursor`, processed_count, state FROM catalog_publication_checkpoints WHERE candidate_id = %s AND stage = %s",
             (fixture._CANDIDATE, b"VALIDATE_CATALOG_PROJECTION"),
         ) == (1, b"", 0, "OPEN")
 
 
 def test_search_canonical_domain_and_partial_family_are_checked_in_batches(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    with _catalog(tmp_path / "canonical.sqlite3") as (connector, _, validation, _, _):
+    with _catalog(database_factory.config(str(tmp_path / "canonical.sqlite3"))) as (
+        connector,
+        _,
+        validation,
+        _,
+        _,
+    ):
         postings = tuple(
             child
             for child in _children(validation)
             if child.kind == module._CatalogChildKind.SEARCH_POSTING
         )
         assert len(postings) > 1
-        work = VNextUnitOfWork(connector, backend="sqlite")
+        work = VNextUnitOfWork(connector, backend=connector_backend(connector))
         with connector.transaction():
             authority = module._load_projection_authority(work, validation.authority)
             queries: list[str] = []
@@ -303,7 +326,7 @@ def test_search_canonical_domain_and_partial_family_are_checked_in_batches(
             connector.transaction(),
         ):
             module._compare_projection_children(work, authority, validation, postings)
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "DELETE FROM catalog_canonical_value_allocation_digest_domains WHERE value_sha256 = %s",
             (value,),
@@ -419,7 +442,8 @@ def test_real_backend_child_batches_replay_and_reject_physical_corruption(
                     now=123,
                 )
             with connector.read_transaction():
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT processed_count FROM catalog_publication_checkpoints WHERE candidate_id = %s AND stage = %s",
                     (fixture._CANDIDATE, b"VALIDATE_CATALOG_PROJECTION"),
                 ) == (0,)

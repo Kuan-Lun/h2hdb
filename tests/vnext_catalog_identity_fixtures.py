@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from vnext_test_database import atomic_fixture
+
 from h2hdb.vnext_identity import file_role as derive_file_role
 
 
+@atomic_fixture
 def seed_gallery_identity(
     connector: Any,
     *,
@@ -21,6 +24,7 @@ def seed_gallery_identity(
     )
 
 
+@atomic_fixture
 def seed_file_name_identity(
     connector: Any,
     *,
@@ -37,6 +41,7 @@ def seed_file_name_identity(
     )
 
 
+@atomic_fixture
 def seed_gallery_observation_file(
     connector: Any,
     *,
@@ -78,6 +83,7 @@ def seed_gallery_observation_file(
     )
 
 
+@atomic_fixture
 def seed_tag_term(
     connector: Any,
     *,

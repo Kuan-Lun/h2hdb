@@ -14,12 +14,13 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from mysql.connector.errors import ProgrammingError
+from vnext_test_database import DatabaseFactory, database_connector
 
 from h2hdb import CoreConfig, DatabaseConfig
 from h2hdb.database_performance import DatabasePerformance, database_phase
 from h2hdb.ingest_performance import IngestPerformance
 from h2hdb.sql_performance import instrument_connector
-from h2hdb.sqlite_connector import SQLiteConnector
 
 
 @pytest.fixture
@@ -99,14 +100,18 @@ def test_source_is_deterministic_and_dimensions_are_independent(
 
 
 def test_nested_sql_is_recorded_once_and_labels_follow_validated_operation(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType, tmp_path: Path, database_factory: DatabaseFactory
 ) -> None:
+    connectors = {
+        "later.db": database_connector(database_factory.config("later.db")),
+        "count.db": database_connector(database_factory.config("count.db")),
+    }
     observer = probe.Observer()
-    performance = IngestPerformance(logging.getLogger("probe-test"), backend="sqlite")
+    performance = IngestPerformance(
+        logging.getLogger("probe-test"), backend=database_factory.backend
+    )
     with observer.installed():
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "count.db"))
-        ) as connector:
+        with instrument_connector(connectors["count.db"]) as connector:
             connector.fetch_one("SELECT 1")
             with performance.step("analysis", "issue", "ISSUE", 1) as outer:
                 connector.fetch_one("SELECT 2")
@@ -123,13 +128,19 @@ def test_nested_sql_is_recorded_once_and_labels_follow_validated_operation(
         ("inner", "SELECT 3"),
     }
     assert observer.active is None
-    raw = SQLiteConnector(str(tmp_path / "later.db"))
+    raw = connectors["later.db"]
     assert instrument_connector(raw) is raw
 
 
 def test_swallowed_sql_observer_failure_invalidates_report(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "failure.db": database_connector(database_factory.config("failure.db")),
+    }
     observer = probe.Observer()
 
     def fail(*args: Any, **kwargs: Any) -> None:
@@ -138,9 +149,7 @@ def test_swallowed_sql_observer_failure_invalidates_report(
     monkeypatch.setattr(observer, "record", fail)
     with (
         observer.installed(),
-        instrument_connector(
-            SQLiteConnector(str(tmp_path / "failure.db"))
-        ) as connector,
+        instrument_connector(connectors["failure.db"]) as connector,
     ):
         assert connector.fetch_one("SELECT 42") == (42,)
     with pytest.raises(RuntimeError, match="observer failed") as error:
@@ -149,21 +158,29 @@ def test_swallowed_sql_observer_failure_invalidates_report(
 
 
 def test_source_scope_preserves_correlation_action_and_exclusive_cost(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
+    connectors = {
+        "source-correlation.db": database_connector(
+            database_factory.config("source-correlation.db")
+        ),
+    }
     clock = [0.0]
     monkeypatch.setattr(probe.time, "perf_counter", lambda: clock[0])
     performance = IngestPerformance(
-        logging.getLogger("source-probe"), backend="sqlite", clock=lambda: clock[0]
+        logging.getLogger("source-probe"),
+        backend=database_factory.backend,
+        clock=lambda: clock[0],
     )
     observer = probe.Observer()
     original_source_step = probe.VNextIngestFacade.commit_source_step
     correlation_id = "c" * 32
     with observer.installed():
         assert probe.VNextIngestFacade.commit_source_step is original_source_step
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "source-correlation.db"))
-        ) as connector:
+        with instrument_connector(connectors["source-correlation.db"]) as connector:
             with performance.step(
                 "source",
                 "TAG_PAGE.commit",
@@ -188,17 +205,22 @@ def test_source_scope_preserves_correlation_action_and_exclusive_cost(
 
 @pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG, logging.WARNING])
 def test_mixed_diagnostics_preserve_exact_sql_boundaries_and_validated_labels(
-    probe: ModuleType, tmp_path: Path, level: int
+    probe: ModuleType, tmp_path: Path, level: int, database_factory: DatabaseFactory
 ) -> None:
+    connectors = {
+        "mixed.db": database_connector(database_factory.config("mixed.db")),
+    }
     observer = probe.Observer()
-    ingest = IngestPerformance(logging.getLogger("mixed-ingest"), backend="sqlite")
+    ingest = IngestPerformance(
+        logging.getLogger("mixed-ingest"), backend=database_factory.backend
+    )
     database = DatabasePerformance(
-        logging.getLogger("mixed-database"), backend="sqlite", level=level
+        logging.getLogger("mixed-database"),
+        backend=database_factory.backend,
+        level=level,
     )
     with observer.installed():
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "mixed.db"))
-        ) as connector:
+        with instrument_connector(connectors["mixed.db"]) as connector:
             connector.fetch_one("SELECT 1")
             with ingest.step("analysis", "commit", "pending", 1) as outer:
                 with connector.transaction():
@@ -212,7 +234,9 @@ def test_mixed_diagnostics_preserve_exact_sql_boundaries_and_validated_labels(
             with database.operation("outer_database"):
                 connector.fetch_one("SELECT 5")
                 with ingest.step("analysis", "commit", "rolled_back", 1):
-                    with pytest.raises(OperationalError, match="no such table"):
+                    with pytest.raises(
+                        (OperationalError, ProgrammingError), match="missing_table"
+                    ):
                         with connector.transaction():
                             connector.fetch_one("SELECT 6")
                             connector.fetch_one("SELECT * FROM missing_table")
@@ -257,17 +281,22 @@ def test_mixed_diagnostics_preserve_exact_sql_boundaries_and_validated_labels(
 
 
 def test_audit_observer_counts_mixed_diagnostics_once_under_validator_labels(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType, tmp_path: Path, database_factory: DatabaseFactory
 ) -> None:
+    connectors = {
+        "audit-mixed.db": database_connector(database_factory.config("audit-mixed.db")),
+    }
     observer = probe.AuditObserver()
-    ingest = IngestPerformance(logging.getLogger("audit-ingest"), backend="sqlite")
+    ingest = IngestPerformance(
+        logging.getLogger("audit-ingest"), backend=database_factory.backend
+    )
     database = DatabasePerformance(
-        logging.getLogger("audit-database"), backend="sqlite", level=logging.DEBUG
+        logging.getLogger("audit-database"),
+        backend=database_factory.backend,
+        level=logging.DEBUG,
     )
     with observer.installed():
-        with instrument_connector(
-            SQLiteConnector(str(tmp_path / "audit-mixed.db"))
-        ) as connector:
+        with instrument_connector(connectors["audit-mixed.db"]) as connector:
             with observer.scope("schema_structure"):
                 with database.operation("schema_check"):
                     connector.fetch_one("SELECT 1")
@@ -313,15 +342,13 @@ def test_exception_restores_runtime_hooks(probe: ModuleType) -> None:
 
 
 def test_real_pipeline_publishes_same_gids_across_tag_shapes(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     cases = []
     for index, (tags, metadata_bytes) in enumerate(((0, 0), (3, 0), (0, 65))):
-        config = CoreConfig(
-            database=DatabaseConfig(
-                sql_type="sqlite", database=str(tmp_path / f"case-{index}.db")
-            )
-        )
+        config = database_factory.config(f"case-{index}")
         cases.append(
             probe.run_case(
                 config, probe.Shape(tags=tags, metadata_bytes=metadata_bytes)
@@ -354,7 +381,7 @@ def test_real_pipeline_publishes_same_gids_across_tag_shapes(
         expected_semantics = {
             "semantic:" + key
             for key in probe.schema_provider.GeneratedVNextSchemaProvider(
-                "sqlite"
+                database_factory.backend
             ).definition.ready_semantic_obligation_ids
         }
         assert expected_semantics <= labels
@@ -392,20 +419,21 @@ def test_real_pipeline_publishes_same_gids_across_tag_shapes(
 
 @pytest.mark.deep
 def test_real_pipeline_crosses_128_page_source_boundary(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite", database=str(tmp_path / "boundary.db")
-        )
-    )
+    config = database_factory.config("catalog")
     case = probe.run_case(config, probe.Shape(galleries=1, pages=129))
     assert case["oracle"]["gids"] == [1]
     assert case["full_ready_audit"] == "passed"
 
 
 def test_forced_start_report_is_outside_phase_and_audit_timers(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
     real_counter = probe.time.perf_counter
     virtual_serialization_seconds = 0.0
@@ -421,9 +449,7 @@ def test_forced_start_report_is_outside_phase_and_audit_timers(
             virtual_serialization_seconds += 86400.0
 
     monkeypatch.setattr(probe.time, "perf_counter", counter)
-    config = CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(tmp_path / "timer.db"))
-    )
+    config = database_factory.config("catalog")
     case = probe.run_case(config, probe.Shape(galleries=1), progress=progress)
     assert len(starts) == 5
     # The injected day represents report serialization, not a performance SLO.

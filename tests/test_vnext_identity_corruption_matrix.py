@@ -25,11 +25,15 @@ changes the published catalog — is a real hole and fails the matrix.
 
 from __future__ import annotations
 
+import json
+import pickle
 import re
-import shutil
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -39,10 +43,13 @@ from test_vnext_physical_domain_fault_matrix import (
     manifest_columns,
 )
 from vnext_corpora import Corpus, build_corpora
+from vnext_database_snapshot import ReusableDatabaseSnapshot, database_digest
 from vnext_fault_harness import EPOCH_CONTROL_TABLE, open_connector
 from vnext_pipeline import catalog_view, full_check
+from vnext_test_database import DatabaseFactory, inspect_all, set_foreign_key_checks
 
-from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
 
 _IDENTITY_NAME = re.compile(
     r"(_sha256$|_id$|_key$|_token$|_chain$|_frame$|cursor|_bytes$|^chain_|_sha256_)"
@@ -73,62 +80,102 @@ class Corruption:
         return f"{self.column.table}.{self.column.name}:{self.kind}"
 
 
-def _sqlite_config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-
-
 def _rows(config: CoreConfig, table: str, limit: int = 2) -> list[tuple[Any, ...]]:
     connector = open_connector(config)
     try:
         with connector.read_transaction():
-            return connector.fetch_all(f"SELECT * FROM {table} LIMIT {limit}")
+            return inspect_all(connector, f"SELECT * FROM {table} LIMIT {limit}")
     finally:
         connector.close()
 
 
-def _apply(
-    config: CoreConfig, corruption: Corruption, rows: list[tuple[Any, ...]]
-) -> bool:
+@dataclass(frozen=True)
+class CorruptionMutation:
+    corruption: Corruption
+    names: tuple[str, ...]
+    first: tuple[Any, ...]
+    replacement: Any
+
+
+@dataclass(frozen=True)
+class TableSample:
+    names: tuple[str, ...]
+    rows: tuple[tuple[Any, ...], ...]
+
+
+def _plan_corruption(
+    corruption: Corruption, sample: TableSample
+) -> CorruptionMutation | None:
+    """Reject only non-mutations provable from immutable native source rows."""
+    index = sample.names.index(corruption.column.name)
+    first = sample.rows[0]
+    value = first[index]
+    if not value:
+        return None
+    if corruption.kind == "flip":
+        replacement = bytes([value[0] ^ 0xFF]) + bytes(value[1:])
+    else:
+        if len(sample.rows) < 2 or sample.rows[1][index] == value:
+            return None
+        replacement = sample.rows[1][index]
+    return CorruptionMutation(corruption, sample.names, first, replacement)
+
+
+def _apply(config: CoreConfig, mutation: CorruptionMutation) -> bool:
     """Commit one corruption on ``config``; return False when not applicable."""
 
     connector = open_connector(config)
     try:
-        names = _column_names(connector, "sqlite", corruption.column.table)
-        index = names.index(corruption.column.name)
-        first = rows[0]
-        value = first[index]
-        if not value:
-            return False
-        if corruption.kind == "flip":
-            replacement = bytes([value[0] ^ 0xFF]) + bytes(value[1:])
-        else:
-            if len(rows) < 2 or rows[1][index] == value:
-                return False
-            replacement = rows[1][index]
+        corruption = mutation.corruption
+        names, first = mutation.names, mutation.first
         where = " AND ".join(
-            f"{name} IS NULL" if cell is None else f"{name} = %s"
+            f"`{name}` IS NULL" if cell is None else f"`{name}` = %s"
             for name, cell in zip(names, first, strict=True)
         )
         bound = tuple(cell for cell in first if cell is not None)
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.begin()
         try:
             affected = connector.execute_affected(
-                f"UPDATE {corruption.column.table} SET {corruption.column.name} = %s "
+                f"UPDATE `{corruption.column.table}` SET `{corruption.column.name}` = %s "
                 f"WHERE {where}",
-                (replacement, *bound),
+                (mutation.replacement, *bound),
             )
             if affected != 1:
                 connector.rollback()
                 return False
             connector.commit()
-        except Exception:
+        except Exception as error:
             connector.rollback()
-            # The DDL itself refuses the corrupted value: that is fail-closed.
-            return False
+            # Only native constraint rejection is an admissible DDL refusal.
+            # A SQL syntax/connection error must not erase a corruption case.
+            import sqlite3
+
+            if isinstance(
+                error, (DatabaseDuplicateKeyError, sqlite3.IntegrityError)
+            ) or (
+                type(error).__module__.startswith("mysql.")
+                and getattr(error, "errno", None) in {1062, 1451, 1452, 4025}
+            ):
+                return False
+            raise
         return True
     finally:
         connector.close()
+
+
+def _apply_sampled_corruption(
+    snapshot: ReusableDatabaseSnapshot,
+    corruption: Corruption,
+    sample: TableSample,
+) -> bool:
+    mutation = _plan_corruption(corruption, sample)
+    if mutation is None:
+        # Preserve immediate schema-drift refusal; only the full data copy is
+        # unnecessary for a candidate proven not to inject a mutation.
+        snapshot.require_target_schema()
+        return False
+    return _apply(snapshot.restore(), mutation)
 
 
 def _typed(error: BaseException) -> bool:
@@ -218,72 +265,272 @@ def _consumer_outcome(
     return "silent-divergence"
 
 
-def _matrix(tmp_path: Path, bucket: int) -> tuple[Counter[str], list[str]]:
-    corpora = build_corpora(
-        tmp_path, lambda name: _sqlite_config(tmp_path / f"{name}.sqlite3")
-    )
+@dataclass
+class PreparedCorpus:
+    corpus: Corpus
+    snapshot: ReusableDatabaseSnapshot
+    samples: dict[str, TableSample]
+    reference: dict[str, Any]
+    original_digest: object
+    adapter_digest: bytes
+
+    def assert_unchanged(self) -> None:
+        assert database_digest(self.corpus.config) == self.original_digest
+        assert _adapter_digest(self.corpus) == self.adapter_digest
+
+
+def _adapter_digest(corpus: Corpus) -> bytes:
+    # These bounded memory adapters are fixture data, not external pickles.
+    # Digest equality assumes SHA-256 collision resistance; consumers deepcopy
+    # them before any work, and the native source DB is independently checked.
+    return sha256(pickle.dumps((corpus.source, corpus.library))).digest()
+
+
+@pytest.fixture(scope="module")
+def identity_corpora(
+    module_database_factory: DatabaseFactory,
+) -> Iterator[list[PreparedCorpus]]:
+    """Build immutable corpora and their clean consumer oracles once per backend."""
+    factory = module_database_factory
+    corpora = build_corpora(Path("."), factory.config)
+    tables = {column.table for column in identity_columns()}
+    prepared: list[PreparedCorpus] = []
+    for index, corpus in enumerate(corpora):
+        snapshot = ReusableDatabaseSnapshot(
+            factory, corpus.config, factory.config(f"identity-target-{index}")
+        )
+        original_digest = database_digest(corpus.config)
+        adapter_digest = _adapter_digest(corpus)
+        reference: dict[str, Any] = {}
+        if corpus.mid_flight or corpus.consumable:
+            if corpus.mid_flight:
+                corpus.resume(snapshot.target)
+            else:
+                corpus.consume(snapshot.target)
+            assert full_check(snapshot.target).state == "READY"
+            reference = catalog_view(snapshot.target)
+        value = PreparedCorpus(
+            corpus,
+            snapshot,
+            _present_rows(corpus.config, tables),
+            reference,
+            original_digest,
+            adapter_digest,
+        )
+        value.assert_unchanged()
+        prepared.append(value)
+    try:
+        yield prepared
+    finally:
+        for value in prepared:
+            value.assert_unchanged()
+
+
+def _matrix(
+    corpora: list[PreparedCorpus],
+    bucket: int,
+) -> tuple[Counter[str], list[str]]:
     columns = identity_columns()
     assert len(columns) > 300
-    references: dict[str, dict[str, Any]] = {}
     outcomes: Counter[str] = Counter()
     detail: list[str] = []
     ordinal = 0
-    for corpus in corpora:
-        tables = {column.table for column in columns}
-        present = {
-            table
-            for table, rows in _present_rows(corpus.config, tables).items()
-            if rows
-        }
-        rows_by_table = _present_rows(corpus.config, present)
-        if corpus.mid_flight or corpus.consumable:
-            clean = tmp_path / f"{corpus.name}.clean.sqlite3"
-            shutil.copyfile(corpus.config.database.database, clean)
-            if corpus.mid_flight:
-                corpus.resume(_sqlite_config(clean))
-            else:
-                corpus.consume(_sqlite_config(clean))
-            references[corpus.name] = catalog_view(_sqlite_config(clean))
-        for column in columns:
-            if column.table not in present:
-                continue
-            for kind in ("flip", "swap"):
-                ordinal += 1
-                if ordinal % BUCKETS != bucket:
+    for prepared in corpora:
+        corpus = prepared.corpus
+        prepared.assert_unchanged()
+        started = monotonic()
+        prior = outcomes.copy()
+        selected = 0
+        current_label = "before first selected corruption"
+        completed = False
+        try:
+            for column in columns:
+                sample = prepared.samples[column.table]
+                if not sample.rows:
                     continue
-                corruption = Corruption(column, kind)
-                copy_path = tmp_path / f"case-{ordinal}.sqlite3"
-                shutil.copyfile(corpus.config.database.database, copy_path)
-                copy_config = _sqlite_config(copy_path)
-                if not _apply(copy_config, corruption, rows_by_table[column.table]):
-                    outcomes["not-applicable"] += 1
-                    copy_path.unlink()
-                    continue
-                if corpus.mid_flight:
-                    outcome = _resume_outcome(
-                        corpus, copy_config, references[corpus.name]
+                for kind in ("flip", "swap"):
+                    ordinal += 1
+                    if ordinal % BUCKETS != bucket:
+                        continue
+                    corruption = Corruption(column, kind)
+                    current_label = corruption.label
+                    selected += 1
+                    outcome = _reported_corruption(
+                        prepared,
+                        corruption,
+                        sample,
+                        bucket=bucket,
+                        ordinal=ordinal,
                     )
-                else:
-                    outcome = _audit_outcome(copy_config)
-                    if outcome == "audit-accepted" and corpus.consumable:
-                        outcome = _consumer_outcome(
-                            corpus, copy_config, references[corpus.name]
-                        )
-                outcomes[outcome] += 1
-                if outcome in {"audit-accepted", "silent-divergence", "consumer-inert"}:
-                    detail.append(f"{corpus.name} {corruption.label} -> {outcome}")
-                copy_path.unlink()
+                    outcomes[outcome] += 1
+                    if outcome in {
+                        "audit-accepted",
+                        "silent-divergence",
+                        "consumer-inert",
+                    }:
+                        detail.append(f"{corpus.name} {corruption.label} -> {outcome}")
+            prepared.snapshot.require_target_schema()
+            prepared.assert_unchanged()
+            completed = True
+        except Exception as error:
+            error.add_note(
+                f"identity matrix: corpus={corpus.name} corruption={current_label} "
+                f"bucket={bucket} ordinal={ordinal}"
+            )
+            raise
+        finally:
+            print(
+                "IDENTITY_CORPUS "
+                + json.dumps(
+                    {
+                        "backend": corpus.config.database.sql_type,
+                        "bucket": bucket,
+                        "corpus": corpus.name,
+                        "selected_candidates": selected,
+                        "outcomes": dict(outcomes - prior),
+                        "seconds": monotonic() - started,
+                        "completed": completed,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
     return outcomes, detail
 
 
-def _present_rows(
-    config: CoreConfig, tables: set[str]
-) -> dict[str, list[tuple[Any, ...]]]:
+def _diagnostic_cell(value: object) -> object:
+    """Bound fixture diagnostics while preserving small identity coordinates.
+
+    A large-value SHA-256 is evidence under collision resistance, not exact
+    byte equality. These values come only from the synthetic native fixture.
+    """
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+        encoded: dict[str, object] = {"type": "bytes", "length": len(raw)}
+        if len(raw) <= 64:
+            encoded["hex"] = raw.hex()
+        else:
+            encoded["sha256"] = sha256(raw).hexdigest()
+        return encoded
+    text = value if isinstance(value, str) else repr(value)
+    payload = text.encode("utf-8", errors="backslashreplace")
+    encoded = {"type": type(value).__name__, "utf8_bytes": len(payload)}
+    if len(payload) <= 256:
+        encoded["text"] = text
+    else:
+        encoded["sha256"] = sha256(payload).hexdigest()
+    return encoded
+
+
+def _diagnostic_row(names: tuple[str, ...], row: tuple[Any, ...]) -> dict[str, object]:
+    return {
+        name: _diagnostic_cell(value) for name, value in zip(names, row, strict=True)
+    }
+
+
+def _not_applicable_reason(corruption: Corruption, sample: TableSample) -> str:
+    index = sample.names.index(corruption.column.name)
+    value = sample.rows[0][index]
+    if value is None:
+        return "null-value"
+    if not value:
+        return "empty-value"
+    if corruption.kind == "swap":
+        if len(sample.rows) < 2:
+            return "single-row-swap"
+        if sample.rows[1][index] == value:
+            return "equal-swap"
+    # The existing boolean mutation API does not distinguish these native
+    # outcomes. Do not infer a specific constraint from a False result.
+    return "native-constraint-or-zeroaffected"
+
+
+def _reported_corruption(
+    prepared: PreparedCorpus,
+    corruption: Corruption,
+    sample: TableSample,
+    *,
+    bucket: int,
+    ordinal: int,
+) -> str:
+    """Retain each actual native sample and its result, including exceptions.
+
+    Manual matrices use ``python -u`` and pytest ``-s`` so flush reaches the
+    owned log file. Collection pairing does not prove equal sampled rows on
+    two engines: the diagnostic deliberately records their actual choices.
+    """
+    corpus = prepared.corpus
+    mutation = _plan_corruption(corruption, sample)
+    event: dict[str, object] = {
+        "schema": 1,
+        "backend": corpus.config.database.sql_type,
+        "corpus": corpus.name,
+        "bucket": bucket,
+        "ordinal": ordinal,
+        "table": corruption.column.table,
+        "column": corruption.column.name,
+        "kind": corruption.kind,
+    }
+    start = {
+        **event,
+        "event": "start",
+        "target": _diagnostic_row(sample.names, sample.rows[0]),
+        "replacement_source": (
+            _diagnostic_row(sample.names, sample.rows[1])
+            if corruption.kind == "swap" and len(sample.rows) > 1
+            else None
+        ),
+        "replacement_value": (
+            _diagnostic_cell(mutation.replacement) if mutation is not None else None
+        ),
+        "value_applicable": mutation is not None,
+    }
+    print("IDENTITY_MUTATION " + json.dumps(start, sort_keys=True), flush=True)
+    result = {**event, "event": "result"}
+    try:
+        if not _apply_sampled_corruption(prepared.snapshot, corruption, sample):
+            outcome = "not-applicable"
+            result["not_applicable_reason"] = _not_applicable_reason(corruption, sample)
+        elif corpus.mid_flight:
+            outcome = _resume_outcome(
+                corpus, prepared.snapshot.target, prepared.reference
+            )
+        else:
+            outcome = _audit_outcome(prepared.snapshot.target)
+            if outcome == "audit-accepted" and corpus.consumable:
+                outcome = _consumer_outcome(
+                    corpus, prepared.snapshot.target, prepared.reference
+                )
+        result["outcome"] = outcome
+        return outcome
+    except BaseException as error:
+        result["outcome"] = "exception"
+        result["exception"] = {
+            "type": f"{type(error).__module__}.{type(error).__qualname__}",
+            "message": _diagnostic_cell(str(error)),
+            "cause_type": (
+                f"{type(error.__cause__).__module__}."
+                f"{type(error.__cause__).__qualname__}"
+                if error.__cause__ is not None
+                else None
+            ),
+        }
+        raise
+    finally:
+        print("IDENTITY_MUTATION " + json.dumps(result, sort_keys=True), flush=True)
+
+
+def _present_rows(config: CoreConfig, tables: set[str]) -> dict[str, TableSample]:
     connector = open_connector(config)
     try:
         with connector.read_transaction():
             return {
-                table: connector.fetch_all(f"SELECT * FROM {table} LIMIT 2")
+                table: TableSample(
+                    tuple(_column_names(connector, config.database.sql_type, table)),
+                    tuple(inspect_all(connector, f"SELECT * FROM {table} LIMIT 2")),
+                )
                 for table in tables
             }
     finally:
@@ -319,10 +566,10 @@ REFUSALS = (
 
 
 @pytest.mark.parametrize("bucket", range(BUCKETS))
-def test_sqlite_every_identity_corruption_is_refused_by_audit_or_resume(
-    tmp_path: Path, bucket: int
+def test_every_identity_corruption_is_refused_by_audit_or_resume(
+    identity_corpora: list[PreparedCorpus], bucket: int
 ) -> None:
-    outcomes, detail = _matrix(tmp_path, bucket)
+    outcomes, detail = _matrix(identity_corpora, bucket)
     assert sum(outcomes[name] for name in REFUSALS) > 0
     # The bounded READY audit never silently accepts a corruption of an
     # at-rest catalog whose consumer was not exercised.

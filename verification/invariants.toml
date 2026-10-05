@@ -907,7 +907,7 @@ path = "tests/test_vnext_state_machine_contract.py"
 symbol = "test_generated_state_enum_drift_fails_closed"
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
-symbol = "test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states"
+symbol = "test_native_fixture_enforces_positive_revisions_states_and_bounds"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_repository.py"
 symbol = "test_abandon_rejects_complete_and_stale_ingest_authority"
@@ -934,11 +934,14 @@ id = "runtime.production.retained-canonical-integrity"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production READY audit checks the wheel-resident canonical-reference registry against every retained stored reference, requires its exact registered digest domain, and streams both inputs of every retained title-sort row to recompute the pinned Unicode casefold result with bounded memory. Deterministic writers remain responsible for collision-comparing exact canonical payloads before sealing them."
-assumptions = ["Opaque repository-issued UUIDs are assigned authority rather than byte-derived codecs; externally supplied file-content digests and same-domain source facts are validated at their writer/adapter boundary and are not falsely treated as re-derivable from unrelated catalog rows."]
+claim = "The production READY audit checks the wheel-resident canonical-reference registry against every retained stored reference, requires its exact registered digest domain, and streams both inputs of every retained title-sort row to recompute the pinned Unicode casefold result with bounded memory. In the existing publication-content reference scan, every present optional child must also have an occurrence parent with its exact revision and publication key, including candidate and historical children; absent optional content remains valid. Deterministic writers remain responsible for collision-comparing exact canonical payloads before sealing them."
+assumptions = ["Opaque repository-issued UUIDs are assigned authority rather than byte-derived codecs; externally supplied file-content digests and same-domain source facts are validated at their writer/adapter boundary and are not falsely treated as re-derivable from unrelated catalog rows.", "Content-parent membership rejects orphan children but does not infer that absent optional content is corrupt or re-derive arbitrary substitutions between two existing same-revision parents. LIMIT bounds returned violations, not the retained rows the engine scans."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
 symbol = "_validate_retained_canonical_reference_domains"
+[[evidence.location]]
+path = "src/h2hdb/catalog_refinement.py"
+symbol = "_validate_retained_publication_content_references"
 [[evidence.location]]
 path = "src/h2hdb/catalog_refinement.py"
 symbol = "_validate_retained_title_sort_identities"
@@ -951,7 +954,7 @@ id = "fault.production.retained-canonical-integrity"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Focused READY negative controls repoint a retained canonical reference to a sealed value from another registered domain and replace a retained derived title-sort value with a different valid same-domain canonical value; both are rejected."
+claim = "Focused READY negative controls repoint a retained canonical reference to a sealed value from another registered domain and replace a retained derived title-sort value with a different valid same-domain canonical value; both are rejected. Exact cross-revision publication-content moves at COMMIT_PUBLICATION, FINALIZE and completed-before-cleanup cuts exercise candidate, active and historical orphans with the same test body on SQLite and MariaDB. Small native relation controls preserve canonical-domain checks, accept an absent optional child and reject the old domain-only validator. Separately, the public pipeline controls use positive content owners and preserve clean restart, subsequent consumption and cleanup DONE; they do not claim that the pipeline publishes metadata-only galleries."
 assumptions = ["The canonical-value writer's existing collision controls establish exact preimage sealing; these tests target the retained-reference and deterministic-derivation seams added to READY."]
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
@@ -959,6 +962,15 @@ symbol = "test_ready_rejects_canonical_reference_sealed_under_another_domain"
 [[evidence.location]]
 path = "tests/test_catalog_refinement_runtime.py"
 symbol = "test_ready_rejects_retained_title_sort_that_differs_from_casefold"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_retained_publication_content_requires_both_authorities"
+[[evidence.location]]
+path = "tests/test_catalog_refinement_runtime.py"
+symbol = "test_publication_content_orphan_oracle_rejects_domain_only_degradation"
+[[evidence.location]]
+path = "tests/test_vnext_publication_content_binding.py"
+symbol = "test_ready_rejects_cross_revision_publication_content_binding"
 
 [[evidence]]
 id = "runtime.production.role-materialization"
@@ -1047,7 +1059,7 @@ path = "tests/test_vnext_generated_physical_domains.py"
 symbol = "test_schema_only_relations_enforce_domains_without_a_production_writer"
 [[evidence.location]]
 path = "tests/test_vnext_generated_epoch_e2e.py"
-symbol = "test_default_generated_epoch_end_to_end_on_sqlite"
+symbol = "test_default_generated_epoch_end_to_end_on_both_backends"
 
 [[evidence]]
 id = "runtime.data.bootstrap"
@@ -1091,7 +1103,7 @@ claim = "A complete generated SQLite data schema is created, re-applied idempote
 assumptions = ["Schema-shape refinement does not by itself establish writer transaction semantics."]
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
-symbol = "test_fresh_complete_sqlite_ddl_refines_physical_spec"
+symbol = "test_fresh_complete_native_ddl_refines_physical_spec"
 
 [[evidence]]
 id = "integration.data.overlay-sqlite"
@@ -1113,7 +1125,10 @@ claim = "SQLite negative integration exercises generated storage-class, positive
 assumptions = []
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
-symbol = "test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states"
+symbol = "test_native_fixture_enforces_positive_revisions_states_and_bounds"
+[[evidence.location]]
+path = "tests/test_verification_schema_refinement.py"
+symbol = "test_sqlite_fixture_rejects_dynamic_storage_classes_and_short_binary"
 
 [[evidence]]
 id = "integration.data.bootstrap-sqlite"
@@ -1124,7 +1139,7 @@ claim = "SQLite integration applies every generated bootstrap row twice, validat
 assumptions = ["This test covers generated SQLite bootstrap behavior; representative MariaDB bootstrap execution is in the bounded release smoke profile, while the remaining live cases are manual deep evidence."]
 [[evidence.location]]
 path = "tests/test_vnext_schema_provider_generation.py"
-symbol = "test_sqlite_bootstrap_validation_is_exact"
+symbol = "test_native_bootstrap_validation_is_exact"
 
 # Production-slice evidence is kept separate from the declarative checkers
 # above.  SQLite E2E, MariaDB SQL-shape recorders, and live MariaDB execution
@@ -1818,7 +1833,7 @@ claim = "MariaDB 10.11.11 enforces the unique per-build staging slot for RETIRIN
 assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run this manual deep case, which is not attested by the bounded release receipt; the focused concurrency case does not execute all seven retirement phases on MariaDB."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
-symbol = "test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize"
+symbol = "test_gallery_staging_budget_and_retiring_slot_serialize"
 
 [[evidence]]
 id = "runtime.production.cleanup"
@@ -2111,7 +2126,7 @@ path = "tests/test_vnext_storage_instance_repository.py"
 symbol = "test_binding_rejects_invalid_or_nil_uuid"
 [[evidence.location]]
 path = "tests/test_vnext_physical_domain_fault_matrix.py"
-symbol = "test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
+symbol = "test_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
 
 [[evidence]]
 id = "integration.sqlite.storage-instance-binding"
@@ -2175,10 +2190,7 @@ path = "src/h2hdb/schema_epoch.py"
 symbol = "validate_ready"
 [[evidence.location]]
 path = "tests/test_vnext_generated_epoch_e2e.py"
-symbol = "test_default_generated_epoch_end_to_end_on_sqlite"
-[[evidence.location]]
-path = "tests/test_vnext_generated_epoch_e2e.py"
-symbol = "test_default_generated_epoch_end_to_end_on_live_mariadb"
+symbol = "test_default_generated_epoch_end_to_end_on_both_backends"
 
 [[evidence]]
 id = "fault.production.schema-epoch"
@@ -2215,7 +2227,7 @@ path = "tests/test_schema_epoch.py"
 symbol = "test_committed_partial_build_resumes_from_slice_one"
 [[evidence.location]]
 path = "tests/test_vnext_generated_epoch_e2e.py"
-symbol = "test_default_generated_epoch_end_to_end_on_sqlite"
+symbol = "test_default_generated_epoch_end_to_end_on_both_backends"
 
 [[evidence]]
 id = "integration.live-mariadb.schema-epoch"
@@ -2228,14 +2240,14 @@ assumptions = ["The generated-provider end-to-end location is a representative m
 path = "tests/test_schema_epoch_mariadb.py"
 symbol = "test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock"
 [[evidence.location]]
-path = "tests/test_schema_epoch_mariadb.py"
-symbol = "test_mariadb_ready_epoch_fully_checks_through_read_only_config"
+path = "tests/test_schema_epoch.py"
+symbol = "test_ready_epoch_fully_checks_through_read_only_config"
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
 symbol = "test_mariadb_epoch_resumes_committed_partial_ddl"
 [[evidence.location]]
 path = "tests/test_vnext_generated_epoch_e2e.py"
-symbol = "test_default_generated_epoch_end_to_end_on_live_mariadb"
+symbol = "test_default_generated_epoch_end_to_end_on_both_backends"
 
 [[evidence]]
 id = "integration.live-mariadb.operational-workflows"
@@ -2247,6 +2259,9 @@ assumptions = ["This is manual deep evidence and is not attested by the bounded 
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_operational_writer_workflows"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_operational_writer_workflows"
 
 [[evidence]]
 id = "runtime.production.writer-bindings"
@@ -2571,6 +2586,9 @@ symbol = "test_revision_allocation_is_rolled_back_with_its_transaction"
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
 symbol = "test_live_mariadb_operational_writer_workflows"
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_operational_writer_workflows"
 
 [[evidence]]
 id = "lean.operational.preparation-drain"
@@ -2924,10 +2942,10 @@ path = "tests/test_vnext_bootstrap_fault_matrix.py"
 symbol = "test_ready_full_audit_rejects_registry_omission_corruption_and_foreign_rows"
 [[evidence.location]]
 path = "tests/test_vnext_bootstrap_fault_matrix.py"
-symbol = "test_sqlite_committed_seed_prefix_resumes_to_the_exact_ready_seed_set"
+symbol = "test_committed_seed_prefix_resumes_to_the_exact_ready_seed_set"
 [[evidence.location]]
 path = "tests/test_vnext_bootstrap_fault_matrix.py"
-symbol = "test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set"
+symbol = "test_interrupted_seed_batch_rebuilds_or_resumes_the_exact_ready_seed_set"
 
 [[evidence]]
 id = "fault.pipeline.digest-collision"
@@ -2958,10 +2976,7 @@ claim = "Every column represented in facade-produced corpora (a populated catalo
 assumptions = ["Conditional multi-column predicates are exercised by their owning repository and workflow tests rather than misclassified as independent scalar domains.", "The exhaustive multi-corpus and live-MariaDB mutation cases are manual deep evidence; the bounded merge receipt executes the complete static generated contract, schema-only SQLite probes, and representative live MariaDB schema/pipeline smoke."]
 [[evidence.location]]
 path = "tests/test_vnext_physical_domain_fault_matrix.py"
-symbol = "test_sqlite_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
-[[evidence.location]]
-path = "tests/test_vnext_physical_domain_fault_matrix.py"
-symbol = "test_live_mariadb_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
+symbol = "test_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
 [[evidence.location]]
 path = "tests/test_vnext_physical_domain_fault_matrix.py"
 symbol = "test_every_writer_boundary_guard_rejects_each_invalid_class"
@@ -2978,7 +2993,7 @@ claim = "Every stored digest, identity, chain, frame, cursor and reference colum
 assumptions = ["Corruption of retained history that no later turn re-derives is consumer-inert (the public catalog is unchanged) and is recorded, not counted as refusal.", "Consumers are the production audit, the production turns, the public catalog reader and the adapter boundary; no test-only validator participates.", "The bounded READY audit does not recompute published page digests, tag and title-sort digests, or sealed analysis identities; corruption there is reader-visible and pinned."]
 [[evidence.location]]
 path = "tests/test_vnext_identity_corruption_matrix.py"
-symbol = "test_sqlite_every_identity_corruption_is_refused_by_audit_or_resume"
+symbol = "test_every_identity_corruption_is_refused_by_audit_or_resume"
 [[evidence.location]]
 path = "tests/vnext_corpora.py"
 symbol = "Corpus"
@@ -3094,10 +3109,10 @@ path = "tests/test_vnext_live_authority_races.py"
 symbol = "test_hash_cache_handoff_replay_and_lookup_on_each_backend"
 [[evidence.location]]
 path = "tests/test_vnext_bootstrap_fault_matrix.py"
-symbol = "test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set"
+symbol = "test_interrupted_seed_batch_rebuilds_or_resumes_the_exact_ready_seed_set"
 [[evidence.location]]
 path = "tests/test_vnext_physical_domain_fault_matrix.py"
-symbol = "test_live_mariadb_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
+symbol = "test_every_manifest_column_rejects_every_invalid_class_and_rolls_back"
 [[evidence.location]]
 path = "tests/test_vnext_pipeline_fault_matrix.py"
 symbol = "test_live_mariadb_sampled_faults_roll_back_exactly_and_converge"

@@ -1,7 +1,8 @@
 """Production corpora for the physical-domain and corruption matrices.
 
-Every corpus is produced only through the public facades (plus the hash-cache
-repository, which has no facade of its own) on a fresh temporary database:
+Every corpus uses a fresh temporary database. Public facades build the source,
+catalog and audit facts; the hash-cache and build-owned staging corpora also
+exercise their actual repository writers:
 
 * catalogs at rest (populated, a 2200-page gallery whose canonical values span
   several pages, an incremental spam-exclusion flip, pending and missing
@@ -19,31 +20,45 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from test_vnext_hash_cache_repository import _authorities, _database, _put, _ready_build
+from test_vnext_source_qualification import QualifiedSource
+from vnext_database_snapshot import clone_database
 from vnext_fault_harness import open_connector
 from vnext_pipeline import (
     LEASE_MICROSECONDS,
     Clock,
     MemoryLibrary,
     MemorySource,
+    claim_session,
     drain_maintenance,
     gallery,
+    ingest_policy,
     initialize_database,
     populate_catalog,
     run_ingest_turn,
     takeover_clock,
 )
 
-from h2hdb import CoreConfig, VNextDownloadQueueFacade, VNextIngestFacade
+from h2hdb import (
+    CoreConfig,
+    DatabaseAuditPolicy,
+    VNextDatabaseAdminFacade,
+    VNextDownloadQueueFacade,
+    VNextIngestFacade,
+)
 from h2hdb.vnext_canonical_value_repository import CanonicalValueUploadPlan
+from h2hdb.vnext_gallery_staging_repository import GalleryObservationStagingRepository
 from h2hdb.vnext_hash_cache_repository import (
     FileHashObservationPlan,
     VNextHashCacheRepository,
 )
+from h2hdb.vnext_ingest_fence_repository import IngestTurn
+from h2hdb.vnext_maintenance_gate_repository import GateLease, GateMode
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 # Relations the manifest declares but no production writer populates; they
@@ -199,9 +214,37 @@ def build_corpora(
         ready = backend_config("ready")
         initialize_database(ready)
         ready_source, ready_library = populate_catalog(ready)
+        with closing(VNextDatabaseAdminFacade(ready)) as admin:
+            audit = admin.start_ingest_runtime(
+                policy=DatabaseAuditPolicy(),
+                lease_duration_microseconds=LEASE_MICROSECONDS,
+            )
+            admin.finish_ingest_runtime(audit.session)
         corpora.append(Corpus("ready-populated", ready, ready_source, ready_library))
     if wanted is not None and wanted <= {"ready-populated"}:
         return corpora
+
+    qualified = backend_config("qualified")
+    initialize_database(qualified)
+    qualified_source = QualifiedSource()
+    qualified_library = MemoryLibrary(qualified_source)
+    _turn(qualified, qualified_source, qualified_library)
+    corpora.append(
+        Corpus("ready-qualified", qualified, qualified_source, qualified_library)
+    )
+
+    build_staging = backend_config("build-owned-staging")
+    initialize_database(build_staging)
+    staging_source, staging_library = _build_owned_staging(build_staging)
+    corpora.append(
+        Corpus(
+            "repository-build-owned-staging",
+            build_staging,
+            staging_source,
+            staging_library,
+            "source:build-owned-staging",
+        )
+    )
 
     big = backend_config("big")
     initialize_database(big)
@@ -230,17 +273,17 @@ def build_corpora(
     pending = backend_config("download-pending")
     initialize_database(pending)
     pending_source, pending_library = populate_catalog(pending)
-    queue = VNextDownloadQueueFacade(pending, clock=Clock())
-    queue.request_download(3001, url="https://example.invalid/g/3001")
+    with closing(VNextDownloadQueueFacade(pending, clock=Clock())) as queue:
+        queue.request_download(3001, url="https://example.invalid/g/3001")
     corpora.append(Corpus("download-pending", pending, pending_source, pending_library))
 
     missing = backend_config("download-missing")
     initialize_database(missing)
     missing_source, missing_library = populate_catalog(missing)
-    queue = VNextDownloadQueueFacade(missing, clock=Clock())
-    request = queue.request_download(3002, url="https://example.invalid/g/3002")
-    turn = queue.claim_download_turn(lease_duration_microseconds=LEASE_MICROSECONDS)
-    queue.finish_missing_download_turn(turn, request, 3002)
+    with closing(VNextDownloadQueueFacade(missing, clock=Clock())) as queue:
+        request = queue.request_download(3002, url="https://example.invalid/g/3002")
+        turn = queue.claim_download_turn(lease_duration_microseconds=LEASE_MICROSECONDS)
+        queue.finish_missing_download_turn(turn, request, 3002)
     corpora.append(
         Corpus(
             "download-missing",
@@ -252,11 +295,9 @@ def build_corpora(
     )
 
     cache = backend_config("hash-cache")
-    if cache.database.sql_type == "sqlite":
-        # The hash cache has no facade; its repository is driven directly on a
-        # generated database exactly like its own production tests.
-        _hash_cache_handoff(cache)
-        corpora.append(Corpus("hash-cache", cache, None, None))
+    # The hash cache has no facade; drive its actual native repository.
+    _hash_cache_handoff(cache)
+    corpora.append(Corpus("hash-cache", cache, None, None))
 
     for index, stop in enumerate(INCREMENTAL_STOPS):
         config = backend_config(f"stop-{index}")
@@ -290,7 +331,9 @@ def build_corpora(
         cleanup_source,
         cleanup_library,
         stop="maintenance",
-        occurrence=_first_checkpointed_drain(cleanup, cleanup_source, cleanup_library),
+        occurrence=_first_checkpointed_drain(
+            cleanup, backend_config("cleanup-probe"), cleanup_source, cleanup_library
+        ),
     )
     corpora.append(
         Corpus("mid-cleanup", cleanup, cleanup_source, cleanup_library, "maintenance")
@@ -299,19 +342,11 @@ def build_corpora(
 
 
 def _first_checkpointed_drain(
-    config: CoreConfig, source: MemorySource, library: MemoryLibrary
+    config: CoreConfig, probe: CoreConfig, source: MemorySource, library: MemoryLibrary
 ) -> int:
     """Find the drain call after which a cleanup checkpoint rests, on a copy."""
 
-    probe_path = Path(config.database.database + ".probe")
-    if config.database.sql_type != "sqlite":
-        return 2
-    import shutil
-
-    shutil.copyfile(config.database.database, probe_path)
-    probe = CoreConfig(
-        database=type(config.database)(sql_type="sqlite", database=str(probe_path))
-    )
+    clone_database(config, probe)
     probe_source = copy.deepcopy(source)
     probe_library = copy.deepcopy(library)
     probe_library.source = probe_source
@@ -336,8 +371,62 @@ def _has_rows(config: CoreConfig, table: str) -> bool:
         connector.close()
 
 
+def _build_owned_staging(config: CoreConfig) -> tuple[MemorySource, MemoryLibrary]:
+    """Exercise the internal build-owned writer against facade-made authority.
+
+    The current public source path stages into collections. Its later OPEN
+    source build supplies durable scope, expected-gallery and fencing facts
+    for the separately supported repository build-owned staging writer.
+    """
+
+    clock = Clock()
+    source = MemorySource([gallery(7001)])
+    with VNextIngestFacade(config, clock=clock) as facade:
+        session = claim_session(facade)
+        policy = facade.ensure_policy(session, ingest_policy())
+        with facade.prepare_source(source, policy=policy) as prepared:
+            for _ in range(1000):
+                issued = facade.issue_source_step(session, policy, prepared)
+                local = facade.prepare_source_step(prepared, issued)
+                if (
+                    local._action.value == "STAGING_REUSE"
+                    and not prepared._machine.collecting
+                ):
+                    break
+                facade.commit_source_step(session, local)
+            else:
+                raise AssertionError("source never reached unlinked build membership")
+        with closing(open_connector(config)) as connector:
+            with connector.transaction():
+                build_id, gallery_id = connector.fetch_one(
+                    "SELECT w.build_id, e.gallery_id "
+                    "FROM operational_source_working_builds w "
+                    "JOIN catalog_source_build_expected_gallery e "
+                    "ON e.build_id = w.build_id WHERE w.slot = 1"
+                )
+                GalleryObservationStagingRepository.begin(
+                    VNextUnitOfWork(connector, backend=config.database.sql_type),
+                    gate_lease=GateLease(
+                        session.gate_owner_token,
+                        session.gate_generation,
+                        GateMode.SHARED,
+                        (session.gate_slot,),
+                        session.gate_lease_expires_at,
+                    ),
+                    ingest_turn=IngestTurn(
+                        session.ingest_generation,
+                        session.ingest_owner_token,
+                        session.ingest_lease_expires_at,
+                    ),
+                    build_id=build_id,
+                    gallery_id=gallery_id,
+                    now=clock(),
+                )
+    return source, MemoryLibrary(source)
+
+
 def _hash_cache_handoff(config: CoreConfig) -> None:
-    connector = _database(Path(config.database.database))
+    connector = _database(config)
     source_plan = CanonicalValueUploadPlan.from_parts(
         "filesystem_source_identity_v1", (b"source-id-v1\0", b"/gallery/file.jpg")
     )

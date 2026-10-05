@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from vnext_test_database import atomic_fixture
 
+
+@atomic_fixture
 def seed_canonical_allocation(
     connector: Any,
     *,
@@ -38,6 +41,7 @@ def seed_canonical_allocation(
     )
 
 
+@atomic_fixture
 def seed_canonical_page(
     connector: Any,
     *,
@@ -74,6 +78,7 @@ def seed_canonical_page(
     )
 
 
+@atomic_fixture
 def seed_canonical_value(
     connector: Any,
     *,

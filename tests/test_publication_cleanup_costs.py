@@ -25,9 +25,10 @@ from vnext_publication_cleanup_fixtures import (
     partial_publication_setup,
     seed_publication_cleanup,
 )
+from vnext_test_database import DatabaseFactory, inspect_all, inspect_one
 
 import h2hdb.vnext_cleanup_repository as cleanup
-from h2hdb import CoreConfig, DatabaseConfig
+from h2hdb import CoreConfig
 from h2hdb.sql_performance import instrument_connector, measure_sql
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import CleanupCycle, VNextCleanupRepository
@@ -90,10 +91,6 @@ class _PhaseSample:
     has_cursor: bool
     unchecked_specs: int
     queries: tuple[str, ...]
-
-
-def _config(path: Path) -> CoreConfig:
-    return CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
 
 
 def _drain(
@@ -161,12 +158,13 @@ def _drain(
                 else:
                     pytest.fail("bounded fixture did not finish its cleanup cycle")
                 table = _PHASE_TABLE[phase]
-                assert connector.fetch_one(
-                    f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
+                assert inspect_one(
+                    connector, f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
                 ) == (0,)
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM catalog_publication_occurrence_identities "
-                    "WHERE revision = 1"
+                    "WHERE revision = 1",
                 ) == (0,)
     assert sum(len(sample.queries) for sample in samples) < len(all_calls.queries)
     assert samples
@@ -255,25 +253,25 @@ def test_publication_phase_sql_matches_lean_at_both_batch_boundaries(
     samples = _drain(db_config, gate, cycle, monkeypatch, phase=phase)
     _assert_costs(samples, model_costs, expected_rows=rows)
     with closing(open_connector(db_config)) as connector:
-        assert connector.fetch_one(
-            f"SELECT COUNT(*) FROM {_PHASE_TABLE[phase]} WHERE revision = 2"
+        assert inspect_one(
+            connector, f"SELECT COUNT(*) FROM {_PHASE_TABLE[phase]} WHERE revision = 2"
         ) == (rows,)
 
 
 @pytest.mark.parametrize("mutant", ["scalar_chunks", "extra_per_row_query"])
 def test_cost_oracle_rejects_real_per_row_regression_despite_correct_deletion(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
     model_costs: _ModelCosts,
     mutant: str,
 ) -> None:
     phase = "CP_SUBJECT"
-    baseline_config = _config(tmp_path / "baseline.sqlite3")
+    baseline_config = database_factory.config("baseline")
     gate, cycle = seed_publication_cleanup(baseline_config, rows=65, phase=phase)
     baseline = _drain(baseline_config, gate, cycle, monkeypatch, phase=phase)
     _assert_costs(baseline, model_costs, expected_rows=65)
 
-    config = _config(tmp_path / "degraded.sqlite3")
+    config = database_factory.config("degraded")
     gate, cycle = seed_publication_cleanup(config, rows=65, phase=phase)
     original = cleanup._delete_static_key_page
 
@@ -296,26 +294,30 @@ def test_cost_oracle_rejects_real_per_row_regression_despite_correct_deletion(
     with pytest.raises(AssertionError, match="SQL cost"):
         _assert_costs(samples, model_costs, expected_rows=65)
     with closing(open_connector(config)) as connector:
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_subjects WHERE revision = 2"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_subjects WHERE revision = 2"
         ) == (65,)
 
 
 @pytest.mark.deep
 def test_fresh_cleanup_cycles_repeat_the_same_sql_cost_without_cached_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model_costs: _ModelCosts
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    model_costs: _ModelCosts,
 ) -> None:
-    config = _config(tmp_path / "cycles.sqlite3")
+    config = database_factory.config("cycles")
     phase = "CP_CONTRIBUTOR"
     gate, cycle = seed_publication_cleanup(config, rows=65, phase=phase)
     with closing(open_connector(config)) as connector:
-        occurrence = connector.fetch_one(
+        occurrence = inspect_one(
+            connector,
             "SELECT catalog_occurrence_sha256, revision, publication_key "
-            "FROM catalog_publication_occurrence_identities WHERE revision = 1"
+            "FROM catalog_publication_occurrence_identities WHERE revision = 1",
         )
-        children = connector.fetch_all(
+        children = inspect_all(
+            connector,
             "SELECT revision, publication_key, contributor_name_sha256, role, position "
-            "FROM catalog_contributors WHERE revision = 1 ORDER BY position"
+            "FROM catalog_contributors WHERE revision = 1 ORDER BY position",
         )
     cycle_ids: set[bytes] = set()
     signatures: list[tuple[tuple[int, int], ...]] = []
@@ -331,7 +333,7 @@ def test_fresh_cleanup_cycles_repeat_the_same_sql_cost_without_cached_authority(
         if lap == 2:
             break
         with closing(open_connector(config)) as connector:
-            with partial_publication_setup(connector, backend="sqlite"):
+            with partial_publication_setup(connector, backend=backend_of(config)):
                 connector.execute(
                     "INSERT INTO catalog_publication_occurrence_identities "
                     "(catalog_occurrence_sha256, revision, publication_key) "
@@ -346,7 +348,7 @@ def test_fresh_cleanup_cycles_repeat_the_same_sql_cost_without_cached_authority(
                 )
             with connector.transaction():
                 cycle = VNextCleanupRepository.begin_cycle(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=backend_of(config)),
                     gate_lease=gate,
                     target_kind=cleanup.CleanupTargetKind.CATALOG_PUBLICATION,
                     shard_no=PUBLICATION_KEY[0],

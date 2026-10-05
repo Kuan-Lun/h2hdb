@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import closing
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -19,13 +20,18 @@ from vnext_catalog_identity_fixtures import (
     seed_file_name_identity,
     seed_gallery_observation_file,
 )
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    database_connector,
+    inspect_one,
+    open_generated_database,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb import vnext_analysis_repository as analysis
 from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_decision_batch import load_resolved_file_decision_page
 from h2hdb.vnext_canonical_value_repository import CanonicalValueUploadPlan
 from h2hdb.vnext_transaction import VNextUnitOfWork
@@ -71,8 +77,17 @@ class _PagedConnector:
         return [row for row in self.rows if after is None or row > after][:128]
 
 
-def _work(connector: object, backend: str = "sqlite") -> VNextUnitOfWork:
-    return VNextUnitOfWork(cast(SQLConnector, connector), backend=backend)
+def _work(connector: object, backend: str | None = None) -> VNextUnitOfWork:
+    if isinstance(connector, SQLConnector):
+        actual = connector_backend(connector)
+        if backend is not None and backend != actual:
+            raise ValueError(
+                "test unit of work backend disagrees with native connector"
+            )
+        backend = actual
+    # Pure protocol doubles use the SQLite-shaped SQL branch explicitly;
+    # every real connector above derives its actual native backend.
+    return VNextUnitOfWork(cast(SQLConnector, connector), backend=backend or "sqlite")
 
 
 def _independent_digest(digests: tuple[bytes, ...]) -> bytes:
@@ -381,10 +396,11 @@ def _assert_backend_reloads_decisions_after_preparation(
 
 
 def test_sqlite_batched_preparation_survives_lost_local_result_and_reopen(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "bounded-analysis.sqlite3"
-    connector = open_generated_sqlite_database(path)
+    connector = open_generated_database(database_factory.config(str(path)))
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -397,20 +413,35 @@ def test_sqlite_batched_preparation_survives_lost_local_result_and_reopen(
             connector, gate, turn, run.analysis_id, max_rows=128, start_now=100
         )
         expected = _assert_backend_preparation(
-            connector, "sqlite", run.analysis_id, build, first, second
+            connector,
+            connector_backend(connector),
+            run.analysis_id,
+            build,
+            first,
+            second,
         )
         _assert_backend_reloads_decisions_after_preparation(
-            connector, "sqlite", run.analysis_id, build, first, second
+            connector,
+            connector_backend(connector),
+            run.analysis_id,
+            build,
+            first,
+            second,
         )
     finally:
         connector.close()
     # No local spool or plan survives this reconnect. Durable rows are enough.
-    reopened = SQLiteConnector(str(path))
+    reopened = database_connector(database_factory.config(str(path)))
     reopened.connect()
     try:
         assert (
             _assert_backend_preparation(
-                reopened, "sqlite", run.analysis_id, build, first, second
+                reopened,
+                connector_backend(reopened),
+                run.analysis_id,
+                build,
+                first,
+                second,
             )
             == expected
         )
@@ -420,7 +451,7 @@ def test_sqlite_batched_preparation_survives_lost_local_result_and_reopen(
 
 @pytest.mark.mariadb_smoke
 def test_live_mariadb_bounded_preparation_matches_reference(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     from test_vnext_live_mariadb_analysis_repository import (
         _authorities as maria_authorities,
@@ -434,8 +465,8 @@ def test_live_mariadb_bounded_preparation_matches_reference(
         _run_stage_to_completion,
     )
 
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    connector = _connector(mariadb_config)
+    VNextDatabaseAdminFacade(db_config).initialize()
+    connector = _connector(db_config)
     connector.connect()
     try:
         gate, turn = maria_authorities(connector)
@@ -454,22 +485,37 @@ def test_live_mariadb_bounded_preparation_matches_reference(
             start_now=300,
         )
         _assert_backend_preparation(
-            connector, "mariadb", run.analysis_id, build, first, second
+            connector,
+            connector_backend(connector),
+            run.analysis_id,
+            build,
+            first,
+            second,
         )
         _assert_backend_reloads_decisions_after_preparation(
-            connector, "mariadb", run.analysis_id, build, first, second
+            connector,
+            connector_backend(connector),
+            run.analysis_id,
+            build,
+            first,
+            second,
         )
     finally:
         connector.close()
 
 
 def test_public_preparation_reloads_layout_and_ownership_between_snapshots(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """An old receipt/plan never substitutes for fresh layout or working state."""
 
-    with open_generated_sqlite_database(tmp_path / "fresh-layout.sqlite3") as connector:
-        assert isinstance(connector, SQLiteConnector)
+    with closing(
+        open_generated_database(
+            database_factory.config(str(tmp_path / "fresh-layout.sqlite3"))
+        )
+    ) as connector:
+        assert connector_backend(connector) == database_factory.backend
         gate, turn = _authorities(connector)
         with connector.transaction():
             _scope, build, first, second = _seed_initial_snapshot(connector)
@@ -491,7 +537,10 @@ def test_public_preparation_reloads_layout_and_ownership_between_snapshots(
 
         def prepare() -> analysis.AnalysisGalleryPreparation:
             return analysis.AnalysisRepository.prepare_gallery(
-                connector, backend="sqlite", authority=receipt, gallery_id=1
+                connector,
+                backend=connector_backend(connector),
+                authority=receipt,
+                gallery_id=1,
             )
 
         with (
@@ -533,8 +582,9 @@ def test_public_preparation_reloads_layout_and_ownership_between_snapshots(
                 "(analysis_id, ancestor_depth, ancestor_analysis_id) VALUES (%s, 0, %s)",
                 (run.analysis_id, run.analysis_id),
             )
-            assigned_at = connector.fetch_one(
-                "SELECT assigned_at FROM operational_source_working_builds WHERE slot = 1"
+            assigned_at = inspect_one(
+                connector,
+                "SELECT assigned_at FROM operational_source_working_builds WHERE slot = 1",
             )[0]
             connector.execute("DELETE FROM operational_source_working_builds")
         with (

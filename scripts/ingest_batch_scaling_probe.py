@@ -26,7 +26,6 @@ from test_vnext_source_marker import MarkerSource  # noqa: E402 - exact marker f
 from vnext_pipeline import (  # noqa: E402 - public protocol fixture.
     LEASE_MICROSECONDS,
     MemoryLibrary,
-    claim_session,
     drain_maintenance,
     full_check,
     gallery,
@@ -42,6 +41,7 @@ from h2hdb import (  # noqa: E402 - checkout public facades.
     LoggerConfig,
     VNextCatalogFacade,
     VNextIngestFacade,
+    VNextIngestSession,
 )
 from h2hdb.sql_performance import measure_sql  # noqa: E402 - audit observation.
 from h2hdb.vnext_identity import effective_content_digest  # noqa: E402 - codec oracle.
@@ -156,6 +156,42 @@ def measure_ready_audit(
     }
 
 
+def require_direct_claim(facade: VNextIngestFacade) -> VNextIngestSession:
+    """Reject pending maintenance instead of moving its cost into claim."""
+    session = facade.try_claim_ingest(True, LEASE_MICROSECONDS)
+    if session is None:
+        raise AssertionError("cleanup DONE did not admit the next direct claim")
+    return session
+
+
+def finish_next_claim_probe(
+    config: CoreConfig, last_turn: dict[str, Any]
+) -> dict[str, Any]:
+    """Check the final successor only after every measured turn and READY audit.
+
+    The empty turn advances durable generation and may make more facts eligible
+    for cleanup. Its resulting database state is not the measured DONE/READY
+    state. Never insert this mutating oracle between two measured turns.
+    """
+    with VNextIngestFacade(config) as facade:
+        session = require_direct_claim(facade)
+        facade.complete_ingest(session)
+    last_turn.update(
+        next_claim="passed",
+        next_claim_generation=session.ingest_generation,
+        next_claim_kind="post_measurement_probe",
+    )
+    return {
+        "status": "passed",
+        "ingest_generation": session.ingest_generation,
+        "completed": True,
+        "included_in_phase_costs": False,
+        "state_changed": True,
+        "cleanup_after_probe": "not_checked",
+        "ready_audit_after_probe": "not_checked",
+    }
+
+
 def run_case(
     backend: str,
     galleries: int,
@@ -166,7 +202,6 @@ def run_case(
     progress: Callable[[dict[str, Any]], None] | None = None,
     query_limit: int | None = 8,
     observer_factory: Callable[[], probe.Observer] | None = None,
-    check_next_claim: bool = False,
 ) -> dict[str, Any]:
     parse_case(f"{galleries}:{batch}:{pages}")
     with (
@@ -179,7 +214,7 @@ def run_case(
         initialize_database(config)
         source = MarkerSource()
         library = MemoryLibrary(source)
-        turns = []
+        turns: list[dict[str, Any]] = []
         for lower in range(0, galleries, batch):
             count = min(galleries, lower + batch)
             source.forbidden_reads = {item.locator for item in source.galleries}
@@ -235,7 +270,13 @@ def run_case(
                     pulse("finished", force=True)
 
             with VNextIngestFacade(config) as facade, observer.installed():
-                session = measured("claim", lambda: claim_session(facade))
+                session = measured("claim", lambda: require_direct_claim(facade))
+                if turns:
+                    turns[-1].update(
+                        next_claim="passed",
+                        next_claim_generation=session.ingest_generation,
+                        next_claim_kind="next_pipeline_turn",
+                    )
                 policy = measured(
                     "policy",
                     lambda: facade.ensure_policy(
@@ -287,24 +328,19 @@ def run_case(
             if library.render_calls != (count if artifacts else 0):
                 raise AssertionError("artifact render count differs from new galleries")
             oracle = verify_catalog(config, count, pages, artifacts=artifacts)
-            if check_next_claim:
-                with VNextIngestFacade(config) as facade:
-                    next_session = facade.try_claim_ingest(True, LEASE_MICROSECONDS)
-                    if next_session is None:
-                        raise AssertionError("cleanup DONE did not admit next claim")
-                    facade.complete_ingest(next_session)
             measurements = observer.report(query_limit=query_limit)
             turns.append(
                 {
                     "selected": count,
                     "added": count - lower,
+                    "ingest_generation": session.ingest_generation,
                     "deep_reads": len(source.deep_reads) - deep_before,
                     "marker_calls": source.marker_calls - markers_before,
                     "phases": phases,
                     "measurements": measurements,
                     "oracle": oracle,
                     "cleanup": "DONE",
-                    "next_claim": "passed" if check_next_claim else "not_checked",
+                    "next_claim": "pending",
                 }
             )
             if progress is not None:
@@ -327,7 +363,10 @@ def run_case(
         audit = measure_ready_audit(
             config, observer_factory=observer_factory, progress=progress
         )
+        oracle = verify_catalog(config, galleries, pages, artifacts=artifacts)
+        next_claim = finish_next_claim_probe(config, turns[-1])
         return {
+            "measurement_protocol": "consecutive-work-generations-v1",
             "backend": backend,
             "galleries": galleries,
             "batch": batch,
@@ -336,7 +375,8 @@ def run_case(
             "turns": turns,
             "ready_audit": audit,
             "full_ready_audit": "passed",
-            "oracle": verify_catalog(config, galleries, pages, artifacts=artifacts),
+            "oracle": oracle,
+            "post_measurement_next_claim": next_claim,
         }
 
 
@@ -358,6 +398,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report: dict[str, Any] = {
+        "measurement_protocol": "consecutive-work-generations-v1",
         "status": "incomplete",
         "provenance": probe.source_provenance(),
         "experiment_sources_sha256": experiment_source_hashes(),
@@ -371,7 +412,10 @@ def main() -> None:
             "Timings include observation and are not an SLO verdict. SQL events are "
             "counted once; operation query families and phase counts/rows are retained. "
             "Changing publication batch does not change the bounded transaction caps. "
-            "Different histories must converge to the same final public oracle."
+            "Different histories must converge to the same final public oracle. "
+            "Each real next turn verifies its predecessor's next claim. The final "
+            "empty claim runs after measurement and READY; it changes durable state, "
+            "which is not rechecked for cleanup DONE or READY."
         ),
     }
     probe.write_report(args.output, report)

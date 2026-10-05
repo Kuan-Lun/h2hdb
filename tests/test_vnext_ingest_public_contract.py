@@ -7,8 +7,19 @@ from typing import Any
 from unicodedata import unidata_version
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_pipeline import MemorySource, claim_session, run_analysis, run_source
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_foreign_key_integrity,
+    connector_backend,
+    database_connector,
+    foreign_key_checks_enabled,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    snapshot_rows,
+    track_managed_transactions,
+)
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
 import h2hdb.vnext_ingest_policy_repository as policy_module
@@ -19,7 +30,6 @@ from h2hdb import (
     ArtifactStorageAdapter,
     ArtifactStorageEvidence,
     CoreConfig,
-    DatabaseConfig,
     DirectoryObservation,
     FileContentReceipt,
     FileObservation,
@@ -39,7 +49,6 @@ from h2hdb import (
     VNextPreparedSource,
     VNextPreparedSourceStep,
 )
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
     CatalogPublicationMaintenanceState,
     CleanupTargetKind,
@@ -65,8 +74,8 @@ def _metadata() -> GalleryObservationMetadata:
     )
 
 
-def _generated_database(path: Path) -> None:
-    open_generated_sqlite_database(path).close()
+def _generated_database(config: CoreConfig) -> None:
+    open_generated_database(config).close()
 
 
 def _policy(
@@ -114,6 +123,7 @@ def test_public_source_page_is_keyset_addressed_and_bounded() -> None:
 
 
 def test_public_observations_and_source_adapter_are_repository_independent(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     receipt = FileContentReceipt.from_parts((b"abc",))
@@ -201,8 +211,8 @@ def test_public_observations_and_source_adapter_are_repository_independent(
     assert isinstance(Source(), VNextIngestSourceAdapter)
 
     path = tmp_path / "public-source.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     with VNextIngestFacade(config) as facade:
         session = facade.try_claim_ingest(True, 1_000_000)
         assert session is not None
@@ -212,7 +222,9 @@ def test_public_observations_and_source_adapter_are_repository_independent(
             assert not hasattr(prepared, "plan")
 
 
-def test_prepare_source_uses_canonical_locator_key_order(tmp_path: Path) -> None:
+def test_prepare_source_uses_canonical_locator_key_order(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
     class Source:
         source_root_components = ("root",)
 
@@ -278,8 +290,8 @@ def test_prepare_source_uses_canonical_locator_key_order(tmp_path: Path) -> None
             return VNextIngestPage((), None, True)
 
     path = tmp_path / "source-order.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     with VNextIngestFacade(config) as facade:
         session = facade.try_claim_ingest(True, 1_000_000)
         assert session is not None
@@ -341,11 +353,12 @@ def test_public_artifact_adapter_evidence_is_neutral() -> None:
 
 
 def test_ingest_facade_resolves_fresh_policy_and_replays_by_natural_key(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ingest-policy.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
@@ -373,25 +386,28 @@ def test_ingest_facade_resolves_fresh_policy_and_replays_by_natural_key(
         created.display_title_policy_id,
         created.operational_policy_id,
     } == {2, 3, 4, 5, 6}
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
             "SELECT artifact_policy_id, policy_component_sha256 "
             "FROM catalog_artifact_policies WHERE policy_component_sha256 = %s",
             (created.artifact_policy_sha256,),
         ) == (1, created.artifact_policy_sha256)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("POLICY",),
         ) == (7,)
 
 
 def test_ingest_policy_capacity_failure_rolls_back_all_registry_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "ingest-policy-capacity.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
@@ -406,7 +422,7 @@ def test_ingest_policy_capacity_failure_rolls_back_all_registry_writes(
             _policy(),
         )
 
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         for table in (
             "catalog_artifact_adapter_policy",
             "catalog_artifact_policy_semantics",
@@ -416,16 +432,17 @@ def test_ingest_policy_capacity_failure_rolls_back_all_registry_writes(
             "catalog_title_sort_policy",
             "catalog_display_title_policies",
         ):
-            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+            assert inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
 
 
 def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "artifact-policy-semantics-capacity.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
@@ -440,12 +457,13 @@ def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
         "catalog_canonical_value_allocation_anchors",
         "catalog_canonical_value_page_anchors",
     )
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         before = {
-            table: connector.fetch_one(f"SELECT COUNT(*) FROM {table}")
+            table: inspect_one(connector, f"SELECT COUNT(*) FROM {table}")
             for table in measured_tables
         }
-        allocator_before = connector.fetch_one(
+        allocator_before = inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("POLICY",),
         )
@@ -470,12 +488,13 @@ def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
             ),
         )
 
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         after = {
-            table: connector.fetch_one(f"SELECT COUNT(*) FROM {table}")
+            table: inspect_one(connector, f"SELECT COUNT(*) FROM {table}")
             for table in measured_tables
         }
-        allocator_after = connector.fetch_one(
+        allocator_after = inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("POLICY",),
         )
@@ -484,11 +503,12 @@ def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
 
 
 def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ingest-policy-collision.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000)
     assert session is not None
@@ -503,8 +523,9 @@ def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
             ),
         ),
     )
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
             "SELECT artifact_policy_id FROM catalog_artifact_policies "
             "WHERE policy_component_sha256 = %s",
             (foreign.artifact_policy_sha256,),
@@ -520,12 +541,14 @@ def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
     ):
         facade.ensure_policy(session, policy)
 
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
             "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("POLICY",),
         ) == (1,)
-        assert not connector.fetch_one(
+        assert not inspect_one(
+            connector,
             "SELECT policy_component_sha256 "
             "FROM catalog_artifact_policy_semantics "
             "WHERE policy_component_sha256 = %s",
@@ -534,11 +557,12 @@ def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
 
 
 def test_ingest_facade_try_claim_and_completion_are_public_and_replayable(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ingest-completion.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     now = 100
     facade = VNextIngestFacade(config, clock=lambda: now)
 
@@ -571,11 +595,12 @@ def test_ingest_facade_try_claim_and_completion_are_public_and_replayable(
 
 
 def test_public_current_only_maintenance_waits_for_ingest_then_drains(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "current-only-maintenance.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
 
     session = facade.try_claim_ingest(True, 10_000)
@@ -588,9 +613,9 @@ def test_public_current_only_maintenance_waits_for_ingest_then_drains(
     )
 
     facade.complete_ingest(session)
-    with SQLiteConnector(str(path)) as connector:
-        generation_count = connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+    with database_connector(database_factory.config(str(path))) as connector:
+        generation_count = inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
         )
     # Empty response-loss/idle retries are read-only and therefore do not grow
     # the permanent gate-generation audit table on every resident poll.
@@ -599,22 +624,24 @@ def test_public_current_only_maintenance_waits_for_ingest_then_drains(
             facade.drain_current_only_maintenance(10_000)
             is VNextCurrentOnlyMaintenanceOutcome.DONE
         )
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         assert (
-            connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+            inspect_one(
+                connector,
+                "SELECT COUNT(*) FROM operational_maintenance_gate_generations",
             )
             == generation_count
         )
 
 
 def test_current_only_outcome_reports_gate_contention(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "current-only-contention.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 10_000)
     assert session is not None
@@ -634,12 +661,13 @@ def test_current_only_outcome_reports_gate_contention(
 
 
 def test_current_only_failure_releases_the_latest_renewed_gate(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "current-only-failure-release.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     ticks = iter(range(100, 10_000, 100))
     facade = VNextIngestFacade(config, clock=lambda: next(ticks))
 
@@ -661,15 +689,15 @@ def test_current_only_failure_releases_the_latest_renewed_gate(
     with pytest.raises(RuntimeError, match="injected cleanup probe failure"):
         facade.drain_current_only_maintenance(1_000)
 
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_maintenance_gate_holders"
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_maintenance_gate_holders"
         ) == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_maintenance_gate_owners"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_maintenance_gate_owners"
         ) == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_ingest_generation_owners"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_ingest_generation_owners"
         ) == (0,)
 
     monkeypatch.undo()
@@ -679,17 +707,18 @@ def test_current_only_failure_releases_the_latest_renewed_gate(
 
 
 def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "current-only-serialized-open.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     digests = tuple(
         bytes((201,)) + ordinal.to_bytes(31, "big") for ordinal in range(1, 34)
     )
 
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert foreign_key_checks_enabled(connector)
         for digest in digests:
             connector.execute(
                 "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
@@ -697,7 +726,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
                 (digest,),
             )
         with connector.transaction():
-            work = VNextUnitOfWork(connector, backend="sqlite")
+            work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             gate = MaintenanceGateRepository.claim_exclusive(
                 work,
                 now=1,
@@ -705,7 +734,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
             )
         with connector.transaction():
             VNextCleanupRepository.begin_cycle(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.CONTENT_BLOB,
                 shard_no=201,
@@ -715,7 +744,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
             )
         with connector.transaction():
             MaintenanceGateRepository.release(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate,
                 now=3,
             )
@@ -728,7 +757,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
     ) - {CleanupTargetKind.HASH_CACHE_OBSERVATION}
 
     facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        database_factory.config(str(path)),
         clock=lambda: 100,
     )
     advance_calls = 0
@@ -749,22 +778,23 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
     outcomes = [facade.drain_current_only_maintenance(100_000)]
     assert outcomes == [VNextCurrentOnlyMaintenanceOutcome.PROGRESSED]
 
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT sweep.target_kind "
                 "FROM operational_cleanup_jobs completion "
                 "JOIN operational_cleanup_sweep_targets sweep "
                 "ON sweep.target_key = completion.target_key "
                 "WHERE completion.state = 'COMPLETE' "
-                "ORDER BY sweep.target_kind"
+                "ORDER BY sweep.target_kind",
             )
             == []
         )
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_content_blobs") == (
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_content_blobs") == (
             17,
         )
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
 
     for _attempt in range(11):
         outcomes.append(facade.drain_current_only_maintenance(100_000))
@@ -775,23 +805,28 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
         outcome is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
         for outcome in outcomes[:-1]
     )
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'",
         ) == (0,)
         assert advance_calls > 32
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_content_blobs") == (0,)
-        assert connector.fetch_all(
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_content_blobs") == (
+            0,
+        )
+        assert inspect_all(
+            connector,
             "SELECT sweep.target_kind "
             "FROM operational_cleanup_jobs completion "
             "JOIN operational_cleanup_sweep_targets sweep "
             "ON sweep.target_key = completion.target_key "
-            "WHERE completion.state = 'COMPLETE'"
+            "WHERE completion.state = 'COMPLETE'",
         ) == [(CleanupTargetKind.CONTENT_BLOB.value,)]
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
 
 
 def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     class EmptySource:
@@ -854,8 +889,8 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
             raise AssertionError("empty source has no TAG stream")
 
     path = tmp_path / "ingest-source-step.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     now = 100
     facade = VNextIngestFacade(config, clock=lambda: now)
     session = facade.try_claim_ingest(True, 100)
@@ -884,23 +919,23 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
         now = 110
         renewed = facade.renew_ingest(session, 1_000)
         assert renewed.ingest_lease_expires_at == 1_110
-        with sqlite3.connect(path) as raw_database:
-            before_forgery = tuple(raw_database.iterdump())
+        with database_connector(config) as raw_database:
+            before_forgery = snapshot_rows(raw_database)
         with pytest.raises(ValueError, match="another ingest session"):
             facade.commit_source_step(
                 replace(renewed, ingest_owner_token=b"x" * 16),
                 local,
             )
-        with sqlite3.connect(path) as raw_database:
-            assert tuple(raw_database.iterdump()) == before_forgery
+        with database_connector(config) as raw_database:
+            assert snapshot_rows(raw_database) == before_forgery
 
         result = facade.commit_source_step(renewed, local)
         assert result.source_receipt is None
         assert not result.terminal
         assert not source.observation_complete
-        with SQLiteConnector(str(path)) as connector:
+        with database_connector(database_factory.config(str(path))) as connector:
             assert (
-                connector.fetch_all("SELECT * FROM catalog_source_build_descriptor")
+                inspect_all(connector, "SELECT * FROM catalog_source_build_descriptor")
                 == []
             )
 
@@ -932,11 +967,12 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
 
 
 def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ingest-source-policy-forgery.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 100_000)
     assert session is not None
@@ -980,12 +1016,13 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
         analysis_result = facade.commit_analysis_step(session, prepared_analysis)
         assert not analysis_result.terminal
 
-        with SQLiteConnector(str(path)) as connector:
-            assert connector.fetch_all(
-                "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id"
+        with database_connector(database_factory.config(str(path))) as connector:
+            assert inspect_all(
+                connector,
+                "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id",
             ) == [("OPEN",)]
-        with sqlite3.connect(path) as connector:
-            before = tuple(connector.iterdump())
+        with database_connector(database_factory.config(str(path))) as connector:
+            before = snapshot_rows(connector)
 
         for field_name in substituted_fields:
             forged = replace(
@@ -1001,11 +1038,12 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
                 ):
                     facade.issue_source_step(session, forged, source)
 
-            with sqlite3.connect(path) as connector:
-                assert tuple(connector.iterdump()) == before
-            with SQLiteConnector(str(path)) as connector:
-                assert connector.fetch_all(
-                    "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id"
+            with database_connector(database_factory.config(str(path))) as connector:
+                assert snapshot_rows(connector) == before
+            with database_connector(database_factory.config(str(path))) as connector:
+                assert inspect_all(
+                    connector,
+                    "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id",
                 ) == [("OPEN",)]
 
         for field_name in substituted_fields:
@@ -1024,11 +1062,12 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
                 ):
                     facade.issue_analysis_step(session, forged_analysis)
 
-            with sqlite3.connect(path) as connector:
-                assert tuple(connector.iterdump()) == before
-            with SQLiteConnector(str(path)) as connector:
-                assert connector.fetch_all(
-                    "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id"
+            with database_connector(database_factory.config(str(path))) as connector:
+                assert snapshot_rows(connector) == before
+            with database_connector(database_factory.config(str(path))) as connector:
+                assert inspect_all(
+                    connector,
+                    "SELECT state FROM catalog_analysis_runs ORDER BY analysis_id",
                 ) == [("OPEN",)]
 
     completed = run_analysis(
@@ -1038,8 +1077,8 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
         source_receipt.build_id,
     )
     assert completed.terminal
-    with sqlite3.connect(path) as connector:
-        completed_before = tuple(connector.iterdump())
+    with database_connector(database_factory.config(str(path))) as connector:
+        completed_before = snapshot_rows(connector)
 
     for field_name in substituted_fields:
         forged = replace(
@@ -1052,8 +1091,8 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
         ):
             facade.issue_publication_step(session, forged)
 
-        with sqlite3.connect(path) as connector:
-            assert tuple(connector.iterdump()) == completed_before
+        with database_connector(database_factory.config(str(path))) as connector:
+            assert snapshot_rows(connector) == completed_before
 
     unregistered_natural_policy = _policy(
         adapter_id=b"unregistered-adapter",
@@ -1072,8 +1111,8 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
         match="lacks exact durable registry authority",
     ):
         facade.issue_publication_step(session, unregistered_artifact)
-    with sqlite3.connect(path) as connector:
-        assert tuple(connector.iterdump()) == completed_before
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert snapshot_rows(connector) == completed_before
 
     invalid_natural_policy = replace(policy.policy)
     object.__setattr__(
@@ -1087,14 +1126,16 @@ def test_public_pipeline_rejects_each_forged_policy_id_without_durable_writes(
     ) as source:
         with pytest.raises(ValueError, match="must be positive"):
             facade.issue_source_step(session, invalid_nested, source)
-    with sqlite3.connect(path) as connector:
-        assert tuple(connector.iterdump()) == completed_before
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert snapshot_rows(connector) == completed_before
 
 
-def test_bound_source_policy_isolated_from_late_caller_mutation(tmp_path: Path) -> None:
+def test_bound_source_policy_isolated_from_late_caller_mutation(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
     path = tmp_path / "ingest-source-policy-copy.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 100_000)
     assert session is not None
@@ -1117,6 +1158,7 @@ def test_bound_source_policy_isolated_from_late_caller_mutation(tmp_path: Path) 
 
 
 def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     metadata = GalleryObservationMetadata(
@@ -1217,8 +1259,8 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
         pytest.fail("same source snapshot did not reach its sealed build")
 
     path = tmp_path / "ingest-source-sealed-replay.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     now = 100
     first_facade = VNextIngestFacade(config, clock=lambda: now)
     first_session = first_facade.try_claim_ingest(True, 100_000)
@@ -1226,35 +1268,41 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
     first_policy = first_facade.ensure_policy(first_session, policy())
     first = drive(first_facade, first_session, first_policy)
     first_facade.complete_ingest(first_session)
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         sealed_source_snapshot = (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM operational_source_build_discovery_batch_receipts "
-                "ORDER BY build_id, start_generation"
+                "ORDER BY build_id, start_generation",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM operational_source_build_assembly_batch_receipts "
-                "ORDER BY build_id, start_generation"
+                "ORDER BY build_id, start_generation",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_source_build_galleries "
-                "ORDER BY build_id, gallery_id"
+                "ORDER BY build_id, gallery_id",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_gallery_observations "
-                "ORDER BY gallery_id, observation_id"
+                "ORDER BY gallery_id, observation_id",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_source_build_base_publication_commits "
-                "ORDER BY build_id"
+                "ORDER BY build_id",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT base.build_id, committed.source_revision, "
                 "committed.generation "
                 "FROM catalog_source_build_base_publication_commits AS base "
                 "JOIN catalog_publication_commits AS committed "
                 "ON committed.receipt_id = base.base_receipt_id "
-                "ORDER BY base.build_id"
+                "ORDER BY base.build_id",
             ),
         )
 
@@ -1279,40 +1327,47 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
     assert second.source_receipt.sealed
     assert second.replayed
     assert second.source_receipt.replayed
-    with SQLiteConnector(str(path)) as connector:
+    with database_connector(database_factory.config(str(path))) as connector:
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM operational_source_build_discovery_batch_receipts "
-                "ORDER BY build_id, start_generation"
+                "ORDER BY build_id, start_generation",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM operational_source_build_assembly_batch_receipts "
-                "ORDER BY build_id, start_generation"
+                "ORDER BY build_id, start_generation",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_source_build_galleries "
-                "ORDER BY build_id, gallery_id"
+                "ORDER BY build_id, gallery_id",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_gallery_observations "
-                "ORDER BY gallery_id, observation_id"
+                "ORDER BY gallery_id, observation_id",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT * FROM catalog_source_build_base_publication_commits "
-                "ORDER BY build_id"
+                "ORDER BY build_id",
             ),
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT base.build_id, committed.source_revision, "
                 "committed.generation "
                 "FROM catalog_source_build_base_publication_commits AS base "
                 "JOIN catalog_publication_commits AS committed "
                 "ON committed.receipt_id = base.base_receipt_id "
-                "ORDER BY base.build_id"
+                "ORDER BY base.build_id",
             ),
         ) == sealed_source_snapshot
 
 
 def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     metadata = GalleryObservationMetadata(
@@ -1392,9 +1447,9 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
             return VNextIngestPage((), None, True)
 
     path = tmp_path / "ingest-source-complete.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        database_factory.config(str(path)),
         clock=lambda: 100,
     )
     session = facade.try_claim_ingest(True, 100_000)
@@ -1420,8 +1475,9 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
     assert result.source_receipt.discovered_galleries == 1
     assert result.source_receipt.staged_galleries == 1
     assert result.source_receipt.sealed
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (result.source_receipt.build_id,),
         ) == ("SEALED",)
@@ -1432,10 +1488,11 @@ def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
 # the small source-collection restart cases cover the bounded merge profile.
 @pytest.mark.deep
 def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ingest-source-crash-resume.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     file_names = tuple(f"f{index:04d}.jpg".encode() for index in range(300))
     files = tuple(
         FileObservation(
@@ -1496,7 +1553,12 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
     }
 
     def prove_no_database_write_transaction() -> None:
-        connection = sqlite3.connect(path, timeout=0.05)
+        assert not active_transactions, (
+            "adapter I/O entered a Core database transaction"
+        )
+        if config.database.sql_type != "sqlite":
+            return
+        connection = sqlite3.connect(config.database.database, timeout=0.05)
         try:
             connection.execute("BEGIN IMMEDIATE")
             connection.rollback()
@@ -1606,15 +1668,16 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
                 terminal,
             )
 
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config(str(path))
     adapter = RestartableSource()
     generations: list[int] = []
     partial_stagings: list[bytes] = []
 
     def checkpoint(component: bytes) -> tuple[int, str] | None:
-        with SQLiteConnector(str(path)) as connector:
-            row = connector.fetch_one(
-                "SELECT cursor, state FROM "
+        with database_connector(database_factory.config(str(path))) as connector:
+            row = inspect_one(
+                connector,
+                "SELECT `cursor`, state FROM "
                 "operational_gallery_observation_staging_checkpoints "
                 "WHERE component = %s AND level = 0 ORDER BY staging_id LIMIT 1",
                 (component,),
@@ -1622,11 +1685,12 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
         return None if not row else (row[0], row[1])
 
     def match_checkpoint() -> tuple[int, str] | None:
-        with SQLiteConnector(str(path)) as connector:
-            row = connector.fetch_one(
+        with database_connector(database_factory.config(str(path))) as connector:
+            row = inspect_one(
+                connector,
                 "SELECT matched_count, state FROM "
                 "operational_gallery_observation_staging_match_checkpoints "
-                "ORDER BY staging_id LIMIT 1"
+                "ORDER BY staging_id LIMIT 1",
             )
         return None if not row else (row[0], row[1])
 
@@ -1646,9 +1710,10 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
                     pytest.fail(
                         "source state machine did not reach the requested checkpoint"
                     )
-            with SQLiteConnector(str(path)) as connector:
-                staging_ids = connector.fetch_all(
-                    "SELECT staging_id FROM operational_gallery_observation_stagings"
+            with database_connector(database_factory.config(str(path))) as connector:
+                staging_ids = inspect_all(
+                    connector,
+                    "SELECT staging_id FROM operational_gallery_observation_stagings",
                 )
                 assert not set(partial_stagings) & {row[0] for row in staging_ids}
                 if result.terminal:
@@ -1657,8 +1722,9 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
                     assert len(staging_ids) == 1
                     partial_stagings.append(staging_ids[0][0])
                     assert (
-                        connector.fetch_all(
-                            "SELECT build_id FROM catalog_source_build_descriptor"
+                        inspect_all(
+                            connector,
+                            "SELECT build_id FROM catalog_source_build_descriptor",
                         )
                         == []
                     )
@@ -1669,10 +1735,11 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
     # Lose all process-local handles at each partial durable checkpoint. A new
     # generation abandons that unfinished observation, then reobserves it before
     # rebuilding bounded pages; it cannot trust a cursor against changed bytes.
-    drive_until(lambda _result: checkpoint(b"FILE") == (256, "OPEN"))
-    drive_until(lambda _result: checkpoint(b"METADATA") == (32_768, "OPEN"))
-    drive_until(lambda _result: match_checkpoint() == (256, "OPEN"))
-    drive_until(lambda result: result.terminal)
+    with track_managed_transactions(config) as active_transactions:
+        drive_until(lambda _result: checkpoint(b"FILE") == (256, "OPEN"))
+        drive_until(lambda _result: checkpoint(b"METADATA") == (32_768, "OPEN"))
+        drive_until(lambda _result: match_checkpoint() == (256, "OPEN"))
+        drive_until(lambda result: result.terminal)
 
     assert generations == sorted(set(generations))
     assert len(generations) == 4
@@ -1682,12 +1749,13 @@ def test_unsealed_source_restart_rebuilds_component_and_match_checkpoints(
     assert len(adapter.file_afters) == 8
     assert adapter.file_afters.count(None) == 4
     assert adapter.file_afters.count(file_names[255]) == 4
-    with SQLiteConnector(str(path)) as connector:
-        build = connector.fetch_one(
-            "SELECT state FROM catalog_source_build_states ORDER BY build_id LIMIT 1"
+    with database_connector(database_factory.config(str(path))) as connector:
+        build = inspect_one(
+            connector,
+            "SELECT state FROM catalog_source_build_states ORDER BY build_id LIMIT 1",
         )
-        galleries = connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_source_build_galleries"
+        galleries = inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_source_build_galleries"
         )
     assert build == ("SEALED",)
     assert galleries == (2,)

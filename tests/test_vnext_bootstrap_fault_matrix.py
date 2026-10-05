@@ -11,25 +11,29 @@ transaction boundary without rebuilding a database for every generated row.
 from __future__ import annotations
 
 import re
-import shutil
 from collections.abc import Iterator, Mapping
-from pathlib import Path
+from itertools import groupby
 from typing import Any, Literal, cast
 
 import pytest
+from mysql.connector.errors import DataError
+from vnext_database_snapshot import clone_database
 from vnext_fault_harness import (
     FaultInjector,
     InjectedFault,
+    backend_of,
     fault_injection,
     open_connector,
     physical_tables,
 )
 from vnext_pipeline import full_check, initialize_database, populate_catalog
+from vnext_test_database import DatabaseFactory, connector_backend
 
-from h2hdb import CoreConfig, DatabaseConfig, VNextDatabaseAdminFacade
+from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb import vnext_schema_provider as provider_module
 from h2hdb.schema_epoch import (
     _SCHEMA_SEED_BATCH_ROWS,
+    MariaDBSchemaEpochCatalog,
     SchemaEpochDefinition,
     SchemaEpochValidationError,
     SchemaSeedStatement,
@@ -357,25 +361,6 @@ def test_every_seed_registry_is_classified_for_ready_audit_scope(
     assert {table for table, _kind in READY_INERT_BY_DESIGN} <= READY_OWNED_REGISTRIES
 
 
-@pytest.fixture(scope="module")
-def populated_sqlite(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    path = tmp_path_factory.mktemp("bootstrap-populated") / "populated.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-    initialize_database(config)
-    populate_catalog(config)
-    return path
-
-
-@pytest.fixture(scope="module")
-def empty_ready_sqlite(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Keep bootstrap-only runtime seeds present for their READY negatives."""
-
-    path = tmp_path_factory.mktemp("bootstrap-empty") / "empty.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-    initialize_database(config)
-    return path
-
-
 def _apply_or_schema_reject(
     config: CoreConfig, sql: str, bound: tuple[Any, ...]
 ) -> bool:
@@ -389,6 +374,13 @@ def _apply_or_schema_reject(
                 assert connector.execute_affected(sql, bound) == 1
         except DatabaseDuplicateKeyError:
             return True
+        except DataError as error:
+            # MariaDB enforces UNSIGNED/TINYINT storage before CHECK clauses;
+            # the out-of-domain singleton mutation is a native range rejection.
+            assert config.database.sql_type == "mariadb"
+            if error.errno != 1264:
+                raise
+            return True
         return False
     finally:
         connector.close()
@@ -396,38 +388,26 @@ def _apply_or_schema_reject(
 
 @pytest.mark.parametrize("table", sorted(READY_OWNED_REGISTRIES))
 def test_ready_full_audit_rejects_registry_omission_corruption_and_foreign_rows(
-    tmp_path: Path,
-    populated_sqlite: Path,
-    empty_ready_sqlite: Path,
-    sqlite_definition: SchemaEpochDefinition,
+    database_factory: DatabaseFactory,
     table: str,
 ) -> None:
     """On a populated READY catalog, every registry seed omission and value
     corruption is refused by referential integrity or by the full audit; the
     only accepted mutations are the reviewed inert extra rows."""
 
-    seeds = [
-        seed for seed in sqlite_definition.bootstrap_seeds if seed.target_table == table
-    ]
+    definition = GeneratedVNextSchemaProvider(database_factory.backend).definition
+    seeds = [seed for seed in definition.bootstrap_seeds if seed.target_table == table]
+    source = database_factory.config("source")
+    initialize_database(source)
+    if table != "catalog_publication_generation_nodes":
+        populate_catalog(source)
     # One representative seed row per registry keeps the full audit affordable;
     # the BUILDING matrix above covers every row exactly.
     seed = seeds[0]
     outcomes: dict[str, str] = {}
     for kind, sql, bound in _mutations(seed):
-        path = tmp_path / f"{table}-{kind.split(':')[0]}.sqlite3"
-        # Generation zero is required by an empty READY catalog but is
-        # legitimately compacted after the first publication.  Exercise its
-        # bootstrap authority before that runtime transition; every other
-        # registry benefits from the populated fixture's FK coverage.
-        source = (
-            empty_ready_sqlite
-            if table == "catalog_publication_generation_nodes"
-            else populated_sqlite
-        )
-        shutil.copyfile(source, path)
-        config = CoreConfig(
-            database=DatabaseConfig(sql_type="sqlite", database=str(path))
-        )
+        config = database_factory.config(f"mutation-{kind}")
+        clone_database(source, config)
         if _apply_or_schema_reject(config, sql, bound):
             outcomes[kind] = "schema"
             continue
@@ -447,11 +427,11 @@ def test_ready_full_audit_rejects_registry_omission_corruption_and_foreign_rows(
 
 @pytest.mark.parametrize("table", sorted(RUNTIME_ADVANCING_REGISTRIES))
 def test_ready_audit_accepts_advanced_runtime_registry_values_but_building_rejects_them(
-    tmp_path: Path,
-    sqlite_definition: SchemaEpochDefinition,
+    database_factory: DatabaseFactory,
     table: str,
 ) -> None:
-    seed = next(s for s in sqlite_definition.bootstrap_seeds if s.target_table == table)
+    definition = GeneratedVNextSchemaProvider(database_factory.backend).definition
+    seed = next(s for s in definition.bootstrap_seeds if s.target_table == table)
     columns = _columns(seed)
     where, bound = _where(columns, seed.parameters)
     advancing = [
@@ -462,10 +442,9 @@ def test_ready_audit_accepts_advanced_runtime_registry_values_but_building_rejec
     ]
     assert advancing, columns
     column = advancing[0]
-    path = tmp_path / f"{table}.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config()
     initialize_database(config)
-    provider = GeneratedVNextSchemaProvider("sqlite")
+    provider = GeneratedVNextSchemaProvider(database_factory.backend)
     connector = open_connector(config)
     try:
         with connector.transaction():
@@ -495,38 +474,65 @@ def _seed_building_prefix(
     *,
     seeded: int,
 ) -> None:
-    with connector.transaction():
-        SQLiteSchemaEpochCatalog().create_control_table(connector)
+    backend = connector_backend(connector)
+    catalog = (
+        SQLiteSchemaEpochCatalog()
+        if backend == "sqlite"
+        else MariaDBSchemaEpochCatalog()
+    )
+
+    def ddl() -> None:
+        for schema_slice in definition.slices:
+            for statement in schema_slice.statements:
+                connector.execute(statement.sql)
+
+    def marker() -> None:
         connector.execute(
-            "INSERT INTO h2hdb_schema_epoch (singleton_id, epoch, schema_version, "
-            "state, manifest_sha256, started_at, ready_at) "
-            "VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)",
+            "INSERT INTO h2hdb_schema_epoch (singleton_id, epoch, schema_version, state, manifest_sha256, started_at, ready_at) VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)",
             (
                 definition.epoch,
                 definition.schema_version,
                 bytes.fromhex(definition.manifest_sha256),
             ),
         )
-        for schema_slice in definition.slices:
-            for statement in schema_slice.statements:
-                connector.execute(statement.sql)
-        for seed in definition.bootstrap_seeds[:seeded]:
-            connector.execute(seed.sql, seed.parameters)
+
+    def seeds() -> None:
+        for sql, group in groupby(
+            definition.bootstrap_seeds[:seeded], key=lambda seed: seed.sql
+        ):
+            parameters = [seed.parameters for seed in group]
+            for offset in range(0, len(parameters), _SCHEMA_SEED_BATCH_ROWS):
+                connector.execute_many(
+                    sql, parameters[offset : offset + _SCHEMA_SEED_BATCH_ROWS]
+                )
+
+    if backend == "sqlite":
+        with connector.transaction():
+            catalog.create_control_table(connector)
+            marker()
+            ddl()
+            seeds()
+    else:
+        catalog.create_control_table(connector)
+        with connector.transaction():
+            marker()
+        ddl()
+        with connector.transaction():
+            seeds()
 
 
 @pytest.mark.merge_smoke
-def test_sqlite_committed_seed_prefix_resumes_to_the_exact_ready_seed_set(
-    tmp_path: Path,
-    sqlite_definition: SchemaEpochDefinition,
+def test_committed_seed_prefix_resumes_to_the_exact_ready_seed_set(
+    database_factory: DatabaseFactory,
 ) -> None:
+    definition = GeneratedVNextSchemaProvider(database_factory.backend).definition
     # One prefix just beyond the batch hard-cap represents arbitrary committed
     # generated prefixes; the unbounded Lean theorem covers every prefix size.
     boundary = _SCHEMA_SEED_BATCH_ROWS + 1
-    path = tmp_path / "representative-prefix.sqlite3"
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config()
     connector = open_connector(config)
     try:
-        _seed_building_prefix(connector, sqlite_definition, seeded=boundary)
+        _seed_building_prefix(connector, definition, seeded=boundary)
     finally:
         connector.close()
     report = VNextDatabaseAdminFacade(config).initialize()
@@ -534,9 +540,9 @@ def test_sqlite_committed_seed_prefix_resumes_to_the_exact_ready_seed_set(
     assert report.activation_audit is not None
     assert report.activation_audit.transitioned_to_ready
     assert report.activation_audit.bootstrap_seed_ids == tuple(
-        seed.seed_id for seed in sqlite_definition.bootstrap_seeds
+        seed.seed_id for seed in definition.bootstrap_seeds
     )
-    provider = GeneratedVNextSchemaProvider("sqlite")
+    provider = GeneratedVNextSchemaProvider(database_factory.backend)
     connector = open_connector(config)
     try:
         with connector.read_transaction():
@@ -568,32 +574,30 @@ def _seed_batches(definition: SchemaEpochDefinition) -> int:
     return batches + 1
 
 
-_MARIADB_DEFINITION = GeneratedVNextSchemaProvider("mariadb").definition
-_MARIADB_SEED_SQL = frozenset(seed.sql for seed in _MARIADB_DEFINITION.bootstrap_seeds)
-
-
 class _SeedBatchStop(InjectedFault):
     pass
 
 
-def test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set(
-    mariadb_config: CoreConfig,
+def test_interrupted_seed_batch_rebuilds_or_resumes_the_exact_ready_seed_set(
+    db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Interrupt one representative real batch, then resume through the facade.
 
-    MariaDB commits every bounded seed batch (DDL and INSERT batches are not
-    atomic across the epoch). The data-only matrix and unbounded replay theorem
-    cover all other batch positions without repeatedly rebuilding MariaDB.
+    SQLite rolls the entire construction back; MariaDB retains committed DDL
+    and seed batches. Assert each native durable state and its exact retry result.
+    The data-only matrix and replay theorem cover other seed batch positions.
     """
 
-    batch_ordinal = _seed_batches(_MARIADB_DEFINITION) // 2
+    definition = GeneratedVNextSchemaProvider(backend_of(db_config)).definition
+    seed_sql = frozenset(seed.sql for seed in definition.bootstrap_seeds)
+    batch_ordinal = _seed_batches(definition) // 2
     injector = FaultInjector()
     seed_batches = 0
 
     def stop_before_batch(sql: str) -> None:
         nonlocal seed_batches
-        if sql in _MARIADB_SEED_SQL:
+        if sql in seed_sql:
             seed_batches += 1
             if seed_batches == batch_ordinal:
                 raise _SeedBatchStop(f"interrupted before seed batch {batch_ordinal}")
@@ -601,23 +605,30 @@ def test_live_mariadb_interrupted_seed_batch_resumes_to_the_exact_ready_seed_set
     injector.on_before_mutation = stop_before_batch
     with fault_injection(monkeypatch, injector):
         with pytest.raises(_SeedBatchStop):
-            VNextDatabaseAdminFacade(mariadb_config).initialize()
+            VNextDatabaseAdminFacade(db_config).initialize()
     assert seed_batches == batch_ordinal
-    connector = open_connector(mariadb_config)
+    connector = open_connector(db_config)
     try:
-        assert connector.fetch_one(
-            "SELECT state FROM h2hdb_schema_epoch WHERE singleton_id = 1"
-        ) == ("BUILDING",)
+        if db_config.database.sql_type == "sqlite":
+            assert not connector.check_table_exists("h2hdb_schema_epoch")
+        else:
+            with connector.read_transaction():
+                assert connector.fetch_one(
+                    "SELECT state FROM h2hdb_schema_epoch WHERE singleton_id = 1"
+                ) == ("BUILDING",)
     finally:
         connector.close()
-    resumed = VNextDatabaseAdminFacade(mariadb_config).initialize()
-    assert resumed.state == "READY" and resumed.outcome.value == "resumed"
+    resumed = VNextDatabaseAdminFacade(db_config).initialize()
+    assert resumed.state == "READY"
+    assert resumed.outcome.value == (
+        "created" if db_config.database.sql_type == "sqlite" else "resumed"
+    )
     assert resumed.activation_audit is not None
     assert resumed.activation_audit.transitioned_to_ready
     assert resumed.activation_audit.bootstrap_seed_ids == tuple(
-        seed.seed_id for seed in _MARIADB_DEFINITION.bootstrap_seeds
+        seed.seed_id for seed in definition.bootstrap_seeds
     )
-    assert full_check(mariadb_config).state == "READY"
+    assert full_check(db_config).state == "READY"
 
 
 def test_generated_seed_manifest_is_closed_over_physical_tables(

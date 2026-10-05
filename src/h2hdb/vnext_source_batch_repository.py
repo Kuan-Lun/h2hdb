@@ -220,7 +220,12 @@ class SourceBatchRepository:
             )
             result: list[tuple[int, tuple[str, ...]]] = []
             for row in rows:
-                identity = GalleryIdentity(*row)
+                try:
+                    identity = GalleryIdentity(*row)
+                except ValueError as error:
+                    raise SourceBatchConflictError(
+                        "published gallery identity differs from its durable coordinates"
+                    ) from error
                 if (
                     identity.scope_key != baseline.scope_key
                     or identity.gallery_id <= after_gallery_id

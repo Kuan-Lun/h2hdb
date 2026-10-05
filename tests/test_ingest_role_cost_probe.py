@@ -17,6 +17,8 @@ from types import ModuleType
 from typing import Any, cast
 
 import pytest
+from vnext_probe_databases import generated_probe_databases
+from vnext_test_database import DatabaseFactory, database_connector, inspect_all
 
 
 @pytest.fixture
@@ -97,7 +99,9 @@ def test_shared_names_isolate_join_fanout_without_changing_hash_cardinality(
 
 @pytest.mark.parametrize("regime", ("distinct", "duplicate", "metadata"))
 def test_changed_gallery_history_and_shared_names_seed_exact_real_authorities(
-    probe: ModuleType, regime: str
+    probe: ModuleType,
+    regime: str,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(
         probe.Shape(257, regime, galleries=17, observations=3, shared_names=True)
@@ -105,7 +109,7 @@ def test_changed_gallery_history_and_shared_names_seed_exact_real_authorities(
     expected = probe.expected_stream_rows(facts)
     streams = probe.fixture_streams(facts)
     assert {kind: list(rows) for kind, rows in streams.items()} == expected
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         assert connector.fetch_all(
@@ -137,7 +141,10 @@ def test_changed_gallery_history_and_shared_names_seed_exact_real_authorities(
 
 @pytest.mark.parametrize("lookup_calls", (0, 2))
 def test_fixed_cost_oracle_rejects_missing_or_repeated_metadata_lookup(
-    probe: ModuleType, monkeypatch: pytest.MonkeyPatch, lookup_calls: int
+    probe: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    lookup_calls: int,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(129))
     original = probe.role.check_role_derivation_v1
@@ -158,7 +165,7 @@ def test_fixed_cost_oracle_rejects_missing_or_repeated_metadata_lookup(
             original(connector)
 
     monkeypatch.setattr(probe.role, "check_role_derivation_v1", degraded)
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         with pytest.raises(
@@ -170,10 +177,13 @@ def test_fixed_cost_oracle_rejects_missing_or_repeated_metadata_lookup(
 
 @pytest.mark.parametrize("files, calls", [(127, 14), (128, 14), (129, 21)])
 def test_actual_role_validator_has_seven_streams_and_terminal_empty_page(
-    probe: ModuleType, files: int, calls: int
+    probe: ModuleType,
+    files: int,
+    calls: int,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(files))
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         captured, measured = probe.capture_validator(connector, facts)
@@ -202,11 +212,14 @@ def test_actual_role_validator_has_seven_streams_and_terminal_empty_page(
 
 @pytest.mark.parametrize("regime,files", [("duplicate", 8224), ("metadata", 129)])
 def test_real_validator_accepts_duplicate_groups_and_metadata_filter(
-    probe: ModuleType, regime: str, files: int
+    probe: ModuleType,
+    regime: str,
+    files: int,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(files, regime))
     expected = probe.stream_sizes(facts)
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         captured, measured = probe.capture_validator(connector, facts)
@@ -227,11 +240,14 @@ def test_real_validator_accepts_duplicate_groups_and_metadata_filter(
 @pytest.mark.parametrize("files", (127, 128, 129))
 @pytest.mark.parametrize("regime", ("distinct", "duplicate", "metadata"))
 def test_production_boundary_pages_match_fixture_facts_in_repeated_cycles(
-    probe: ModuleType, files: int, regime: str
+    probe: ModuleType,
+    files: int,
+    regime: str,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(files, regime))
     expected = probe.stream_sizes(facts)
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         for _ in range(3):
@@ -252,10 +268,13 @@ def test_production_boundary_pages_match_fixture_facts_in_repeated_cycles(
 
 @pytest.mark.parametrize("authority_calls", (0, 2))
 def test_fixed_cost_oracle_rejects_missing_or_repeated_authority_probe(
-    probe: ModuleType, monkeypatch: pytest.MonkeyPatch, authority_calls: int
+    probe: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    authority_calls: int,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(129))
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         original = probe.role._validated_open_observation_retirement
@@ -275,10 +294,12 @@ def test_fixed_cost_oracle_rejects_missing_or_repeated_authority_probe(
 
 
 def test_equal_count_wrong_rows_fail_the_independent_fixture_oracle(
-    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(129))
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         original = connector.fetch_all
@@ -294,6 +315,10 @@ def test_equal_count_wrong_rows_fail_the_independent_fixture_oracle(
             probe.capture_validator(connector, facts)
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="This cost contract measures SQLite VM instructions and its removed tuple-seek optimizer control.",
+)
 @pytest.mark.deep
 @pytest.mark.parametrize("files", (4096, 32768))
 @pytest.mark.parametrize("regime", ("distinct", "duplicate", "metadata"))
@@ -379,14 +404,16 @@ def test_sqlite_production_seek_cost_and_removed_tuple_negative_control(
 
 
 def test_missing_scope_is_rejected_instead_of_reporting_success(
-    probe: ModuleType, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
     facts = probe.file_facts(probe.Shape(1))
     original = probe.query_kind
     monkeypatch.setattr(
         probe, "query_kind", lambda sql: None if "AS anchor" in sql else original(sql)
     )
-    with probe.databases("sqlite", 1) as connections:
+    with generated_probe_databases(database_factory, 1) as connections:
         connector = next(connections)
         probe.seed_fixture(connector, facts)
         with pytest.raises(RuntimeError, match="incomplete role stream"):
@@ -397,7 +424,7 @@ def test_missing_scope_is_rejected_instead_of_reporting_success(
     "after", [(0, 0, b""), (1, 1, b"a"), (1, 2, b"b"), (2, 2, b"z")]
 )
 def test_production_predicates_and_controls_preserve_independent_ordered_output(
-    probe: ModuleType, after: tuple[int, int, bytes]
+    probe: ModuleType, after: tuple[int, int, bytes], database_factory: DatabaseFactory
 ) -> None:
     query = (
         "SELECT gallery_id, observation_id, file_key FROM facts "
@@ -409,27 +436,17 @@ def test_production_predicates_and_controls_preserve_independent_ordered_output(
     gallery, observation, key = after
     parameters = (gallery, gallery, observation, gallery, observation, key, *after, 4)
     facts = list(product((1, 2), (1, 2), (b"a", b"b", b"c")))
-    connection = sqlite3.connect(":memory:")
-    try:
+    with database_connector(database_factory.config("predicates")) as connection:
         connection.execute(
-            "CREATE TABLE facts (gallery_id INTEGER, observation_id INTEGER, file_key BLOB)"
+            "CREATE TABLE facts (gallery_id INTEGER, observation_id INTEGER, file_key VARBINARY(32))"
         )
-        connection.executemany(
-            "INSERT INTO facts VALUES (?,?,?)",
-            facts,
-        )
+        with connection.transaction():
+            connection.execute_many("INSERT INTO facts VALUES (%s,%s,%s)", facts)
         expected = sorted(row for row in facts if row > after)[:4]
-        assert (
-            connection.execute(query.replace("%s", "?"), parameters).fetchall()
-            == expected
-        )
+        assert inspect_all(connection, query, parameters) == expected
         for rewrite in (probe.tuple_seek_baseline, probe.degraded_order):
             sql, args = rewrite(query, parameters)
-            assert (
-                connection.execute(sql.replace("%s", "?"), args).fetchall() == expected
-            )
-    finally:
-        connection.close()
+            assert inspect_all(connection, sql, args) == expected
 
 
 def test_baseline_refuses_unknown_or_null_keysets(probe: ModuleType) -> None:

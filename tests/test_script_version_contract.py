@@ -33,24 +33,39 @@ def test_version_gate_enforces_three_part_base_and_candidate(
     specification.loader.exec_module(policy)
     version_changed = base_version != candidate_version
     audits: list[str] = []
+    calls: list[tuple[str, ...]] = []
+    diff = ("diff", "--no-renames", "--name-only", "--diff-filter=ACDMRT")
+    changed_paths = (
+        "src/runtime.py\npyproject.toml" if version_changed else "tests/test.py"
+    )
+    message = "fix: update runtime" if version_changed else "test: add coverage"
+    responses = {
+        ("rev-parse", "--verify", "task/test-version^{commit}"): "task-commit",
+        ("write-tree",): "candidate-tree",
+        (*diff, "HEAD", "candidate-tree"): changed_paths,
+        ("log", "--format=%B%x00", "HEAD..task-commit"): message,
+        ("rev-list", "HEAD..task-commit"): "task-commit",
+        (*diff, "task-commit^1", "task-commit"): changed_paths,
+        ("show", "-s", "--format=%B", "task-commit"): message,
+    }
 
     def git(*arguments: str) -> str:
-        if arguments[0] == "rev-parse":
-            return "task-commit"
-        if arguments == ("write-tree",):
-            return "candidate-tree"
-        if arguments[0] == "diff":
-            return (
-                "src/runtime.py\npyproject.toml" if version_changed else "tests/test.py"
-            )
-        assert arguments[0] == "log"
-        return "fix: update runtime" if version_changed else "test: add coverage"
+        calls.append(arguments)
+        assert arguments in responses, f"Unexpected Git command: {arguments!r}"
+        return responses[arguments]
 
     def document(tree: str) -> dict[str, object]:
+        versions = {
+            "HEAD": base_version,
+            "task-commit^1": base_version,
+            "candidate-tree": candidate_version,
+            "task-commit": candidate_version,
+        }
+        assert tree in versions, f"Unexpected version document: {tree!r}"
         return {
             "project": {
                 "name": "version-contract-fixture",
-                "version": base_version if tree == "HEAD" else candidate_version,
+                "version": versions[tree],
             },
             "tool": {"h2h": {"version": {"release-paths": ["src/**"]}}},
         }
@@ -73,3 +88,24 @@ def test_version_gate_enforces_three_part_base_and_candidate(
     else:
         assert policy.main() == 0
         assert audits == ([candidate_version] if version_changed else [])
+
+    expected_calls = [
+        ("rev-parse", "--verify", "task/test-version^{commit}"),
+        ("write-tree",),
+    ]
+    if error != "must use X.Y.Z":
+        expected_calls.extend(
+            [
+                (*diff, "HEAD", "candidate-tree"),
+                ("log", "--format=%B%x00", "HEAD..task-commit"),
+            ]
+        )
+        if version_changed:
+            expected_calls.extend(
+                [
+                    ("rev-list", "HEAD..task-commit"),
+                    (*diff, "task-commit^1", "task-commit"),
+                    ("show", "-s", "--format=%B", "task-commit"),
+                ]
+            )
+    assert calls == expected_calls

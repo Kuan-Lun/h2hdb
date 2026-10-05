@@ -23,6 +23,7 @@ from .compose import (
     PreparedDeployment,
     prepare_deployment,
 )
+from .database import validate_role_authorities
 from .evidence import (
     EvidenceError,
     export_evidence,
@@ -195,6 +196,10 @@ class Acceptance:
             output=args.output.resolve(),
             seconds=args.deadline_seconds,
         )
+        self.commands.deadline = min(
+            self.commands.deadline,
+            getattr(args, "absolute_deadline", self.commands.deadline),
+        )
         self.root = Path(tempfile.mkdtemp(prefix=self.project + "-"))
         self.prepared: PreparedDeployment | None = None
         self._last_oracle: dict[str, Any] | None = None
@@ -205,6 +210,8 @@ class Acceptance:
         )
         self.report: dict[str, Any] = {
             "schema": 1,
+            "backend": args.backend,
+            "backend_scope": "single-backend; incomplete-pair without the aggregate report",
             "project": self.project,
             "fixture_root": str(self.root),
             "started_utc": datetime.now(UTC).isoformat(),
@@ -275,6 +282,80 @@ class Acceptance:
             check=check,
             timeout=600,
         )
+
+    def initialize_database(self) -> None:
+        if self.args.backend == "mariadb":
+            self.compose(["up", "-d", "--no-build", "--pull", "never", "database"])
+            self.wait(
+                lambda: any(
+                    row.get("Service") == "database" and row.get("Health") == "healthy"
+                    for row in self.statuses()
+                ),
+                "disposable MariaDB",
+                seconds=120,
+            )
+        else:
+            result = self.compose(
+                [
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "-T",
+                    "--user",
+                    "0:0",
+                    "--entrypoint",
+                    "env",
+                    "-e",
+                    "PYTHONPATH=/acceptance",
+                    SERVICES["ingest"],
+                    "python",
+                    "-m",
+                    "deployment_acceptance.database",
+                    "initialize-sqlite",
+                ]
+            )
+            self.report["database_initialization"] = json.loads(result)
+            if self.report["database_initialization"] != {
+                "status": "passed",
+                "backend": "sqlite",
+                "journal_mode": "wal",
+            }:
+                raise AssertionError("SQLite volume initialization lacks evidence")
+
+    def database_authorities(self, oracle: dict[str, Any]) -> dict[str, Any]:
+        values = {}
+        for role, service in SERVICES.items():
+            config = (
+                "h2hdb-config.json" if role == "ingest" else "h2hdb-reader-config.json"
+            )
+            values[role] = json.loads(
+                self.compose(
+                    [
+                        "exec",
+                        "-T",
+                        service,
+                        "env",
+                        "PYTHONPATH=/acceptance",
+                        "python",
+                        "-m",
+                        "deployment_acceptance.database",
+                        "inspect",
+                        "--config",
+                        "/h2hdb-config/" + config,
+                        "--backend",
+                        self.args.backend,
+                        "--role",
+                        role,
+                    ]
+                )
+            )
+        validate_role_authorities(
+            values,
+            backend=self.args.backend,
+            revision=oracle["revision"],
+            publications=oracle["verified_publications"],
+        )
+        return values
 
     def generate(self, count: int, gid: int, *, marker: str = "complete") -> None:
         # Generation occurs in an explicit supplied interpreter; ingest still sees a RO source mount.
@@ -776,6 +857,7 @@ print(json.dumps(result))
         )
         if self.args.http_artifacts:
             record["http_artifacts"] = self.verify_http_artifacts(oracle)
+        record["database_authority"] = self.database_authorities(oracle)
         record["status"] = "passed"
         self._last_oracle = oracle
         write_json(self.commands.output / "report.json", self.report)
@@ -915,7 +997,11 @@ print(json.dumps(result))
             self.commands.assert_fresh_project(self.project)
             images = {
                 role: self.commands.image(getattr(self.args, role + "_image"))
-                for role in ("ingest", "opds", "mariadb")
+                for role in (
+                    ("ingest", "opds", "mariadb")
+                    if self.args.backend == "mariadb"
+                    else ("ingest", "opds")
+                )
             }
             self.report["images"] = images
             self.report["image_platforms"] = {
@@ -941,6 +1027,7 @@ print(json.dumps(result))
                 project=self.project,
                 images=images,
                 credentials=self.credentials,
+                backend=self.args.backend,
                 docker=self.commands.docker,
                 # This diagnostic harness proves which analysis was executed.
                 # Production and prepare_deployment defaults remain INFO.
@@ -988,6 +1075,7 @@ print(json.dumps(result))
             for filename in (
                 "__init__.py",
                 "fixture.py",
+                "database.py",
                 "probe.py",
                 "http_observer.py",
                 "http_probe.py",
@@ -1012,15 +1100,7 @@ print(json.dumps(result))
             )
             self.compose(["config", "--quiet"])
             self.generate(self.args.base_count, 1_000_001)
-            self.compose(["up", "-d", "--no-build", "--pull", "never", "database"])
-            self.wait(
-                lambda: any(
-                    row.get("Service") == "database" and row.get("Health") == "healthy"
-                    for row in self.statuses()
-                ),
-                "disposable MariaDB",
-                seconds=120,
-            )
+            self.initialize_database()
             initial = self.phase(
                 "fresh",
                 lambda: self.compose(
@@ -1174,8 +1254,15 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("deployment-root", "fixture-python", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--context", required=True)
-    for role in ("ingest", "opds", "mariadb"):
+    parser.add_argument(
+        "--backend",
+        choices=("both", "sqlite", "mariadb"),
+        default="both",
+        help="Default: both engines, sequentially within one deadline; single-engine runs are incomplete pairs",
+    )
+    for role in ("ingest", "opds"):
         parser.add_argument(f"--{role}-image", required=True)
+    parser.add_argument("--mariadb-image")
     parser.add_argument("--base-count", type=int, default=2)
     parser.add_argument("--append-count", type=int, default=2)
     parser.add_argument(
@@ -1215,6 +1302,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Retain synthetic source, CBZs and configuration after Docker cleanup for diagnosis",
     )
     args = parser.parse_args(argv)
+    if (args.backend in {"both", "mariadb"}) != (args.mariadb_image is not None):
+        parser.error("--mariadb-image is required for --backend both or mariadb only")
     if min(args.base_count, args.append_count, args.pages, args.phase_seconds) <= 0:
         parser.error("Fixture dimensions and phase timeout must be positive")
     if max(args.base_count, args.append_count) > 1_000_000 or args.pages > 4096:
@@ -1241,19 +1330,115 @@ def main(argv: list[str] | None = None) -> int:
         require_evidence_support()
     except EvidenceError as error:
         parser.error(str(error))
-    result = Acceptance(args)
-    code = result.run()
+    return run_selected_backends(args)
+
+
+def _backend_exit_code(code: int, report: dict[str, Any], *, instrumented: bool) -> int:
     if (
-        not result.report.get("cleanup", {}).get("verified_empty")
-        or result.report.get("evidence", {}).get("status") != "exported"
-        or result.report.get("measurement", {}).get("status")
+        report.get("cleanup", {}).get("verified_empty") is not True
+        or report.get("evidence", {}).get("status") != "exported"
+        or report.get("measurement", {}).get("status")
         not in {"passed", "not_requested"}
-        or (
-            args.instrumented
-            and result.report.get("measurement", {}).get("status") != "passed"
-        )
-        or result.report.get("fixture_cleanup_error")
-        or result.report.get("observer_release_error")
+        or (instrumented and report.get("measurement", {}).get("status") != "passed")
+        or report.get("fixture_cleanup_error")
+        or report.get("observer_release_error")
     ):
         return 1
+    return code
+
+
+def run_selected_backends(args: argparse.Namespace) -> int:
+    """One scenario body, one absolute budget, and isolated ownership per engine."""
+    started = time.monotonic()
+    args.absolute_deadline = started + args.deadline_seconds
+    if args.backend != "both":
+        result = Acceptance(args)
+        return _backend_exit_code(
+            result.run(), result.report, instrumented=args.instrumented
+        )
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    summary: dict[str, Any] = {
+        "schema": 1,
+        "backend_scope": "paired",
+        "status": "running",
+        "required_backends": ["sqlite", "mariadb"],
+        "backends": {},
+        "deadline_seconds": args.deadline_seconds,
+        "scenario_parameters": {
+            name: getattr(args, name)
+            for name in (
+                "base_count",
+                "append_count",
+                "growth_batches",
+                "pages",
+                "image_profile",
+                "phase_seconds",
+                "instrumented",
+                "lifecycle",
+                "faults",
+                "cleanup_faults",
+                "concurrent_http",
+                "http_artifacts",
+            )
+        },
+        "started_utc": datetime.now(UTC).isoformat(),
+    }
+    code = 1
+    try:
+        for backend in summary["required_backends"]:
+            remaining = args.absolute_deadline - time.monotonic()
+            if remaining <= 60:
+                raise TimeoutError(
+                    "Paired acceptance budget exhausted before next backend"
+                )
+            selected = argparse.Namespace(**vars(args))
+            selected.backend = backend
+            selected.output = output / backend
+            selected.deadline_seconds = remaining
+            if backend == "sqlite":
+                selected.mariadb_image = None
+            result = Acceptance(selected)
+            exit_code = _backend_exit_code(
+                result.run(), result.report, instrumented=args.instrumented
+            )
+            summary["backends"][backend] = {
+                "exit_code": exit_code,
+                "report": str(selected.output / "report.json"),
+                "verified_empty": result.report.get("cleanup", {}).get("verified_empty")
+                is True,
+                "scenarios": [
+                    row["name"] for row in result.report.get("scenarios", [])
+                ],
+            }
+            # run() includes container cleanup and evidence export. Its original
+            # cleanup remains best effort even after a deadline; successful
+            # resource removal must not turn an over-budget run into acceptance.
+            if time.monotonic() >= args.absolute_deadline:
+                summary["backends"][backend]["deadline_exceeded"] = True
+                raise TimeoutError("Paired deadline exceeded during backend completion")
+            if exit_code != 0:
+                raise RuntimeError(f"{backend} acceptance failed (exit {exit_code})")
+        left, right = (
+            summary["backends"][backend]["scenarios"]
+            for backend in summary["required_backends"]
+        )
+        if not left or left != right:
+            raise AssertionError("Paired acceptance scenarios differ")
+        if time.monotonic() >= args.absolute_deadline:
+            raise TimeoutError("Paired deadline exceeded before aggregate completion")
+        code = 0
+    except (Exception, KeyboardInterrupt) as error:
+        summary["failure"] = f"{type(error).__name__}: {error}"
+        code = 1
+    finally:
+        summary["finished_utc"] = datetime.now(UTC).isoformat()
+        summary["elapsed_seconds"] = time.monotonic() - started
+        if summary["elapsed_seconds"] >= args.deadline_seconds:
+            summary.setdefault(
+                "failure", "TimeoutError: paired completion exceeded deadline"
+            )
+            code = 1
+        summary["status"] = "passed" if code == 0 else "failed"
+        write_json(output / "backend-pair-report.json", summary)
     return code

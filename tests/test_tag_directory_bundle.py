@@ -12,11 +12,14 @@ from test_vnext_catalog_reader_repository import (
     _seed_tag_browse_fixture,
 )
 from vnext_catalog_identity_fixtures import seed_tag_term
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_foreign_key_integrity,
+    connector_backend,
+)
 
 from h2hdb import (
     CatalogTagBundle,
-    CoreConfig,
-    DatabaseConfig,
     VNextCatalogFacade,
 )
 from h2hdb.vnext_catalog_reader_repository import (
@@ -27,17 +30,14 @@ from h2hdb.vnext_identity import publication_key
 
 
 def test_tag_bundle_pages_exact_first_publications_without_individual_reads(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "tag-bundle.sqlite3"
-    connector = _database(database_path)
+    connector = _database(database_factory.config(str(database_path)))
     try:
         _seed_tag_browse_fixture(connector)
-        facade = VNextCatalogFacade(
-            CoreConfig(
-                database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
-            )
-        )
+        facade = VNextCatalogFacade(database_factory.config(str(database_path)))
         first_apple = min((202, 206), key=publication_key)
         expected = [
             ("amber", first_apple),
@@ -83,9 +83,12 @@ def test_tag_bundle_pages_exact_first_publications_without_individual_reads(
 
 
 def test_tag_bundle_deduplicates_shared_publications_at_the_hard_page_bound(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "tag-bundle-bound.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "tag-bundle-bound.sqlite3"))
+    )
     try:
         with connector.transaction():
             values = _published_fixture(connector, artifact_count=0)
@@ -126,10 +129,13 @@ def test_tag_bundle_deduplicates_shared_publications_at_the_hard_page_bound(
             connector.execute(
                 "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
             )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
-        with patch.object(
-            reader, "_hydrate_publications", wraps=reader._hydrate_publications
-        ) as hydrate:
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
+        with (
+            connector.read_transaction(),
+            patch.object(
+                reader, "_hydrate_publications", wraps=reader._hydrate_publications
+            ) as hydrate,
+        ):
             first = reader.list_tag_values_with_publications(
                 connector, namespace="artist", limit=128
             )
@@ -142,9 +148,10 @@ def test_tag_bundle_deduplicates_shared_publications_at_the_hard_page_bound(
         assert first.page.values[0].value == "tag-000"
         assert first.page.values[-1].value == "tag-127"
         assert first.page.next_cursor is not None
-        last = reader.list_tag_values_with_publications(
-            connector, namespace="artist", after=first.page.next_cursor, limit=128
-        )
+        with connector.read_transaction():
+            last = reader.list_tag_values_with_publications(
+                connector, namespace="artist", after=first.page.next_cursor, limit=128
+            )
         assert [value.value for value in last.page.values] == [
             "tag-128",
             "tag-129",
@@ -155,23 +162,26 @@ def test_tag_bundle_deduplicates_shared_publications_at_the_hard_page_bound(
         with pytest.raises(ValueError, match="one publication per tag"):
             replace(last, publications=())
         assert CatalogTagBundle(page=last.page, publications=last.publications) == last
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
     finally:
         connector.close()
 
 
 def test_tag_bundle_rejects_missing_publication_hydration_authority(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "tag-bundle-missing.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "tag-bundle-missing.sqlite3"))
+    )
     try:
         _published_fixture(connector, artifact_count=0)
         connector.execute(
             "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
         )
         connector.execute("DELETE FROM catalog_publication_order WHERE revision = 1")
-        reader = VNextCatalogReaderRepository(backend="sqlite")
-        with pytest.raises(VNextCatalogReadError):
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
+        with connector.read_transaction(), pytest.raises(VNextCatalogReadError):
             reader.list_tag_values_with_publications(connector, namespace="artist")
     finally:
         connector.close()

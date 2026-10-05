@@ -21,6 +21,7 @@ from vnext_pipeline import (
     run_source,
 )
 from vnext_publication_cleanup_fixtures import partial_publication_setup
+from vnext_test_database import inspect_all, inspect_one, inspection_snapshot
 
 from h2hdb import CoreConfig, VNextIngestFacade, VNextSourceCompletionMarker
 from h2hdb.sql_connector import SQLConnector
@@ -55,9 +56,10 @@ def _seed_target(config: CoreConfig) -> VNextSourceCompletionMarker:
 
 
 def _binding(connector: SQLConnector) -> tuple[int, int, bytes]:
-    rows = connector.fetch_all(
+    rows = inspect_all(
+        connector,
         "SELECT gallery_id, observation_id, file_key "
-        "FROM catalog_gallery_observation_completion_marker"
+        "FROM catalog_gallery_observation_completion_marker",
     )
     assert len(rows) == 1
     gallery_id, observation_id, key = rows[0]
@@ -94,7 +96,8 @@ def _old_view_query(query: str) -> str:
 def _lookup(
     connector: SQLConnector, binding: tuple[int, int, bytes]
 ) -> dict[tuple[int, int], CachedSourceObservation]:
-    return _load_cached_batch(connector, bindings=(binding,))
+    with inspection_snapshot(connector):
+        return _load_cached_batch(connector, bindings=(binding,))
 
 
 def test_marker_lookup_matches_sealed_source_and_view(
@@ -142,7 +145,8 @@ def _seed_unrequested_files(
         return
     gallery_id, observation_id, _key = binding
     retained_observation = observation_id + 1
-    digest = connector.fetch_one(
+    digest = inspect_one(
+        connector,
         "SELECT file_sha256 FROM catalog_gallery_observation_file_file_sha256s "
         "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
         binding,
@@ -219,6 +223,10 @@ def _measured_lookup(
 
 
 @pytest.mark.deep
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="This supplemental physical-plan regression counts SQLite VM opcodes; native marker semantics and malformed-family rejection are paired in this module.",
+)
 @pytest.mark.parametrize("retained", [0, 128, 512, 4096, 32767])
 def test_marker_lookup_vm_bound_and_old_view_negative_control(
     sqlite_config: CoreConfig, retained: int, monkeypatch: pytest.MonkeyPatch
@@ -228,7 +236,7 @@ def test_marker_lookup_vm_bound_and_old_view_negative_control(
         assert isinstance(connector, SQLiteConnector)
         binding = _binding(connector)
         _seed_unrequested_files(connector, binding, retained)
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert inspect_all(connector, "PRAGMA foreign_key_check") == []
         results = []
         for _cycle in range(3):
             result, steps = _measured_lookup(connector, binding)

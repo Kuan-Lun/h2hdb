@@ -17,16 +17,28 @@ from vnext_catalog_registry_fixtures import (
     seed_manifest_policy,
     seed_source_scope,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_build_manifest,
     seed_gallery_manifest,
     seed_snapshot_manifest,
 )
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_indexed_query,
+    connector_backend,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+    snapshot_rows,
+    trace_statements,
+)
 
 import h2hdb.vnext_source_build_repository as source_build_module
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_analysis_repository import ANALYSIS_COMPONENTS, AnalysisRepository
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
@@ -66,6 +78,7 @@ from h2hdb.vnext_operational_event_repository import (
 )
 from h2hdb.vnext_source_build_repository import (
     AssemblyBatchAttempt,
+    DiscoveryBatch,
     SourceBuildConflictError,
     SourceBuildManifestSummary,
     SourceBuildNotReadyError,
@@ -82,26 +95,27 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    seed_manifest_policy(connector)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    with connector.transaction():
+        seed_manifest_policy(connector)
     return connector
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=1_000_000,
@@ -122,9 +136,12 @@ def test_source_root_command_requires_frozen_manifest_summary() -> None:
 
 
 def test_recomposed_manifest_relations_are_atomic_and_exactly_replayable(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "wide-manifest.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "wide-manifest.sqlite3"))
+    )
     try:
         root_sha256 = b"r" * 32
         snapshot_sha256 = b"s" * 32
@@ -187,18 +204,21 @@ def test_recomposed_manifest_relations_are_atomic_and_exactly_replayable(
                 byte_count=1_000,
             )
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id, scope_key, manifest_policy_id, created_at "
             "FROM catalog_source_build_descriptor WHERE build_id = %s",
             (build_id,),
         ) == (build_id, scope.scope_key, 1, 10)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id, scan_attempt, gallery_count, "
             "tree_observation_sha256, completed_at "
             "FROM catalog_source_build_discoveries WHERE build_id = %s",
             (build_id,),
         ) == (build_id, b"d" * 16, 3, b"t" * 32, 15)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id, manifest_sha256, file_count, byte_count "
             "FROM catalog_build_manifest_core WHERE build_id = %s",
             (build_id,),
@@ -248,7 +268,7 @@ def test_recomposed_manifest_relations_are_atomic_and_exactly_replayable(
 
 
 def _upload(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: CanonicalValueUploadPlan,
@@ -257,7 +277,7 @@ def _upload(
 ) -> None:
     with connector.transaction():
         CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -266,7 +286,7 @@ def _upload(
     for page in plan.iter_pages():
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -275,7 +295,7 @@ def _upload(
             )
     with connector.transaction():
         CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -284,7 +304,7 @@ def _upload(
 
 
 def _open_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     command: SourceRootBuildCommand | None = None,
 ) -> tuple[GateLease, IngestTurn, SourceRootBuildCommand]:
@@ -295,7 +315,7 @@ def _open_build(
         _upload(connector, gate, turn, root, now=21)
         with connector.transaction():
             SourceBuildRepository.handoff_root(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 command=command,
@@ -355,8 +375,9 @@ def _frozen_fixture_summary(
     )
 
 
-def _working_build_id(connector: SQLiteConnector) -> bytes:
-    row = connector.fetch_one(
+def _working_build_id(connector: SQLConnector) -> bytes:
+    row = inspect_one(
+        connector,
         "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
         (1,),
     )
@@ -366,13 +387,17 @@ def _working_build_id(connector: SQLiteConnector) -> bytes:
 
 
 def test_source_build_database_clock_and_abandonment_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "source-abandon.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "source-abandon.sqlite3"))
+    )
     try:
         gate, turn, _command = _open_build(connector)
         build_id = _working_build_id(connector)
-        created = connector.fetch_one(
+        created = inspect_one(
+            connector,
             "SELECT created.created_at, working.assigned_at "
             "FROM catalog_source_build_descriptor created "
             "JOIN operational_source_working_builds working "
@@ -390,32 +415,35 @@ def test_source_build_database_clock_and_abandonment_replay(
 
         with connector.transaction():
             abandoned = SourceBuildRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build_id,
                 now=25,
             )
         assert not abandoned.replayed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (build_id,),
         ) == ("ABANDONED",)
         assert (
-            connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
+            inspect_all(connector, "SELECT * FROM operational_source_working_builds")
+            == []
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
         ) == (build_id,)
 
-        before = connector.fetch_all(
-            "SELECT build_id, state FROM catalog_source_build_states"
+        before = inspect_all(
+            connector, "SELECT build_id, state FROM catalog_source_build_states"
         )
         with connector.transaction():
             replay = SourceBuildRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build_id,
@@ -423,8 +451,8 @@ def test_source_build_database_clock_and_abandonment_replay(
             )
         assert replay.replayed
         assert (
-            connector.fetch_all(
-                "SELECT build_id, state FROM catalog_source_build_states"
+            inspect_all(
+                connector, "SELECT build_id, state FROM catalog_source_build_states"
             )
             == before
         )
@@ -437,7 +465,7 @@ def test_source_build_database_clock_and_abandonment_replay(
                 pytest.raises(SourceBuildConflictError, match="ABANDONED"),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     command=replacement,
@@ -450,10 +478,13 @@ def test_source_build_database_clock_and_abandonment_replay(
 
 
 def test_source_build_abandonment_rolls_back_slot_delete_on_cas_fault(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "source-abandon-fault.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "source-abandon-fault.sqlite3"))
+    )
     try:
         gate, turn, _command = _open_build(connector)
         build_id = _working_build_id(connector)
@@ -469,25 +500,29 @@ def test_source_build_abandonment_rolls_back_slot_delete_on_cas_fault(
             with pytest.raises(RuntimeError, match="injected"):
                 with connector.transaction():
                     SourceBuildRepository.abandon(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         build_id=build_id,
                         now=25,
                     )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (build_id,),
         ) == ("OPEN",)
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (build_id,)
     finally:
         connector.close()
 
 
 def _published_commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     receipt_id: bytes,
     candidate_id: bytes,
@@ -497,7 +532,7 @@ def _published_commit(
     snapshot: bytes,
     committed_at: int,
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     connector.execute(
         "INSERT INTO catalog_source_revision_descriptors "
         "(source_revision, channel, snapshot_manifest_sha256) VALUES (%s, %s, %s)",
@@ -557,11 +592,11 @@ def _published_commit(
             "WHERE channel = %s",
             (receipt_id, b"default"),
         )
-    connector.execute("PRAGMA foreign_keys = ON")
+    set_foreign_key_checks(connector, enabled=True)
 
 
 def _link_published_candidate_to_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
     build_id: bytes,
@@ -572,9 +607,10 @@ def _link_published_candidate_to_build(
     """Seed the sealed candidate-to-analysis-to-build proof used by publication."""
 
     analysis_id = sha256(b"source-working-recovery\0" + candidate_id).digest()[:16]
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
-        if not connector.fetch_one(
+        if not inspect_one(
+            connector,
             "SELECT artifact_policy_id FROM catalog_artifact_policies "
             "WHERE artifact_policy_id = %s",
             (1,),
@@ -587,7 +623,8 @@ def _link_published_candidate_to_build(
                     SOURCE_BUILD_POLICY_AUTHORITY.artifact_policy_sha256,
                 ),
             )
-        if not connector.fetch_one(
+        if not inspect_one(
+            connector,
             "SELECT display_title_policy_id "
             "FROM catalog_display_title_policies "
             "WHERE display_title_policy_id = %s",
@@ -644,18 +681,18 @@ def _link_published_candidate_to_build(
             (candidate_id, analysis_id, revision, 1, 1, 0, timestamp + 2),
         )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
 def _seed_complete_analysis_for_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     analysis_id: bytes,
     build_id: bytes,
     policy_id: int = 1,
     timestamp: int,
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
         connector.execute(
             "INSERT INTO catalog_analysis_run_descriptor "
@@ -684,11 +721,11 @@ def _seed_complete_analysis_for_build(
             (analysis_id, timestamp + 1),
         )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
 
 def _seed_publication_state(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     receipt_id: bytes,
     candidate_id: bytes,
@@ -700,7 +737,8 @@ def _seed_publication_state(
     source_revision: int = 1,
     generation: int = 1,
 ) -> None:
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT value_sha256 FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
         (snapshot,),
@@ -739,7 +777,8 @@ def _seed_publication_state(
         snapshot_manifest_sha256=snapshot,
         timestamp=committed_at - 3,
     )
-    build_base = connector.fetch_one(
+    build_base = inspect_one(
+        connector,
         "SELECT base_receipt_id FROM "
         "catalog_source_build_base_publication_commits WHERE build_id = %s",
         (build_id,),
@@ -752,7 +791,7 @@ def _seed_publication_state(
         )
     connector.execute(
         "INSERT INTO catalog_publication_finalization_checkpoints "
-        "(receipt_id, generation, cursor, processed_count, state, updated_at) "
+        "(receipt_id, generation, `cursor`, processed_count, state, updated_at) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
         (receipt_id, 1, b"", 0, "OPEN", committed_at),
     )
@@ -766,7 +805,7 @@ def _seed_publication_state(
         )
         connector.execute(
             "UPDATE catalog_publication_finalization_checkpoints SET "
-            "generation = %s, cursor = %s, processed_count = %s, state = %s, "
+            "generation = %s, `cursor` = %s, processed_count = %s, state = %s, "
             "updated_at = %s WHERE receipt_id = %s",
             (2, b"", 0, "COMPLETE", committed_at + 1, receipt_id),
         )
@@ -780,7 +819,8 @@ def _seed_publication_state(
         committed_at + 1 if finalized else None,
     )
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (receipt_id,),
@@ -797,7 +837,7 @@ def _snapshot_command(
 
 
 def _handoff_snapshot_command(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     command: SourceRootBuildCommand,
@@ -809,7 +849,7 @@ def _handoff_snapshot_command(
         _upload(connector, gate, turn, root_plan, now=now)
         with connector.transaction():
             handoff = SourceBuildRepository.handoff_root(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 command=command,
@@ -821,13 +861,14 @@ def _handoff_snapshot_command(
 
 
 def _force_sealed_snapshot_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     summary: SourceBuildManifestSummary,
 ) -> int:
     created_at = require_int63(
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_id,),
@@ -890,12 +931,13 @@ def _force_sealed_snapshot_build(
 
 
 def _restore_sealed_source_working(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
 ) -> int:
     created_at = require_int63(
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_id,),
@@ -911,13 +953,14 @@ def _restore_sealed_source_working(
 
 
 def _seal_published_analysis_baseline(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     candidate_id: bytes,
     sealed_at: int,
 ) -> bytes:
     analysis_id = require_uuid16(
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT analysis_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
@@ -943,7 +986,7 @@ def _seal_published_analysis_baseline(
 
 
 def _analysis_ready_published_base(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     root: tuple[str, ...],
 ) -> tuple[GateLease, int, bytes]:
@@ -980,7 +1023,7 @@ def _analysis_ready_published_base(
     )
     with connector.transaction():
         IngestFenceRepository.complete(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             base_turn,
             now=30,
         )
@@ -988,9 +1031,14 @@ def _analysis_ready_published_base(
 
 
 def test_open_canonical_snapshot_working_build_resumes_in_new_generation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "snapshot-open-canonical-resume.sqlite3")
+    connector = _generated_database(
+        database_factory.config(
+            str(tmp_path / "snapshot-open-canonical-resume.sqlite3")
+        )
+    )
     try:
         gate, first_turn = _authorities(connector)
         summary = SourceBuildManifestSummary(b"A" * 32, 1, 0, 0)
@@ -1004,12 +1052,12 @@ def test_open_canonical_snapshot_working_build_resumes_in_new_generation(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 first_turn,
                 now=30,
             )
             resumed_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"r" * 16,
                 now=31,
                 lease_duration=100,
@@ -1025,15 +1073,18 @@ def test_open_canonical_snapshot_working_build_resumes_in_new_generation(
             )
             == build_id
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (build_id,),
         ) == ("OPEN",)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
             (1,),
         ) == (build_id,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (resumed_turn.generation,),
@@ -1043,9 +1094,12 @@ def test_open_canonical_snapshot_working_build_resumes_in_new_generation(
 
 
 def test_current_finalized_build_remains_authoritative(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "snapshot-finalized-current.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "snapshot-finalized-current.sqlite3"))
+    )
     try:
         seed_analysis_policy(connector)
         gate, first_turn = _authorities(connector)
@@ -1076,21 +1130,24 @@ def test_current_finalized_build_remains_authoritative(
             committed_at=sealed_at + 10,
             finalized=True,
         )
-        published_analysis_id = connector.fetch_one(
+        published_analysis_id = inspect_one(
+            connector,
             "SELECT analysis_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
         )[0]
         # The serialized pipeline admits exactly one analysis for each build;
         # the finalized publication therefore has one unambiguous authority.
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT analysis_id, policy_id, state FROM catalog_analysis_runs "
             "WHERE build_id = %s ORDER BY policy_id",
             (current_build,),
         ) == [
             (published_analysis_id, 1, "COMPLETE"),
         ]
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT provenance.analysis_id, candidate.analysis_id "
             "FROM catalog_publication_commit_heads AS head "
             "JOIN catalog_publication_commits AS committed "
@@ -1105,12 +1162,12 @@ def test_current_finalized_build_remains_authoritative(
 
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 first_turn,
                 now=30,
             )
             replay_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"r" * 16,
                 now=31,
                 lease_duration=1_000_000,
@@ -1126,7 +1183,8 @@ def test_current_finalized_build_remains_authoritative(
             )
             == current_build
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replay_turn.generation,),
@@ -1134,12 +1192,12 @@ def test_current_finalized_build_remains_authoritative(
 
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 replay_turn,
                 now=40,
             )
             successor_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"s" * 16,
                 now=41,
                 lease_duration=1_000_000,
@@ -1152,7 +1210,8 @@ def test_current_finalized_build_remains_authoritative(
             now=42,
         )
         assert successor_build != current_build
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id FROM "
             "catalog_source_build_base_publication_commits WHERE build_id = %s",
             (successor_build,),
@@ -1195,10 +1254,13 @@ def test_current_finalized_build_remains_authoritative(
     ),
 )
 def test_current_finalized_build_policy_change_selects_successor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     requested_policy: _SourceBuildPolicyAuthority,
 ) -> None:
-    connector = _generated_database(tmp_path / "snapshot-full-policy-change.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "snapshot-full-policy-change.sqlite3"))
+    )
     try:
         seed_analysis_policy(connector)
         gate, first_turn = _authorities(connector)
@@ -1231,12 +1293,12 @@ def test_current_finalized_build_policy_change_selects_successor(
         _restore_sealed_source_working(connector, build_id=current_build)
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 first_turn,
                 now=30,
             )
             successor_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"s" * 16,
                 now=31,
                 lease_duration=1_000_000,
@@ -1252,7 +1314,8 @@ def test_current_finalized_build_policy_change_selects_successor(
         )
 
         assert successor_build != current_build
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id FROM "
             "catalog_source_build_base_publication_commits WHERE build_id = %s",
             (successor_build,),
@@ -1262,9 +1325,12 @@ def test_current_finalized_build_policy_change_selects_successor(
 
 
 def test_snapshot_recurrence_derives_successor_from_current_publication_base(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "snapshot-a-b-a.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "snapshot-a-b-a.sqlite3"))
+    )
     try:
         gate, turn_a = _authorities(connector)
         root = ("cycle-root",)
@@ -1294,14 +1360,14 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn_a,
                 now=30,
             )
 
         with connector.transaction():
             turn_b = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"j" * 16,
                 now=31,
                 lease_duration=1_000_000,
@@ -1314,7 +1380,8 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
             now=32,
         )
         assert build_b != build_a
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id FROM "
             "catalog_source_build_base_publication_commits WHERE build_id = %s",
             (build_b,),
@@ -1338,14 +1405,14 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn_b,
                 now=40,
             )
 
         with connector.transaction():
             turn_c = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"k" * 16,
                 now=41,
                 lease_duration=1_000_000,
@@ -1378,7 +1445,8 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
         # source-working slot were left mapped to finalized historical A while
         # B is the current head.  The exact frozen A snapshot must be rebased
         # to a fresh C successor, not trapped in another historical replay.
-        created_a = connector.fetch_one(
+        created_a = inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_a,),
@@ -1401,7 +1469,8 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
             now=42,
         )
         assert build_c not in {build_a, build_b}
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id FROM "
             "catalog_source_build_base_publication_commits WHERE build_id = %s",
             (build_c,),
@@ -1425,14 +1494,14 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn_c,
                 now=50,
             )
 
         with connector.transaction():
             replay_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"l" * 16,
                 now=51,
                 lease_duration=1_000_000,
@@ -1474,7 +1543,7 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
 
 
 def _compacted_snapshot_recurrence(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[GateLease, IngestTurn, SourceRootBuildCommand, bytes]:
     """Retain A's analysis/provenance after B replaces its pruned commit.
 
@@ -1494,7 +1563,7 @@ def _compacted_snapshot_recurrence(
         if index > 1:
             with connector.transaction():
                 turn = IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=b"j" * 16,
                     now=31,
                     lease_duration=1_000_000,
@@ -1524,12 +1593,12 @@ def _compacted_snapshot_recurrence(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn,
                 now=30 if index == 1 else 40,
             )
 
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
         connector.execute(
             "DELETE FROM catalog_source_build_base_publication_commits "
@@ -1551,10 +1620,10 @@ def _compacted_snapshot_recurrence(
             (b"\x11" * 16,),
         )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
     with connector.transaction():
         retry = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"k" * 16,
             now=41,
             lease_duration=1_000_000,
@@ -1563,23 +1632,29 @@ def _compacted_snapshot_recurrence(
 
 
 def test_compacted_snapshot_recurrence_accepts_retained_uncollected_analysis(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "compacted-recurrence.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "compacted-recurrence.sqlite3"))
+    )
     try:
         gate, retry, command, retired_build = _compacted_snapshot_recurrence(connector)
-        assert connector.fetch_one(
-            "SELECT 1 FROM catalog_source_revision_provenance WHERE source_revision = 1"
+        assert inspect_one(
+            connector,
+            "SELECT 1 FROM catalog_source_revision_provenance WHERE source_revision = 1",
         ) == (1,)
         assert (
-            connector.fetch_one(
-                "SELECT 1 FROM catalog_publication_commits WHERE source_revision = 1"
+            inspect_one(
+                connector,
+                "SELECT 1 FROM catalog_publication_commits WHERE source_revision = 1",
             )
             == ()
         )
         recovered = _handoff_snapshot_command(connector, gate, retry, command, now=42)
         assert recovered != retired_build
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
             (recovered,),
@@ -1603,19 +1678,23 @@ def test_compacted_snapshot_recurrence_accepts_retained_uncollected_analysis(
     ),
 )
 def test_compacted_snapshot_recurrence_rejects_corruption_without_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"compacted-{corruption}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"compacted-{corruption}.sqlite3"))
+    )
     try:
         gate, retry, command, retired_build = _compacted_snapshot_recurrence(connector)
-        analysis = connector.fetch_one(
+        analysis = inspect_one(
+            connector,
             "SELECT analysis_id FROM catalog_source_revision_provenance "
-            "WHERE source_revision = 1"
+            "WHERE source_revision = 1",
         )[0]
         with command.prepare_root_upload() as root_plan:
             _upload(connector, gate, retry, root_plan, now=42)
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             try:
                 match corruption:
                     case "descriptor-digest":
@@ -1679,14 +1758,14 @@ def test_compacted_snapshot_recurrence_rejects_corruption_without_writes(
                             ),
                         )
             finally:
-                connector.execute("PRAGMA foreign_keys = ON")
-            before = tuple(connector.connection.iterdump())
+                set_foreign_key_checks(connector, enabled=True)
+            before = snapshot_rows(connector)
             with (
                 connector.transaction(),
                 pytest.raises(SourceBuildConflictError),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=retry,
                     command=command,
@@ -1694,17 +1773,20 @@ def test_compacted_snapshot_recurrence_rejects_corruption_without_writes(
                     policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=45,
                 )
-            assert tuple(connector.connection.iterdump()) == before
+            assert snapshot_rows(connector) == before
     finally:
         connector.close()
 
 
 @pytest.mark.parametrize("working_kind", ("source", "catalog"))
 def test_compacted_source_retirement_rejects_retained_working_roots(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     working_kind: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"compacted-{working_kind}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"compacted-{working_kind}.sqlite3"))
+    )
     try:
         _gate, retry, _command, retired_build = _compacted_snapshot_recurrence(
             connector
@@ -1716,11 +1798,12 @@ def test_compacted_source_retirement_rejects_retained_working_roots(
             )
             source_working = (1, retired_build, assigned_at)
         else:
-            analysis = connector.fetch_one(
+            analysis = inspect_one(
+                connector,
                 "SELECT analysis_id FROM catalog_source_revision_provenance "
-                "WHERE source_revision = 1"
+                "WHERE source_revision = 1",
             )[0]
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             try:
                 connector.execute(
                     "INSERT INTO catalog_publication_candidates "
@@ -1735,8 +1818,8 @@ def test_compacted_source_retirement_rejects_retained_working_roots(
                     (b"\x11" * 16,),
                 )
             finally:
-                connector.execute("PRAGMA foreign_keys = ON")
-        before = tuple(connector.connection.iterdump())
+                set_foreign_key_checks(connector, enabled=True)
+        before = snapshot_rows(connector)
         with (
             connector.transaction(),
             pytest.raises(SourceBuildConflictError, match="working"),
@@ -1748,18 +1831,21 @@ def test_compacted_source_retirement_rejects_retained_working_roots(
                 source_working=source_working,
                 current_receipt_id=b"\x02" * 16,
             )
-        assert tuple(connector.connection.iterdump()) == before
+        assert snapshot_rows(connector) == before
     finally:
         connector.close()
 
 
 @pytest.mark.parametrize("generation_offset", (0, 1), ids=("equal", "future"))
 def test_compacted_source_retirement_requires_strictly_newer_generation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     generation_offset: int,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"compacted-generation-{generation_offset}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"compacted-generation-{generation_offset}.sqlite3")
+        )
     )
     try:
         _gate, retry, _command, retired_build = _compacted_snapshot_recurrence(
@@ -1777,7 +1863,7 @@ def test_compacted_source_retirement_requires_strictly_newer_generation(
             "(build_id, generation) VALUES (%s, %s)",
             (retired_build, mapped_generation),
         )
-        before = tuple(connector.connection.iterdump())
+        before = snapshot_rows(connector)
         with (
             connector.transaction(),
             pytest.raises(SourceBuildConflictError, match="not fenced"),
@@ -1789,17 +1875,18 @@ def test_compacted_source_retirement_requires_strictly_newer_generation(
                 source_working=(),
                 current_receipt_id=b"\x02" * 16,
             )
-        assert tuple(connector.connection.iterdump()) == before
+        assert snapshot_rows(connector) == before
     finally:
         connector.close()
 
 
 def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_restart(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "snapshot-abandoned-a-b-a-b.sqlite3"
-    connector = _generated_database(database_path)
+    connector = _generated_database(database_factory.config(str(database_path)))
     try:
         gate, base_turn = _authorities(connector)
         root = ("abandoned-cycle",)
@@ -1828,7 +1915,7 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 base_turn,
                 now=30,
             )
@@ -1852,7 +1939,7 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
         def claim(token: bytes, now: int) -> IngestTurn:
             with connector.transaction():
                 return IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=token,
                     now=now,
                     lease_duration=5,
@@ -1885,7 +1972,8 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
             now=44,
         )
         assert len({build_a0, build_b0, build_a1}) == 3
-        created_a1 = connector.fetch_one(
+        created_a1 = inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_a1,),
@@ -1895,7 +1983,8 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
                 source_root_digest(root),
                 summary_a,
             ),
-            scope=connector.fetch_one(
+            scope=inspect_one(
+                connector,
                 "SELECT scope_key FROM catalog_source_build_descriptor "
                 "WHERE build_id = %s",
                 (build_a1,),
@@ -1966,7 +2055,8 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
             build_id=build_b2,
             summary=summary_b,
         )
-        created_b2 = connector.fetch_one(
+        created_b2 = inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_b2,),
@@ -1984,7 +2074,7 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
         # A new connection models process restart.  A SEALED-unpublished v3
         # remains the same pipeline authority and is not replaced.
         connector.close()
-        connector = SQLiteConnector(str(database_path))
+        connector = database_connector(database_factory.config(str(database_path)))
         connector.connect()
         turn_b_resume = claim(b"k" * 16, 79)
         reads_before_resume = clock_reads
@@ -1999,7 +2089,8 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
             == build_b2
         )
         assert clock_reads == reads_before_resume
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (build_b2,),
         ) == ("SEALED",)
@@ -2044,10 +2135,13 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
 
 
 def test_recovery_clock_collision_is_zero_write_then_self_heals(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "snapshot-recovery-clock.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "snapshot-recovery-clock.sqlite3"))
+    )
     try:
         gate, base_turn = _authorities(connector)
         root = ("clock-cycle",)
@@ -2075,7 +2169,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 base_turn,
                 now=30,
             )
@@ -2092,7 +2186,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
         def claim(token: bytes, now: int) -> IngestTurn:
             with connector.transaction():
                 return IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=token,
                     now=now,
                     lease_duration=5,
@@ -2127,7 +2221,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
         collision_clock = clock[0]
         with connector.transaction():
             SourceBuildRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn_a1,
                 build_id=build_a1,
@@ -2259,12 +2353,14 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
             )
             == 1
         )
-        anchors_before = connector.fetch_all(
-            "SELECT build_id FROM catalog_source_build_descriptor ORDER BY build_id"
+        anchors_before = inspect_all(
+            connector,
+            "SELECT build_id FROM catalog_source_build_descriptor ORDER BY build_id",
         )
-        mappings_before = connector.fetch_all(
+        mappings_before = inspect_all(
+            connector,
             "SELECT build_id, generation FROM operational_source_build_generations "
-            "ORDER BY generation"
+            "ORDER BY generation",
         )
         with pytest.raises(SourceBuildNotReadyError, match="clock.*ABANDONED"):
             _handoff_snapshot_command(
@@ -2275,20 +2371,23 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
                 now=50,
             )
         assert (
-            connector.fetch_all(
-                "SELECT build_id FROM catalog_source_build_descriptor ORDER BY build_id"
+            inspect_all(
+                connector,
+                "SELECT build_id FROM catalog_source_build_descriptor ORDER BY build_id",
             )
             == anchors_before
         )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT build_id, generation FROM operational_source_build_generations "
-                "ORDER BY generation"
+                "ORDER BY generation",
             )
             == mappings_before
         )
         assert (
-            connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
+            inspect_all(connector, "SELECT * FROM operational_source_working_builds")
+            == []
         )
 
         clock[0] = collision_clock + 1_000
@@ -2300,7 +2399,8 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
             now=50,
         )
         assert build_a2 != build_a1
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_a2,),
@@ -2310,10 +2410,13 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
 
 
 def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tick(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-recovery-lifecycle.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "analysis-recovery-lifecycle.sqlite3"))
+    )
     try:
         root = ("analysis-recovery",)
         gate, sealed_base, base_receipt_id = _analysis_ready_published_base(
@@ -2332,7 +2435,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         def claim(token: bytes, now: int) -> IngestTurn:
             with connector.transaction():
                 return IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=token,
                     now=now,
                     lease_duration=100,
@@ -2354,7 +2457,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         _restore_sealed_source_working(connector, build_id=canonical_build)
         with connector.transaction():
             canonical_analysis = AnalysisRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=canonical_turn,
                 build_id=canonical_build,
@@ -2365,21 +2468,22 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         assert canonical_analysis.state == "OPEN" and not canonical_analysis.replayed
         with connector.transaction():
             abandoned_canonical = AnalysisRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=canonical_turn,
                 analysis_id=canonical_analysis.analysis_id,
                 now=37,
             )
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 canonical_turn,
                 now=38,
             )
         assert abandoned_canonical.state == "ABANDONED"
         assert not abandoned_canonical.replayed
         assert (
-            connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
+            inspect_all(connector, "SELECT * FROM operational_source_working_builds")
+            == []
         )
 
         recovery_turn = claim(b"b" * 16, 39)
@@ -2393,7 +2497,8 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         assert recovery_build != canonical_build
         assert recovery_build == source_build_recovery_identity(
             snapshot_attempt_id=command.build_attempt_id,
-            scope=connector.fetch_one(
+            scope=inspect_one(
+                connector,
                 "SELECT scope_key FROM catalog_source_build_descriptor "
                 "WHERE build_id = %s",
                 (recovery_build,),
@@ -2409,7 +2514,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         _restore_sealed_source_working(connector, build_id=recovery_build)
         with connector.transaction():
             recovery_analysis = AnalysisRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=recovery_turn,
                 build_id=recovery_build,
@@ -2421,14 +2526,14 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         assert recovery_analysis.state == "OPEN" and not recovery_analysis.replayed
         with connector.transaction():
             abandoned_recovery = AnalysisRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=recovery_turn,
                 analysis_id=recovery_analysis.analysis_id,
                 now=45,
             )
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 recovery_turn,
                 now=46,
             )
@@ -2438,7 +2543,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         retry_turn = claim(b"c" * 16, 47)
         with command.prepare_root_upload() as root_plan:
             _upload(connector, gate, retry_turn, root_plan, now=48)
-            before = tuple(connector.connection.iterdump())
+            before = snapshot_rows(connector)
             with (
                 connector.transaction(),
                 pytest.raises(
@@ -2447,7 +2552,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
                 ),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=retry_turn,
                     command=command,
@@ -2455,12 +2560,12 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
                     policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=51,
                 )
-            assert tuple(connector.connection.iterdump()) == before
+            assert snapshot_rows(connector) == before
 
             clock[0] += 1
             with connector.transaction():
                 next_handoff = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=retry_turn,
                     command=command,
@@ -2478,7 +2583,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         _restore_sealed_source_working(connector, build_id=next_handoff.build_id)
         with connector.transaction():
             next_analysis = AnalysisRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=retry_turn,
                 build_id=next_handoff.build_id,
@@ -2516,6 +2621,7 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
     ),
 )
 def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analysis(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     analysis_state: str | None,
@@ -2523,8 +2629,12 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
     expected_match: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path
-        / f"analysis-recovery-lost-working-{(analysis_state or 'none').lower()}.sqlite3"
+        database_factory.config(
+            str(
+                tmp_path
+                / f"analysis-recovery-lost-working-{(analysis_state or 'none').lower()}.sqlite3"
+            )
+        )
     )
     try:
         root = ("analysis-lost-working",)
@@ -2544,7 +2654,7 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
         def claim(token: bytes, now: int, lease_duration: int) -> IngestTurn:
             with connector.transaction():
                 return IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=token,
                     now=now,
                     lease_duration=lease_duration,
@@ -2566,7 +2676,7 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
         _restore_sealed_source_working(connector, build_id=canonical_build)
         with connector.transaction():
             canonical_analysis = AnalysisRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=canonical_turn,
                 build_id=canonical_build,
@@ -2575,14 +2685,14 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
                 now=36,
             )
             AnalysisRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=canonical_turn,
                 analysis_id=canonical_analysis.analysis_id,
                 now=37,
             )
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 canonical_turn,
                 now=38,
             )
@@ -2606,7 +2716,7 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
         with connector.transaction():
             if analysis_state is not None:
                 live_analysis = AnalysisRepository.begin(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=recovery_turn,
                     build_id=recovery_build,
@@ -2616,7 +2726,8 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
                 )
                 live_analysis_id = live_analysis.analysis_id
             if analysis_state == "COMPLETE" and live_analysis_id is not None:
-                started_at = connector.fetch_one(
+                started_at = inspect_one(
+                    connector,
                     "SELECT started_at FROM catalog_analysis_run_descriptor "
                     "WHERE analysis_id = %s",
                     (live_analysis_id,),
@@ -2638,7 +2749,7 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
         retry_turn = claim(b"f" * 16, 70, 100)
         with command.prepare_root_upload() as root_plan:
             _upload(connector, gate, retry_turn, root_plan, now=71)
-            before = tuple(connector.connection.iterdump())
+            before = snapshot_rows(connector)
             with (
                 connector.transaction(),
                 pytest.raises(
@@ -2647,7 +2758,7 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
                 ),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=retry_turn,
                     command=command,
@@ -2655,28 +2766,34 @@ def test_sealed_v3_without_working_root_distinguishes_invalid_and_retired_analys
                     policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=74,
                 )
-            assert tuple(connector.connection.iterdump()) == before
+            assert snapshot_rows(connector) == before
         if live_analysis_id is None:
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_analysis_runs WHERE build_id = %s",
                 (recovery_build,),
             ) == (0,)
         else:
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
                 (live_analysis_id,),
             ) == (analysis_state,)
         assert (
-            connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
+            inspect_all(connector, "SELECT * FROM operational_source_working_builds")
+            == []
         )
     finally:
         connector.close()
 
 
 def test_different_root_snapshot_takeover_abandons_open_working_build(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "snapshot-root-takeover.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "snapshot-root-takeover.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         summary = SourceBuildManifestSummary(b"A" * 32, 1, 0, 0)
@@ -2689,12 +2806,12 @@ def test_different_root_snapshot_takeover_abandons_open_working_build(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 first_turn,
                 now=30,
             )
             second_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=31,
                 lease_duration=100,
@@ -2707,21 +2824,26 @@ def test_different_root_snapshot_takeover_abandons_open_working_build(
             now=32,
         )
         assert second != first
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (first,),
         ) == ("ABANDONED",)
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (second,)
     finally:
         connector.close()
 
 
 def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "handoff-base-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "handoff-base-replay.sqlite3"))
+    )
     try:
         gate, _sealed_base, base_receipt_id = _analysis_ready_published_base(
             connector,
@@ -2729,7 +2851,7 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
         )
         with connector.transaction():
             turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"r" * 16,
                 now=31,
                 lease_duration=1_000_000,
@@ -2741,7 +2863,7 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
 
             with connector.transaction():
                 first = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     command=command,
@@ -2750,13 +2872,15 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                     now=33,
                 )
             assert not first.replayed
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT build_id, base_receipt_id "
                 "FROM catalog_source_build_base_publication_commits"
                 " WHERE build_id = %s",
                 (first.build_id,),
             ) == (first.build_id, base_receipt_id)
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT base.build_id, committed.source_revision, "
                 "committed.generation "
                 "FROM catalog_source_build_base_publication_commits AS base "
@@ -2792,7 +2916,9 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                 _upload(connector, gate, turn, replay_root, now=34)
                 with connector.transaction():
                     replay = SourceBuildRepository.handoff_root(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         command=command,
@@ -2801,7 +2927,8 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                         now=35,
                     )
             assert replay.replayed and replay.build_id == first.build_id
-            assert connector.fetch_all(
+            assert inspect_all(
+                connector,
                 "SELECT build_id, base_receipt_id "
                 "FROM catalog_source_build_base_publication_commits "
                 "WHERE build_id = %s",
@@ -2812,9 +2939,12 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
 
 
 def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "handoff-sealed-successor.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "handoff-sealed-successor.sqlite3"))
+    )
     try:
         gate, first_turn, command = _open_build(connector)
         build_id = _working_build_id(connector)
@@ -2831,7 +2961,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
             )
         with connector.transaction():
             sealed = SourceBuildRepository.assemble_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=first_turn,
                 build_id=build_id,
@@ -2840,15 +2970,17 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
             )
         assert sealed.terminal
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT build_id, base_receipt_id "
-                "FROM catalog_source_build_base_publication_commits"
+                "FROM catalog_source_build_base_publication_commits",
             )
             == []
         )
 
         sealed_at = require_int63(
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT sealed_at FROM catalog_source_build_sealed_ats "
                 "WHERE build_id = %s",
                 (build_id,),
@@ -2866,13 +2998,13 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 first_turn,
                 now=51,
             )
         with connector.transaction():
             second_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"j" * 16,
                 now=52,
                 lease_duration=1_000_000,
@@ -2882,7 +3014,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
             _upload(connector, gate, second_turn, replay_root, now=53)
             with connector.transaction():
                 successor = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=second_turn,
                     command=command,
@@ -2894,19 +3026,21 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
         assert successor.build_id == build_id
         assert successor.generation == second_turn.generation
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT build_id, base_receipt_id "
-                "FROM catalog_source_build_base_publication_commits"
+                "FROM catalog_source_build_base_publication_commits",
             )
             == []
         )
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT base.build_id, committed.source_revision, "
                 "committed.generation "
                 "FROM catalog_source_build_base_publication_commits AS base "
                 "JOIN catalog_publication_commits AS committed "
-                "ON committed.receipt_id = base.base_receipt_id"
+                "ON committed.receipt_id = base.base_receipt_id",
             )
             == []
         )
@@ -2915,7 +3049,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
 
 
 def _sealed_published_source(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     finalized: bool,
 ) -> tuple[GateLease, SourceRootBuildCommand, bytes, bytes]:
@@ -2925,7 +3059,7 @@ def _sealed_published_source(
         assert _finish_discovery(connector, gate, first_turn, plan, now=30) == ()
     with connector.transaction():
         sealed = SourceBuildRepository.assemble_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=first_turn,
             build_id=build_id,
@@ -2933,7 +3067,8 @@ def _sealed_published_source(
             now=40,
         )
     assert sealed.terminal
-    sealed_at = connector.fetch_one(
+    sealed_at = inspect_one(
+        connector,
         "SELECT sealed_at FROM catalog_source_build_sealed_ats WHERE build_id = %s",
         (build_id,),
     )[0]
@@ -2957,38 +3092,45 @@ def _sealed_published_source(
     )
     with connector.transaction():
         IngestFenceRepository.complete(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             first_turn,
             now=45,
         )
     return gate, command, build_id, receipt_id
 
 
-def _reservation_snapshot(connector: SQLiteConnector) -> tuple[Any, ...]:
+def _reservation_snapshot(connector: SQLConnector) -> tuple[Any, ...]:
     return (
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT slot, build_id, assigned_at "
-            "FROM operational_source_working_builds ORDER BY slot"
+            "FROM operational_source_working_builds ORDER BY slot",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT generation, build_id "
-            "FROM operational_source_build_generations ORDER BY generation"
+            "FROM operational_source_build_generations ORDER BY generation",
         ),
-        connector.fetch_all(
-            "SELECT build_id, state FROM catalog_source_build_states ORDER BY build_id"
+        inspect_all(
+            connector,
+            "SELECT build_id, state FROM catalog_source_build_states ORDER BY build_id",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT build_id, base_receipt_id "
-            "FROM catalog_source_build_base_publication_commits ORDER BY build_id"
+            "FROM catalog_source_build_base_publication_commits ORDER BY build_id",
         ),
     )
 
 
 def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "handoff-finalized-replay-recovery.sqlite3"
+        database_factory.config(
+            str(tmp_path / "handoff-finalized-replay-recovery.sqlite3")
+        )
     )
     try:
         gate, published, published_build, receipt_id = _sealed_published_source(
@@ -2997,7 +3139,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
         )
         with connector.transaction():
             replay_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"r" * 16,
                 now=46,
                 lease_duration=10,
@@ -3006,7 +3148,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
             _upload(connector, gate, replay_turn, replay_root, now=47)
             with connector.transaction():
                 replay = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replay_turn,
                     command=published,
@@ -3015,8 +3157,9 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                     now=50,
                 )
         assert replay.generation == 2
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (published_build,)
 
         # Generation 2 loses its response/turn before terminal publication replay
@@ -3024,7 +3167,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
         # generation 3 may recover only this exact finalized common-head build.
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=56,
                 lease_duration=100,
@@ -3071,7 +3214,9 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
             ):
                 with connector.transaction():
                     SourceBuildRepository.handoff_root(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=replacement_turn,
                         command=replacement,
@@ -3083,7 +3228,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
 
             with connector.transaction():
                 recovered = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replacement_turn,
                     command=replacement,
@@ -3094,19 +3239,23 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
 
         assert not recovered.replayed
         assert recovered.generation == replacement_turn.generation == 3
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (recovered.build_id,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replacement_turn.generation,),
         ) == (recovered.build_id,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (published_build,),
         ) == ("SEALED",)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits WHERE build_id = %s",
             (recovered.build_id,),
@@ -3116,10 +3265,13 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
 
 
 def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "handoff-candidate-provenance-mismatch.sqlite3"
+        database_factory.config(
+            str(tmp_path / "handoff-candidate-provenance-mismatch.sqlite3")
+        )
     )
     try:
         gate, _published, published_build, _receipt_id = _sealed_published_source(
@@ -3128,7 +3280,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
         )
         with connector.transaction():
             stale_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"s" * 16,
                 now=46,
                 lease_duration=10,
@@ -3138,7 +3290,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
             _upload(connector, gate, stale_turn, foreign_root, now=47)
             with connector.transaction():
                 foreign_handoff = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
                     command=foreign,
@@ -3147,17 +3299,12 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                     now=50,
                 )
         with SourceDiscoveryPlan.from_locators(()) as plan:
-            batch = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=foreign_handoff.build_id,
-                    plan=plan,
-                ),
-                plan=plan,
+            batch = _discovery_batch(
+                connector, build_id=foreign_handoff.build_id, plan=plan
             )
             with connector.transaction():
                 SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
                     batch=batch,
@@ -3166,7 +3313,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                 )
         with connector.transaction():
             sealed = SourceBuildRepository.assemble_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=stale_turn,
                 build_id=foreign_handoff.build_id,
@@ -3195,7 +3342,8 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
             "(source_revision, analysis_id) VALUES (%s, %s)",
             (1, foreign_analysis),
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_analysis.build_id, provenance_analysis.build_id "
             "FROM catalog_publication_commit_heads AS head "
             "JOIN catalog_publication_commits AS committed "
@@ -3214,7 +3362,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
 
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=56,
                 lease_duration=100,
@@ -3230,7 +3378,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                 pytest.raises(SourceBuildConflictError, match="candidate|provenance"),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replacement_turn,
                     command=replacement,
@@ -3244,10 +3392,13 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
 
 
 def test_handoff_does_not_replace_nonfinalized_working_root(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "handoff-working-nonfinalized-fail-closed.sqlite3"
+        database_factory.config(
+            str(tmp_path / "handoff-working-nonfinalized-fail-closed.sqlite3")
+        )
     )
     try:
         gate, _published, published_build, _receipt_id = _sealed_published_source(
@@ -3256,7 +3407,7 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
         )
         with connector.transaction():
             stale_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"s" * 16,
                 now=46,
                 lease_duration=10,
@@ -3272,7 +3423,7 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
         )
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=56,
                 lease_duration=100,
@@ -3288,7 +3439,7 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
                 pytest.raises((SourceBuildConflictError, SourceBuildNotReadyError)),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replacement_turn,
                     command=replacement,
@@ -3297,10 +3448,12 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
                     now=60,
                 )
         assert _reservation_snapshot(connector) == before
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (published_build,)
-        assert not connector.fetch_one(
+        assert not inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replacement_turn.generation,),
@@ -3310,10 +3463,13 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
 
 
 def test_handoff_rejects_forged_sealed_stale_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "handoff-working-sealed-assignment.sqlite3"
+        database_factory.config(
+            str(tmp_path / "handoff-working-sealed-assignment.sqlite3")
+        )
     )
     try:
         gate, published, published_build, _receipt_id = _sealed_published_source(
@@ -3322,7 +3478,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
         )
         with connector.transaction():
             stale_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"s" * 16,
                 now=46,
                 lease_duration=10,
@@ -3331,7 +3487,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
             _upload(connector, gate, stale_turn, published_root, now=47)
             with connector.transaction():
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
                     command=published,
@@ -3349,7 +3505,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
         )
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=56,
                 lease_duration=100,
@@ -3367,7 +3523,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                 ),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replacement_turn,
                     command=replacement,
@@ -3375,7 +3531,8 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                     policy=SOURCE_BUILD_POLICY_AUTHORITY,
                     now=60,
                 )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id, assigned_at FROM operational_source_working_builds "
             "WHERE slot = %s",
             (1,),
@@ -3385,10 +3542,13 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
 
 
 def test_handoff_atomically_abandons_prior_generation_open_working_root(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "handoff-working-stale-open-recovery.sqlite3"
+        database_factory.config(
+            str(tmp_path / "handoff-working-stale-open-recovery.sqlite3")
+        )
     )
     try:
         gate, _published, _published_build, _receipt_id = _sealed_published_source(
@@ -3397,7 +3557,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
         )
         with connector.transaction():
             stale_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"s" * 16,
                 now=46,
                 lease_duration=10,
@@ -3407,7 +3567,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
             _upload(connector, gate, stale_turn, stale_root, now=47)
             with connector.transaction():
                 stale_handoff = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
                     command=stale,
@@ -3417,7 +3577,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                 )
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=56,
                 lease_duration=100,
@@ -3429,7 +3589,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
             _upload(connector, gate, replacement_turn, replacement_root, now=57)
             with connector.transaction():
                 recovered = SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replacement_turn,
                     command=replacement,
@@ -3439,19 +3599,23 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                 )
 
         assert not recovered.replayed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (stale_handoff.build_id,),
         ) == ("ABANDONED",)
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (recovered.build_id,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (stale_turn.generation,),
         ) == (stale_handoff.build_id,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replacement_turn.generation,),
@@ -3461,10 +3625,13 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
 
 
 def test_handoff_does_not_reclaim_open_working_without_prior_generation_authority(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(
-        tmp_path / "handoff-working-foreign-open-fail-closed.sqlite3"
+        database_factory.config(
+            str(tmp_path / "handoff-working-foreign-open-fail-closed.sqlite3")
+        )
     )
     try:
         gate, stale_turn, _stale = _open_build(connector)
@@ -3479,13 +3646,13 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
         )
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 stale_turn,
                 now=30,
             )
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=31,
                 lease_duration=100,
@@ -3504,7 +3671,7 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
                 ),
             ):
                 SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=replacement_turn,
                     command=replacement,
@@ -3513,19 +3680,21 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
                     now=35,
                 )
         assert _reservation_snapshot(connector) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (stale_build,),
         ) == ("OPEN",)
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (stale_build,)
     finally:
         connector.close()
 
 
 def _resolve_batch(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: SourceDiscoveryPlan,
@@ -3540,7 +3709,9 @@ def _resolve_batch(
             with connector.transaction():
                 resolved.append(
                     SourceBuildRepository.resolve_discovery_locator(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         batch=batch,
@@ -3552,8 +3723,18 @@ def _resolve_batch(
     return tuple(resolved)
 
 
+def _discovery_batch(
+    connector: SQLConnector, *, build_id: bytes, plan: SourceDiscoveryPlan
+) -> DiscoveryBatch:
+    with connector.read_transaction():
+        issued = SourceBuildRepository.issue_discovery_batch(
+            connector, build_id=build_id, plan=plan
+        )
+    return SourceBuildRepository.prepare_discovery_batch(issued, plan=plan)
+
+
 def _finish_discovery(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: SourceDiscoveryPlan,
@@ -3562,13 +3743,8 @@ def _finish_discovery(
 ) -> tuple[Any, ...]:
     all_resolved: list[Any] = []
     while True:
-        batch = SourceBuildRepository.prepare_discovery_batch(
-            SourceBuildRepository.issue_discovery_batch(
-                connector,
-                build_id=_working_build_id(connector),
-                plan=plan,
-            ),
-            plan=plan,
+        batch = _discovery_batch(
+            connector, build_id=_working_build_id(connector), plan=plan
         )
         resolved = _resolve_batch(
             connector,
@@ -3580,7 +3756,7 @@ def _finish_discovery(
         )
         with connector.transaction():
             receipt = SourceBuildRepository.commit_discovery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 batch=batch,
@@ -3594,25 +3770,23 @@ def _finish_discovery(
 
 
 def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "discovery-forged-sealed-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(
+            str(tmp_path / "discovery-forged-sealed-replay.sqlite3")
+        )
+    )
     try:
         gate, turn, _command = _open_build(connector)
         build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators(()) as plan:
-            batch = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=build_id,
-                    plan=plan,
-                ),
-                plan=plan,
-            )
+            batch = _discovery_batch(connector, build_id=build_id, plan=plan)
             assert batch.terminal and not batch.sealed_replay
             with connector.transaction():
                 receipt = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     batch=batch,
@@ -3628,7 +3802,7 @@ def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
                 pytest.raises(SourceBuildConflictError, match="sealed|replay"),
             ):
                 SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     batch=forged,
@@ -3636,7 +3810,8 @@ def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
                     now=31,
                 )
             assert _source_build_discovery_snapshot(connector) == before
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
                 (build_id,),
             ) == ("OPEN",)
@@ -3645,7 +3820,7 @@ def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
 
 
 def _insert_observation_stat(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
@@ -3661,7 +3836,7 @@ def _insert_observation_stat(
 
 
 def _insert_source_build_discovery(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     scan_attempt: bytes,
@@ -3678,18 +3853,22 @@ def _insert_source_build_discovery(
 
 
 def _source_build_discovery_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> list[tuple[Any, ...]]:
-    return connector.fetch_all(
+    return inspect_all(
+        connector,
         "SELECT build_id, scan_attempt, gallery_count, tree_observation_sha256, "
-        "completed_at FROM catalog_source_build_discoveries ORDER BY build_id"
+        "completed_at FROM catalog_source_build_discoveries ORDER BY build_id",
     )
 
 
 def test_source_discovery_atomic_replay_and_collision(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "discovery-vertical-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "discovery-vertical-replay.sqlite3"))
+    )
     try:
         root_sha256 = b"r" * 32
         seed_canonical_value(
@@ -3723,7 +3902,8 @@ def test_source_discovery_atomic_replay_and_collision(
         committed = _source_build_discovery_snapshot(connector)
         assert committed == [values]
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT build_id, scan_attempt, gallery_count, "
                 "tree_observation_sha256, completed_at "
                 "FROM catalog_source_build_discoveries WHERE build_id = %s",
@@ -3801,7 +3981,7 @@ def test_source_discovery_wide_mariadb_sql_is_static() -> None:
 
 
 def _stage_assembly_inputs(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     resolved: tuple[Any, ...],
     *,
     omit_stat: bool = False,
@@ -3853,22 +4033,18 @@ def _stage_assembly_inputs(
 
 
 def test_disk_plan_sorts_unsigned_digest_caps_pages_and_rejects_duplicates(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "plan.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "plan.sqlite3"))
+    )
     try:
         _open_build(connector)
         build_id = _working_build_id(connector)
         locators = tuple((f"gallery-{index:04d}",) for index in reversed(range(257)))
         with SourceDiscoveryPlan.from_locators(locators) as plan:
-            first = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=build_id,
-                    plan=plan,
-                ),
-                plan=plan,
-            )
+            first = _discovery_batch(connector, build_id=build_id, plan=plan)
             assert len(first.locators) == 256
             digests = [locator.locator_sha256 for locator in first.locators]
             assert digests == sorted(digests)
@@ -3904,9 +4080,12 @@ def test_disk_plan_sorts_unsigned_digest_caps_pages_and_rejects_duplicates(
 
 
 def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "pending-source-gallery.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "pending-source-gallery.sqlite3"))
+    )
     try:
         gate, turn, _command = _open_build(connector)
         build_id = _working_build_id(connector)
@@ -3918,10 +4097,11 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
                 plan,
                 now=40,
             )
-            pending = SourceBuildRepository.get_pending_source_gallery(
-                connector,
-                build_id=build_id,
-            )
+            with connector.read_transaction():
+                pending = SourceBuildRepository.get_pending_source_gallery(
+                    connector,
+                    build_id=build_id,
+                )
             assert pending is not None
             assert pending.position == 0
             assert pending.gallery_id == resolved[0].gallery_id
@@ -3931,11 +4111,16 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
                 pending.locator_sha256,
             ) == ("gallery",)
 
-        query_plan = connector.fetch_all(
-            "EXPLAIN QUERY PLAN " + source_build_module._PENDING_SOURCE_GALLERY_QUERY,
+        query_plan = assert_indexed_query(
+            connector,
+            source_build_module._PENDING_SOURCE_GALLERY_QUERY,
             (build_id,),
         )
         assert query_plan
+        if connector_backend(connector) == "mariadb":
+            aliases = {row[2] for row in query_plan}
+            assert {"expected", "member"} <= aliases, query_plan
+            return
         details = tuple(str(row[3]) for row in query_plan)
         assert all("SCAN " not in detail for detail in details)
         assert any(
@@ -3953,9 +4138,12 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
 
 
 def test_discovery_new_generation_assembly_and_response_loss(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "runtime.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "runtime.sqlite3"))
+    )
     try:
         locators = (("z-last",), ("nested", "畫廊"), ("a-first",))
         root_command = _snapshot_command(
@@ -3972,15 +4160,17 @@ def test_discovery_new_generation_assembly_and_response_loss(
             command=root_command,
         )
         build_id = _working_build_id(connector)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT generation, cursor_bytes, processed_count, state "
-            "FROM operational_source_build_discovery_checkpoints"
+            "FROM operational_source_build_discovery_checkpoints",
         ) == (1, b"", 0, "OPEN")
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT generation, cursor_bytes, processed_gallery_count, "
             "processed_file_count, processed_byte_count, "
             "manifest_chain_sha256, state "
-            "FROM operational_source_build_assembly_checkpoints"
+            "FROM operational_source_build_assembly_checkpoints",
         ) == (
             1,
             b"",
@@ -3994,14 +4184,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
         )
 
         with SourceDiscoveryPlan.from_locators(locators) as plan:
-            first = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=build_id,
-                    plan=plan,
-                ),
-                plan=plan,
-            )
+            first = _discovery_batch(connector, build_id=build_id, plan=plan)
             resolved = _resolve_batch(
                 connector,
                 gate,
@@ -4012,7 +4195,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
             )
             with connector.transaction():
                 committed = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     batch=first,
@@ -4021,7 +4204,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 )
             with connector.transaction():
                 replay = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     batch=first,
@@ -4034,27 +4217,20 @@ def test_discovery_new_generation_assembly_and_response_loss(
             # Rebuilding the same complete snapshot produces the same
             # deterministic scan attempt and resumes the exact receipt chain.
             with SourceDiscoveryPlan.from_locators(locators) as switched:
-                resumed = SourceBuildRepository.prepare_discovery_batch(
-                    SourceBuildRepository.issue_discovery_batch(
-                        connector,
-                        build_id=build_id,
-                        plan=switched,
-                    ),
-                    plan=switched,
-                )
+                resumed = _discovery_batch(connector, build_id=build_id, plan=switched)
                 assert resumed.terminal
                 assert resumed.start_generation == committed.committed_generation
                 assert resumed.scan_attempt == plan.scan_attempt
 
             with connector.transaction():
                 IngestFenceRepository.complete(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     turn,
                     now=40,
                 )
             with connector.transaction():
                 turn2 = IngestFenceRepository.claim(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     owner_token=b"j" * 16,
                     now=41,
                     lease_duration=1_000_000,
@@ -4070,7 +4246,9 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     connector.transaction(),
                 ):
                     handoff2 = SourceBuildRepository.handoff_root(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn2,
                         command=root_command,
@@ -4079,18 +4257,11 @@ def test_discovery_new_generation_assembly_and_response_loss(
                         now=45,
                     )
             assert handoff2.generation == 2
-            terminal = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=build_id,
-                    plan=plan,
-                ),
-                plan=plan,
-            )
+            terminal = _discovery_batch(connector, build_id=build_id, plan=plan)
             assert terminal.terminal
             with connector.transaction():
                 terminal_receipt = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     batch=terminal,
@@ -4099,7 +4270,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 )
             with connector.transaction():
                 terminal_replay = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     batch=terminal,
@@ -4108,9 +4279,10 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 )
             assert terminal_receipt.terminal
             assert terminal_replay.replayed
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT scan_attempt, gallery_count, tree_observation_sha256 "
-                "FROM catalog_source_build_discoveries"
+                "FROM catalog_source_build_discoveries",
             ) == (plan.scan_attempt, 3, plan.tree_observation_sha256)
             assert _source_build_discovery_snapshot(connector) == [
                 (
@@ -4126,7 +4298,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
             attempt = SourceBuildRepository.issue_assembly_batch()
             with connector.transaction():
                 assembled = SourceBuildRepository.assemble_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     build_id=build_id,
@@ -4138,7 +4310,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
             assert assembled.next_byte_count == total_bytes
             with connector.transaction():
                 assembled_replay = SourceBuildRepository.assemble_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     build_id=build_id,
@@ -4153,7 +4325,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
             terminal_attempt = SourceBuildRepository.issue_assembly_batch()
             with connector.transaction():
                 sealed = SourceBuildRepository.assemble_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     build_id=build_id,
@@ -4161,20 +4333,22 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     now=52,
                 )
             assert sealed.terminal
-            sealed_source = connector.fetch_one(
-                "SELECT state, created_at, sealed_at FROM catalog_source_builds"
+            sealed_source = inspect_one(
+                connector,
+                "SELECT state, created_at, sealed_at FROM catalog_source_builds",
             )
             assert sealed_source[0] == "SEALED"
             assert sealed_source[1] <= sealed_source[2]
             assert sealed_source[2] != 52
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT manifest.manifest_sha256, discovery.gallery_count, "
                 "manifest.file_count, manifest.byte_count, sealed.sealed_at "
                 "FROM catalog_build_manifest_core AS manifest "
                 "JOIN catalog_source_build_discoveries AS discovery "
                 "ON discovery.build_id = manifest.build_id "
                 "JOIN catalog_source_build_sealed_ats AS sealed "
-                "ON sealed.build_id = manifest.build_id"
+                "ON sealed.build_id = manifest.build_id",
             ) == (
                 sealed.next_manifest_chain_sha256,
                 3,
@@ -4191,7 +4365,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 connector.transaction(),
             ):
                 sealed_replay = SourceBuildRepository.assemble_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     build_id=build_id,
@@ -4206,7 +4380,9 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 _upload(connector, gate, turn2, sealed_root_retry, now=55)
                 with connector.transaction():
                     root_replay = SourceBuildRepository.handoff_root(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn2,
                         command=root_command,
@@ -4216,7 +4392,8 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     )
             assert root_replay.replayed
             assert (
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT 1 FROM operational_canonical_value_uploads "
                     "WHERE generation = %s AND value_sha256 = %s",
                     (turn2.generation, root_command.source_root_sha256),
@@ -4244,7 +4421,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 pytest.raises(SourceBuildConflictError, match="manifest"),
             ):
                 SourceBuildRepository.assemble_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn2,
                     build_id=build_id,
@@ -4255,7 +4432,9 @@ def test_discovery_new_generation_assembly_and_response_loss(
             with pytest.raises(IngestFenceUnavailableError):
                 with connector.transaction():
                     SourceBuildRepository.assemble_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         build_id=build_id,
@@ -4267,9 +4446,12 @@ def test_discovery_new_generation_assembly_and_response_loss(
 
 
 def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "corruption.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "corruption.sqlite3"))
+    )
     try:
         locators = (("gallery",),)
         command = _snapshot_command(
@@ -4296,20 +4478,24 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
             with pytest.raises(SourceBuildNotReadyError, match="lacks"):
                 with connector.transaction():
                     SourceBuildRepository.assemble_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         build_id=build_id,
                         attempt=attempt,
                         now=60,
                     )
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT generation, processed_gallery_count "
-                "FROM operational_source_build_assembly_checkpoints"
+                "FROM operational_source_build_assembly_checkpoints",
             ) == (1, 0)
             assert (
-                connector.fetch_all(
-                    "SELECT 1 FROM operational_source_build_assembly_batch_receipts"
+                inspect_all(
+                    connector,
+                    "SELECT 1 FROM operational_source_build_assembly_batch_receipts",
                 )
                 == []
             )
@@ -4333,7 +4519,9 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
             with pytest.raises(SourceBuildConflictError, match="scope"):
                 with connector.transaction():
                     SourceBuildRepository.assemble_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         build_id=build_id,
@@ -4341,8 +4529,9 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
                         now=61,
                     )
             assert (
-                connector.fetch_all(
-                    "SELECT 1 FROM operational_source_build_assembly_batch_receipts"
+                inspect_all(
+                    connector,
+                    "SELECT 1 FROM operational_source_build_assembly_batch_receipts",
                 )
                 == []
             )
@@ -4357,9 +4546,12 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
 
 
 def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "assembly-frozen-summary.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "assembly-frozen-summary.sqlite3"))
+    )
     try:
         gate, turn, _command = _open_build(connector)
         build_id = _working_build_id(connector)
@@ -4368,7 +4560,7 @@ def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
         _stage_assembly_inputs(connector, resolved)
         with connector.transaction():
             page = SourceBuildRepository.assemble_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build_id,
@@ -4377,10 +4569,12 @@ def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
             )
         assert not page.terminal and page.row_count == 1
         before = (
-            connector.fetch_all(
-                "SELECT * FROM operational_source_build_assembly_batch_receipts"
+            inspect_all(
+                connector,
+                "SELECT * FROM operational_source_build_assembly_batch_receipts",
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT generation, cursor_bytes, processed_gallery_count, "
                 "processed_file_count, processed_byte_count, "
                 "manifest_chain_sha256, state, updated_at "
@@ -4394,7 +4588,7 @@ def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
             pytest.raises(SourceBuildConflictError, match="frozen snapshot"),
         ):
             SourceBuildRepository.assemble_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 build_id=build_id,
@@ -4402,10 +4596,12 @@ def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
                 now=41,
             )
         assert (
-            connector.fetch_all(
-                "SELECT * FROM operational_source_build_assembly_batch_receipts"
+            inspect_all(
+                connector,
+                "SELECT * FROM operational_source_build_assembly_batch_receipts",
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT generation, cursor_bytes, processed_gallery_count, "
                 "processed_file_count, processed_byte_count, "
                 "manifest_chain_sha256, state, updated_at "
@@ -4414,12 +4610,14 @@ def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
                 (build_id,),
             ),
         ) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (build_id,),
         ) == ("OPEN",)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT build_id FROM catalog_build_manifest_core WHERE build_id = %s",
                 (build_id,),
             )
@@ -4430,10 +4628,13 @@ def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
 
 
 def test_discovery_and_assembly_major_statement_faults_roll_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "faults.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "faults.sqlite3"))
+    )
 
     def fail_once(
         method_name: str,
@@ -4474,14 +4675,7 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
         gate, turn, _command = _open_build(connector, command=command)
         build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators(locators) as plan:
-            batch = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=build_id,
-                    plan=plan,
-                ),
-                plan=plan,
-            )
+            batch = _discovery_batch(connector, build_id=build_id, plan=plan)
             resolved = _resolve_batch(
                 connector,
                 gate,
@@ -4494,7 +4688,9 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             def commit_data() -> None:
                 with connector.transaction():
                     SourceBuildRepository.commit_discovery_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         batch=batch,
@@ -4515,37 +4711,34 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             ):
                 fail_once(method, fragment, commit_data)
                 assert (
-                    connector.fetch_all(
-                        "SELECT 1 FROM catalog_source_build_expected_gallery"
+                    inspect_all(
+                        connector, "SELECT 1 FROM catalog_source_build_expected_gallery"
                     )
                     == []
                 )
                 assert (
-                    connector.fetch_all(
+                    inspect_all(
+                        connector,
                         "SELECT 1 FROM "
-                        "operational_source_build_discovery_batch_receipts"
+                        "operational_source_build_discovery_batch_receipts",
                     )
                     == []
                 )
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT generation, processed_count, state FROM "
-                    "operational_source_build_discovery_checkpoints"
+                    "operational_source_build_discovery_checkpoints",
                 ) == (1, 0, "OPEN")
             commit_data()
 
-            terminal = SourceBuildRepository.prepare_discovery_batch(
-                SourceBuildRepository.issue_discovery_batch(
-                    connector,
-                    build_id=build_id,
-                    plan=plan,
-                ),
-                plan=plan,
-            )
+            terminal = _discovery_batch(connector, build_id=build_id, plan=plan)
 
             def commit_terminal_discovery() -> None:
                 with connector.transaction():
                     SourceBuildRepository.commit_discovery_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         batch=terminal,
@@ -4570,18 +4763,20 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                 fail_once(method, fragment, commit_terminal_discovery)
                 assert _source_build_discovery_snapshot(connector) == []
                 assert (
-                    connector.fetch_all(
-                        "SELECT 1 FROM catalog_source_build_discoveries"
+                    inspect_all(
+                        connector, "SELECT 1 FROM catalog_source_build_discoveries"
                     )
                     == []
                 )
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT generation, processed_count, state FROM "
-                    "operational_source_build_discovery_checkpoints"
+                    "operational_source_build_discovery_checkpoints",
                 ) == (2, 1, "OPEN")
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM "
-                    "operational_source_build_discovery_batch_receipts"
+                    "operational_source_build_discovery_batch_receipts",
                 ) == (1,)
             commit_terminal_discovery()
 
@@ -4591,7 +4786,9 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             def commit_assembly() -> None:
                 with connector.transaction():
                     SourceBuildRepository.assemble_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         build_id=build_id,
@@ -4611,14 +4808,16 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             ):
                 fail_once(method, fragment, commit_assembly)
                 assert (
-                    connector.fetch_all(
-                        "SELECT 1 FROM operational_source_build_assembly_batch_receipts"
+                    inspect_all(
+                        connector,
+                        "SELECT 1 FROM operational_source_build_assembly_batch_receipts",
                     )
                     == []
                 )
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT generation, processed_gallery_count, state FROM "
-                    "operational_source_build_assembly_checkpoints"
+                    "operational_source_build_assembly_checkpoints",
                 ) == (1, 0, "OPEN")
             commit_assembly()
 
@@ -4627,7 +4826,9 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             def commit_seal() -> None:
                 with connector.transaction():
                     SourceBuildRepository.assemble_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         build_id=build_id,
@@ -4653,26 +4854,25 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
             ):
                 fail_once(method, fragment, commit_seal)
                 assert (
-                    connector.fetch_all("SELECT 1 FROM catalog_build_manifest_core")
+                    inspect_all(connector, "SELECT 1 FROM catalog_build_manifest_core")
                     == []
                 )
-                assert connector.fetch_one(
-                    "SELECT state, sealed_at FROM catalog_source_builds"
+                assert inspect_one(
+                    connector, "SELECT state, sealed_at FROM catalog_source_builds"
                 ) == ("OPEN", None)
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT generation, processed_gallery_count, state FROM "
-                    "operational_source_build_assembly_checkpoints"
+                    "operational_source_build_assembly_checkpoints",
                 ) == (2, 1, "OPEN")
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM "
-                    "operational_source_build_assembly_batch_receipts"
+                    "operational_source_build_assembly_batch_receipts",
                 ) == (1,)
             terminal_trace: list[str] = []
-            connector.connection.set_trace_callback(terminal_trace.append)
-            try:
+            with trace_statements(connector, terminal_trace):
                 commit_seal()
-            finally:
-                connector.connection.set_trace_callback(None)
             checkpoint_cas = next(
                 index
                 for index, sql in enumerate(terminal_trace)
@@ -4694,18 +4894,21 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                 if "INSERT INTO CATALOG_SOURCE_BUILD_SEALED_ATS" in sql.upper()
             )
             assert manifest_core < sealed_at < checkpoint_cas < state_cas
-            assert connector.fetch_one("SELECT state FROM catalog_source_builds") == (
-                "SEALED",
-            )
+            assert inspect_one(
+                connector, "SELECT state FROM catalog_source_builds"
+            ) == ("SEALED",)
     finally:
         connector.close()
 
 
 def test_assembly_pages_257_rows_in_bounded_keyset_queries(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "bounded-assembly.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "bounded-assembly.sqlite3"))
+    )
     try:
         locators = tuple((f"bounded-{index:04d}",) for index in range(257))
         command = _snapshot_command(
@@ -4719,7 +4922,8 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
         )
         gate, turn, _command = _open_build(connector, command=command)
         build_id = _working_build_id(connector)
-        scope = connector.fetch_one(
+        scope = inspect_one(
+            connector,
             "SELECT scope_key FROM catalog_source_builds WHERE build_id = %s",
             (build_id,),
         )[0]
@@ -4853,7 +5057,9 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
                 with connector.transaction():
                     receipts.append(
                         SourceBuildRepository.assemble_batch(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             build_id=build_id,
@@ -4872,12 +5078,12 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
             for item in observed_queries
             if "FROM catalog_source_build_expected_gallery e" in item[0]
         )
-        query_plan = connector.fetch_all(
-            "EXPLAIN QUERY PLAN " + assembly_query,
+        query_plan = assert_indexed_query(
+            connector,
+            assembly_query,
             assembly_data,
         )
         assert query_plan
-        assert all("SCAN " not in str(row[3]) for row in query_plan)
     finally:
         connector.close()
 
@@ -5097,7 +5303,7 @@ _STALE_BUILD = b"b" * 16
 
 
 def _seed_stale_build_with_preparations(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     count: int,
     states: tuple[str, ...] = ("OPEN",),
@@ -5110,7 +5316,7 @@ def _seed_stale_build_with_preparations(
     and binding rows; the drainage predicate and its FK integrity are
     exercised by the physical and identity matrices, not here."""
 
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     connector.execute(
         "INSERT INTO catalog_source_scopes "
         "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
@@ -5168,26 +5374,27 @@ def _seed_stale_build_with_preparations(
                     (f"cnd{generation:013d}".encode(), preparation_id, 7),
                 )
             ids.append(preparation_id)
-    connector.execute("PRAGMA foreign_keys = ON")
+    set_foreign_key_checks(connector, enabled=True)
     return ids
 
 
-def _stale_position(connector: SQLiteConnector) -> SupersededDrainPosition | None:
+def _stale_position(connector: SQLConnector) -> SupersededDrainPosition | None:
     with connector.transaction():
         return OperationalEffectRepository.retiring_build_drain_position(
-            VNextUnitOfWork(connector, backend="sqlite"), build_id=_STALE_BUILD
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
+            build_id=_STALE_BUILD,
         )
 
 
 def _stale_page(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     now: int,
     drained_page: source_build_module._SourceDrainRetry | None,
 ) -> source_build_module._StaleRetirement | None:
     with connector.transaction():
         return source_build_module._drain_retiring_build_page(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             build_id=_STALE_BUILD,
             drained_page=drained_page,
             now=now,
@@ -5195,7 +5402,7 @@ def _stale_page(
 
 
 def _drain_stale_build(
-    connector: SQLiteConnector, *, now: int, page_budget: int
+    connector: SQLConnector, *, now: int, page_budget: int
 ) -> tuple[list[int], list[SupersededDrainPosition]]:
     """Drive the retiring-build drainage exactly like re-issued handoffs: each
     page carries the previous committed page as its liveness fence."""
@@ -5217,9 +5424,10 @@ def _drain_stale_build(
         drained_page = retirement.retry(_STALE_BUILD)
 
 
-def _stale_non_abandoned(connector: SQLiteConnector) -> int:
+def _stale_non_abandoned(connector: SQLConnector) -> int:
     return int(
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_operational_preparations "
             "WHERE build_id = %s AND state IN ('OPEN', 'COMPLETE')",
             (_STALE_BUILD,),
@@ -5229,6 +5437,7 @@ def _stale_non_abandoned(connector: SQLiteConnector) -> int:
 
 @pytest.mark.parametrize("count", (129, 257))
 def test_stale_build_preparation_drainage_is_bounded_and_converges(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     count: int,
 ) -> None:
@@ -5236,7 +5445,9 @@ def test_stale_build_preparation_drainage_is_bounded_and_converges(
     durable position, which strictly advances per committed page, until none
     remain and every row is ABANDONED once; the final page reports drained."""
 
-    connector = _generated_database(tmp_path / "stale-drain.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stale-drain.sqlite3"))
+    )
     try:
         ids = _seed_stale_build_with_preparations(connector, count=count)
         pages, positions = _drain_stale_build(
@@ -5254,12 +5465,15 @@ def test_stale_build_preparation_drainage_is_bounded_and_converges(
 
 
 def test_stale_build_preparation_page_rolls_back_on_an_interrupted_commit(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """A page interrupted before its commit abandons nothing; recovery drains
     normally from the unchanged durable position."""
 
-    connector = _generated_database(tmp_path / "stale-fault.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stale-fault.sqlite3"))
+    )
     try:
         _seed_stale_build_with_preparations(connector, count=200)
         assert _stale_non_abandoned(connector) == 200
@@ -5267,7 +5481,7 @@ def test_stale_build_preparation_page_rolls_back_on_an_interrupted_commit(
         with pytest.raises(RuntimeError, match="interrupted"):
             with connector.transaction():
                 source_build_module._drain_retiring_build_page(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     build_id=_STALE_BUILD,
                     drained_page=None,
                     now=100,
@@ -5283,6 +5497,7 @@ def test_stale_build_preparation_page_rolls_back_on_an_interrupted_commit(
 
 
 def test_stale_build_drainage_fails_closed_when_the_position_does_not_advance(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """Liveness fence: a re-issued handoff whose durable position is not
@@ -5290,7 +5505,9 @@ def test_stale_build_drainage_fails_closed_when_the_position_does_not_advance(
     fails closed with zero writes; a delayed retry carrying the committed
     page's position is likewise refused at the repository."""
 
-    connector = _generated_database(tmp_path / "stale-fence.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stale-fence.sqlite3"))
+    )
     try:
         _seed_stale_build_with_preparations(connector, count=257)
         first = _stale_page(connector, now=100, drained_page=None)
@@ -5312,7 +5529,7 @@ def test_stale_build_drainage_fails_closed_when_the_position_does_not_advance(
         with pytest.raises(OperationalEffectStateError, match="stale"):
             with connector.transaction():
                 OperationalEffectRepository.abandon_retiring_build_preparations(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     build_id=_STALE_BUILD,
                     position=first.position,
                     now=102,
@@ -5333,12 +5550,15 @@ def test_stale_build_drainage_fails_closed_when_the_position_does_not_advance(
 
 
 def test_stale_build_drainage_abandons_attempts_bound_to_the_orphaned_candidate(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """A retiring build's candidate can never publish, so an attempt bound to
     it is drained with the rest and mixed states drain COMPLETE before OPEN."""
 
-    connector = _generated_database(tmp_path / "stale-bound.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stale-bound.sqlite3"))
+    )
     try:
         ids = _seed_stale_build_with_preparations(
             connector, count=5, states=("OPEN", "COMPLETE"), bound_offsets=(1, 2)
@@ -5349,9 +5569,10 @@ def test_stale_build_drainage_abandons_attempts_bound_to_the_orphaned_candidate(
         assert positions[0].preparation_id == ids[1]
         assert positions[1].preparation_id == ids[0]
         assert _stale_non_abandoned(connector) == 0
-        bindings = connector.fetch_all(
+        bindings = inspect_all(
+            connector,
             "SELECT preparation_id "
-            "FROM operational_publication_candidate_preparations ORDER BY 1"
+            "FROM operational_publication_candidate_preparations ORDER BY 1",
         )
         assert [row[0] for row in bindings] == [ids[1], ids[2]]
     finally:

@@ -20,15 +20,24 @@ from vnext_catalog_registry_fixtures import (
     seed_manifest_policy,
     seed_source_scope,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_build_manifest, seed_source_build
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_check_constraints,
+    set_foreign_key_checks,
+    trace_statements,
+)
 
 import h2hdb.domain as domain_module
 import h2hdb.vnext_gallery_staging_budget as staging_budget_module
 import h2hdb.vnext_gallery_staging_repository as staging_module
+from h2hdb import CoreConfig
 from h2hdb.domain import GalleryStagingOwner
-from h2hdb.sql_connector import DatabaseDuplicateKeyError
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_allocator_repository import (
     IdentityStream,
     VNextAllocatorRepository,
@@ -100,12 +109,12 @@ from h2hdb.vnext_manifest_family import ensure_gallery_manifest_family
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
 def _seed_canonical_identity(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     digest_domain: str,
     payload: bytes,
@@ -147,20 +156,20 @@ def _seed_canonical_identity(
     return value_sha256
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=100_000,
@@ -169,7 +178,7 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _seed_working_gallery(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     turn: IngestTurn,
     *,
     build_id: bytes = b"b" * 16,
@@ -233,14 +242,15 @@ def _seed_working_gallery(
 
 
 def _seed_additional_gallery(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     gallery_id: int,
     position: int,
 ) -> None:
-    scope_key = connector.fetch_one(
-        "SELECT scope_key FROM catalog_gallery_identities WHERE gallery_id = 1"
+    scope_key = inspect_one(
+        connector,
+        "SELECT scope_key FROM catalog_gallery_identities WHERE gallery_id = 1",
     )[0]
     assert isinstance(scope_key, bytes)
     source_name = f"gallery-{gallery_id}".encode("ascii")
@@ -275,7 +285,7 @@ def _seed_additional_gallery(
 
 
 def _begin(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     build_id: bytes,
@@ -285,7 +295,7 @@ def _begin(
 ) -> GalleryStagingHandle:
     with connector.transaction():
         return GalleryObservationStagingRepository.begin(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             build_id=build_id,
@@ -321,7 +331,7 @@ def _directory_observation(file: FileObservation) -> DirectoryObservation:
 
 
 def _put_files(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     handle: Any,
@@ -331,7 +341,7 @@ def _put_files(
 ) -> GalleryStagingReceipt:
     with connector.transaction():
         return GalleryObservationStagingRepository.put_files(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             handle=handle,
@@ -341,7 +351,7 @@ def _put_files(
 
 
 def _put_directories(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     handle: Any,
@@ -351,7 +361,7 @@ def _put_directories(
 ) -> GalleryStagingReceipt:
     with connector.transaction():
         return GalleryObservationStagingRepository.put_directories(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             handle=handle,
@@ -361,7 +371,7 @@ def _put_directories(
 
 
 def _put_tags(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     handle: Any,
@@ -371,7 +381,7 @@ def _put_tags(
 ) -> GalleryStagingReceipt:
     with connector.transaction():
         return GalleryObservationStagingRepository.put_tags(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             handle=handle,
@@ -381,7 +391,7 @@ def _put_tags(
 
 
 def _put_metadata(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     handle: Any,
@@ -391,7 +401,7 @@ def _put_metadata(
 ) -> GalleryStagingReceipt:
     with connector.transaction():
         return GalleryObservationStagingRepository.put_metadata(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             handle=handle,
@@ -401,7 +411,7 @@ def _put_metadata(
 
 
 def _match(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     handle: Any,
@@ -411,7 +421,7 @@ def _match(
 ) -> MatchBatchReceipt:
     with connector.transaction():
         return GalleryObservationStagingRepository.match_files_to_directory(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             handle=handle,
@@ -421,7 +431,7 @@ def _match(
 
 
 def _stage_minimal_gallery(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     build_id: bytes,
@@ -500,7 +510,7 @@ def _stage_minimal_gallery(
     assert matched.state == "COMPLETE"
     with connector.transaction():
         seal = GalleryObservationStagingRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             handle=handle,
@@ -509,18 +519,19 @@ def _stage_minimal_gallery(
     return handle, seal
 
 
-def _request_budget_count(connector: SQLiteConnector) -> int:
-    row = connector.fetch_one(
+def _request_budget_count(connector: SQLConnector) -> int:
+    row = inspect_one(
+        connector,
         "SELECT retained_request_count FROM "
         "operational_gallery_observation_staging_request_budgets "
-        "WHERE singleton_id = 1"
+        "WHERE singleton_id = 1",
     )
     assert len(row) == 1 and isinstance(row[0], int)
     return row[0]
 
 
 def _replace_shared_with_exclusive(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     shared: GateLease,
     *,
     now: int,
@@ -528,7 +539,7 @@ def _replace_shared_with_exclusive(
 ) -> GateLease:
     with connector.transaction():
         MaintenanceGateRepository.release(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             shared,
             now=now,
         )
@@ -540,14 +551,14 @@ def _replace_shared_with_exclusive(
         ),
     ):
         return MaintenanceGateRepository.claim_exclusive(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=now + 1,
             lease_duration=100_000,
         )
 
 
 def _replace_exclusive_with_shared(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     exclusive: GateLease,
     *,
     now: int,
@@ -555,7 +566,7 @@ def _replace_exclusive_with_shared(
 ) -> GateLease:
     with connector.transaction():
         MaintenanceGateRepository.release(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             exclusive,
             now=now,
         )
@@ -567,14 +578,14 @@ def _replace_exclusive_with_shared(
         ),
     ):
         return MaintenanceGateRepository.claim_shared(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=now + 1,
             lease_duration=100_000,
         )
 
 
 def _begin_cleanup(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     *,
     kind: CleanupTargetKind,
@@ -584,7 +595,7 @@ def _begin_cleanup(
 ) -> CleanupCycle:
     with connector.transaction():
         return VNextCleanupRepository.begin_cycle(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             target_kind=kind,
             shard_no=shard_no,
@@ -594,29 +605,35 @@ def _begin_cleanup(
         )
 
 
-def _request_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
+def _request_snapshot(connector: SQLConnector) -> tuple[object, ...]:
     return (
-        connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests",
         ),
-        connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_request_chunks"
+        inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_request_chunks",
         ),
-        connector.fetch_one("SELECT COUNT(*) FROM catalog_gallery_observation_pages"),
-        connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_gallery_observation_file_seals"
+        inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_gallery_observation_pages"
         ),
-        connector.fetch_all(
-            "SELECT component, level, cursor, regular_count, "
+        inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_gallery_observation_file_seals"
+        ),
+        inspect_all(
+            connector,
+            "SELECT component, level, `cursor`, regular_count, "
             "processed_byte_count, state "
             "FROM operational_gallery_observation_staging_checkpoints "
-            "ORDER BY component, level"
+            "ORDER BY component, level",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT component, level, request_sha256, "
             "start_processed_byte_count, next_processed_byte_count "
             "FROM operational_gallery_observation_staging_receipts "
-            "ORDER BY component, level"
+            "ORDER BY component, level",
         ),
     )
 
@@ -650,15 +667,16 @@ _PAGE_FAMILY_TABLES = (
 
 
 def _page_family_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     return tuple(
-        connector.fetch_all(f"SELECT * FROM {table}") for table in _PAGE_FAMILY_TABLES
+        inspect_all(connector, f"SELECT * FROM {table}")
+        for table in _PAGE_FAMILY_TABLES
     )
 
 
 def _seed_vertical_family_parents(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> GalleryStagingHandle:
     gate, turn = _authorities(connector)
     build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -742,7 +760,7 @@ def _persist_vertical_family(
 
 
 def _vertical_family_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     family: str,
 ) -> tuple[list[tuple[Any, ...]], ...]:
     queries: tuple[str, ...]
@@ -764,27 +782,29 @@ def _vertical_family_snapshot(
             )
         case _:  # pragma: no cover - the test matrix is closed above.
             raise AssertionError(family)
-    return tuple(connector.fetch_all(query) for query in queries)
+    return tuple(inspect_all(connector, query) for query in queries)
 
 
 def _vertical_family_view(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     family: str,
 ) -> list[tuple[Any, ...]]:
     match family:
         case "directory":
-            return connector.fetch_all(
-                "SELECT * FROM catalog_gallery_observation_directories"
+            return inspect_all(
+                connector, "SELECT * FROM catalog_gallery_observation_directories"
             )
         case "stat":
-            return connector.fetch_all("SELECT * FROM catalog_gallery_observation_stat")
+            return inspect_all(
+                connector, "SELECT * FROM catalog_gallery_observation_stat"
+            )
         case "scan":
-            return connector.fetch_all(
-                "SELECT * FROM catalog_gallery_observation_scans"
+            return inspect_all(
+                connector, "SELECT * FROM catalog_gallery_observation_scans"
             )
         case "filesystem":
-            return connector.fetch_all(
-                "SELECT * FROM catalog_gallery_observation_file_filesystem"
+            return inspect_all(
+                connector, "SELECT * FROM catalog_gallery_observation_file_filesystem"
             )
     raise AssertionError(family)  # pragma: no cover - closed test matrix.
 
@@ -812,9 +832,12 @@ def test_file_content_receipt_is_stream_derived_and_not_forgeable() -> None:
 
 
 def test_file_response_loss_replay_rejects_normalized_leaf_corruption_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "file-replay-leaf-corruption.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "file-replay-leaf-corruption.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -831,7 +854,8 @@ def test_file_response_loss_replay_rejects_normalized_leaf_corruption_zero_write
             BatchAttempt(b"f" * 16, None),
         )
         committed = _put_files(connector, gate, turn, handle, command, now=21)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT file_no FROM catalog_gallery_observation_file_file_nos "
             "WHERE gallery_id = %s AND observation_id = %s",
             (handle.gallery_id, handle.observation_id),
@@ -870,9 +894,12 @@ def test_filesystem_replay_query_is_driven_by_the_binary_anchor() -> None:
 
 
 def test_file_replay_reads_raw_binary_key_and_rejects_partial_filesystem_family(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "binary-filesystem-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "binary-filesystem-replay.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -923,9 +950,12 @@ def test_file_replay_reads_raw_binary_key_and_rejects_partial_filesystem_family(
 
 
 def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "tag-replay-payload-corruption.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "tag-replay-payload-corruption.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -938,7 +968,8 @@ def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
         )
         _put_tags(connector, gate, turn, handle, command, now=21)
         assert _put_tags(connector, gate, turn, handle, command, now=22).replayed
-        root = connector.fetch_one(
+        root = inspect_one(
+            connector,
             "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
             "WHERE value_sha256 = %s",
             (source._value_sha256,),
@@ -960,7 +991,8 @@ def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
         ):
             _put_tags(connector, gate, turn, handle, command, now=23)
         assert _request_snapshot(connector) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
             "WHERE page_sha256 = %s",
             (root,),
@@ -970,9 +1002,12 @@ def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
 
 
 def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "file-hash-materialization.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "file-hash-materialization.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -997,7 +1032,8 @@ def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
             BatchAttempt(b"a" * 16, None),
         )
         _put_files(connector, gate, turn, handle, first, now=21)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT occurrence_count "
             "FROM catalog_gallery_observation_file_hash_occurrences "
             "WHERE gallery_id = %s AND observation_id = %s "
@@ -1030,7 +1066,8 @@ def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
             BatchAttempt(b"b" * 16, b"a" * 16),
         )
         _put_files(connector, gate, turn, handle, final, now=22)
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT file_sha256, occurrence_count "
             "FROM catalog_gallery_observation_file_hash_occurrences "
             "WHERE gallery_id = %s AND observation_id = %s",
@@ -1075,9 +1112,12 @@ def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
 
 
 def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "file-hash-overflow.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "file-hash-overflow.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1138,7 +1178,8 @@ def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
         ):
             _put_files(connector, gate, turn, handle, final, now=22)
         assert _request_snapshot(connector) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT occurrence_count "
             "FROM catalog_gallery_observation_file_hash_occurrences "
             "WHERE gallery_id = %s AND observation_id = %s "
@@ -1151,10 +1192,13 @@ def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
 
 @pytest.mark.parametrize("shared_value", [False, True])
 def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     shared_value: bool,
 ) -> None:
-    connector = _generated_database(tmp_path / "tag-artist-materialization.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "tag-artist-materialization.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1169,26 +1213,30 @@ def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
             BatchAttempt(b"t" * 16, None),
         )
         _put_tags(connector, gate, turn, handle, command, now=21)
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (3,)
-        assert connector.fetch_all(
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_tag_terms") == (3,)
+        assert inspect_all(
+            connector,
             "SELECT position FROM catalog_gallery_observation_tags "
             "WHERE gallery_id = %s AND observation_id = %s ORDER BY position",
             (handle.gallery_id, handle.observation_id),
         ) == [(0,), (1,), (2,)]
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT value_sha256 FROM operational_canonical_value_uploads "
                 "WHERE generation = %s",
                 (handle.ingest_generation,),
             )
             == []
         )
-        artist_tag_id = connector.fetch_one(
+        artist_tag_id = inspect_one(
+            connector,
             "SELECT tag_id FROM catalog_gallery_observation_tags "
             "WHERE gallery_id = %s AND observation_id = %s AND position = 0",
             (handle.gallery_id, handle.observation_id),
         )[0]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT artist_tag_id FROM catalog_gallery_observation_artists "
             "WHERE gallery_id = %s AND observation_id = %s",
             (handle.gallery_id, handle.observation_id),
@@ -1235,9 +1283,12 @@ def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
 
 
 def test_tag_handoff_rejects_missing_shared_value_claim_atomically(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "tag-missing-shared-claim.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "tag-missing-shared-claim.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1267,16 +1318,19 @@ def test_tag_handoff_rejects_missing_shared_value_claim_atomically(
             "catalog_gallery_observation_artists",
             "operational_canonical_value_uploads",
         ):
-            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+            assert inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
         assert _put_tags(connector, gate, turn, handle, command, now=22).cursor == 2
     finally:
         connector.close()
 
 
 def test_tag_allocator_lock_rereads_natural_identity_before_insert(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "tag-allocator-reread.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "tag-allocator-reread.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1317,19 +1371,21 @@ def test_tag_allocator_lock_rereads_natural_identity_before_insert(
                 now=21,
             )
         assert receipt.cursor == 1
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT tag_id FROM catalog_gallery_observation_tags "
             "WHERE gallery_id = %s AND observation_id = %s AND position = 0",
             (handle.gallery_id, handle.observation_id),
         ) == (7,)
-        assert connector.fetch_all(
-            "SELECT tag_id FROM catalog_tag_terms ORDER BY tag_id"
+        assert inspect_all(
+            connector, "SELECT tag_id FROM catalog_tag_terms ORDER BY tag_id"
         ) == [(7,)]
     finally:
         connector.close()
 
 
 def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     file_tables = (
@@ -1340,7 +1396,9 @@ def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
         "catalog_gallery_observation_file_seals",
         "catalog_gallery_observation_file_hash_occurrences",
     )
-    connector = _generated_database(tmp_path / "file-family-faults.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "file-family-faults.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1377,13 +1435,13 @@ def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
             assert triggered
             assert _request_snapshot(connector) == baseline
             assert all(
-                connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+                inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
                 for table in file_tables
             )
         committed = _put_files(connector, gate, turn, handle, file_command, now=21)
         assert committed.cursor == 1
         assert all(
-            connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (1,)
+            inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (1,)
             for table in file_tables
         )
         with (
@@ -1405,7 +1463,9 @@ def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
         "catalog_gallery_observation_tags",
         "catalog_gallery_observation_artists",
     )
-    connector = _generated_database(tmp_path / "tag-family-faults.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "tag-family-faults.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1442,17 +1502,17 @@ def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
             assert triggered
             assert _request_snapshot(connector) == baseline
             assert all(
-                connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+                inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
                 for table in tag_tables
             )
             assert (
-                connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_tags")
+                inspect_all(connector, "SELECT 1 FROM catalog_gallery_observation_tags")
                 == []
             )
         committed = _put_tags(connector, gate, turn, handle, tag_command, now=21)
         assert committed.cursor == 1
         assert all(
-            connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (1,)
+            inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (1,)
             for table in tag_tables
         )
         with (
@@ -1471,6 +1531,7 @@ def test_file_and_tag_identity_writes_are_fault_atomic_and_replay_exact(
 
 
 def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1486,7 +1547,9 @@ def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
         short = FileContentReceipt.from_parts((b"a",))
         long = FileContentReceipt.from_parts((b"bb",))
 
-    connector = _generated_database(tmp_path / "gallery-content-size.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-content-size.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1525,9 +1588,12 @@ def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
                 now=21,
             )
         assert _request_snapshot(connector) == before
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_content_blobs") == (0,)
-        assert connector.fetch_one(
-            "SELECT cursor, processed_byte_count, state "
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_content_blobs") == (
+            0,
+        )
+        assert inspect_one(
+            connector,
+            "SELECT `cursor`, processed_byte_count, state "
             "FROM operational_gallery_observation_staging_checkpoints "
             "WHERE staging_id = %s AND component = %s AND level = 0",
             (handle.staging_id, b"FILE"),
@@ -1537,9 +1603,12 @@ def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
 
 
 def test_processed_byte_authority_overflow_terminal_empty_and_nonfile_corruption(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-byte-authority.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-byte-authority.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -1580,21 +1649,22 @@ def test_processed_byte_authority_overflow_terminal_empty_and_nonfile_corruption
             now=22,
         )
         assert (empty.cursor, empty.processed_byte_count) == (0, 0)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT start_processed_byte_count, next_processed_byte_count "
             "FROM operational_gallery_observation_staging_receipts "
             "WHERE staging_id = %s AND component = %s AND level = 0",
             (handle.staging_id, b"FILE"),
         ) == (0, 0)
 
-        connector.execute("PRAGMA ignore_check_constraints = ON")
+        set_check_constraints(connector, enabled=False)
         connector.execute(
             "UPDATE operational_gallery_observation_staging_checkpoints "
             "SET processed_byte_count = 1 "
             "WHERE staging_id = %s AND component = %s AND level = 0",
             (handle.staging_id, b"DIRECTORY"),
         )
-        connector.execute("PRAGMA ignore_check_constraints = OFF")
+        set_check_constraints(connector, enabled=True)
         corrupt_snapshot = _request_snapshot(connector)
         with pytest.raises(GalleryStagingConflictError, match="non-FILE DIRECTORY"):
             _put_directories(
@@ -1946,36 +2016,43 @@ def test_mariadb_metadata_shared_fact_writes_are_serialized_by_ingest_head() -> 
     assert all(query.endswith(" FOR UPDATE") for query, _data in connector.queries)
 
 
-def _metadata_vertical_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
+def _metadata_vertical_snapshot(connector: SQLConnector) -> tuple[object, ...]:
     return (
-        connector.fetch_all(
-            "SELECT gid FROM catalog_gallery_gid_identities ORDER BY gid"
+        inspect_all(
+            connector, "SELECT gid FROM catalog_gallery_gid_identities ORDER BY gid"
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids "
-            "ORDER BY source_gallery_name"
+            "ORDER BY source_gallery_name",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT gallery_id, source_gallery_name "
-            "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id"
+            "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT gallery_id, observation_id, download_time, modified_time "
             "FROM catalog_gallery_observation_metadata_locals "
-            "ORDER BY gallery_id, observation_id"
+            "ORDER BY gallery_id, observation_id",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT gallery_id, observation_id, upload_time "
             "FROM catalog_gallery_observation_upload_times "
-            "ORDER BY gallery_id, observation_id"
+            "ORDER BY gallery_id, observation_id",
         ),
     )
 
 
 def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "metadata-vertical.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "metadata-vertical.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -2015,9 +2092,10 @@ def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
             [(gallery_id, handle.observation_id, 100)],
         )
         assert _metadata_vertical_snapshot(connector) == expected
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gallery_id, observation_id, gid, upload_time, download_time, "
-            "modified_time FROM catalog_gallery_observation_metadata"
+            "modified_time FROM catalog_gallery_observation_metadata",
         ) == (gallery_id, handle.observation_id, 12_345, 100, 101, 102)
 
         before = (_request_snapshot(connector), _metadata_vertical_snapshot(connector))
@@ -2051,11 +2129,14 @@ def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
     ),
 )
 def test_metadata_vertical_insert_fault_rolls_back_every_fact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     failed_table: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"metadata-vertical-fault-{failed_table}.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"metadata-vertical-fault-{failed_table}.sqlite3")
+        )
     )
     try:
         gate, turn = _authorities(connector)
@@ -2090,30 +2171,36 @@ def test_metadata_vertical_insert_fault_rolls_back_every_fact(
             [],
         )
         assert (
-            connector.fetch_all(
-                "SELECT 1 FROM catalog_gallery_observation_metadata_digests"
+            inspect_all(
+                connector, "SELECT 1 FROM catalog_gallery_observation_metadata_digests"
             )
             == []
         )
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_page_counts")
+            inspect_all(
+                connector, "SELECT 1 FROM catalog_gallery_observation_page_counts"
+            )
             == []
         )
 
         committed = _put_metadata(connector, gate, turn, handle, command, now=22)
         assert committed.state == "COMPLETE"
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid, upload_time, download_time, modified_time "
-            "FROM catalog_gallery_observation_metadata"
+            "FROM catalog_gallery_observation_metadata",
         ) == (7, 10, 11, 12)
     finally:
         connector.close()
 
 
 def test_gallery_page_families_are_seal_last_fault_atomic_and_replay_exact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-page-vertical.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-page-vertical.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -2198,14 +2285,14 @@ def test_gallery_page_families_are_seal_last_fault_atomic_and_replay_exact(
                 "page family is partial",
             ),
         ):
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             try:
                 connector.execute(
                     f"DELETE FROM {seal_table} WHERE page_sha256 = %s",
                     (receipt.root_page_sha256,),
                 )
             finally:
-                connector.execute("PRAGMA foreign_keys = ON")
+                set_foreign_key_checks(connector, enabled=True)
             corrupt_pages = _page_family_snapshot(connector)
             corrupt_request = _request_snapshot(connector)
             with pytest.raises(GalleryStagingConflictError, match=message):
@@ -2221,14 +2308,17 @@ def test_gallery_page_families_are_seal_last_fault_atomic_and_replay_exact(
 
 
 def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "metadata-vertical-conflict.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "metadata-vertical-conflict.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
         handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute(
                 "INSERT INTO catalog_gallery_observation_metadata_locals "
@@ -2237,7 +2327,7 @@ def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
                 (gallery_id, handle.observation_id, 21, 999),
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         before = _request_snapshot(connector)
         command = MetadataBatchCommand(
             encode_gallery_observation_metadata(
@@ -2261,7 +2351,7 @@ def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
             [],
         )
         assert (
-            connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_metadata")
+            inspect_all(connector, "SELECT 1 FROM catalog_gallery_observation_metadata")
             == []
         )
     finally:
@@ -2350,11 +2440,14 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
 
 
 def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     assert sum(len(tables) for tables in _VERTICAL_FAMILY_TABLES.values()) == 9
     for family, tables in _VERTICAL_FAMILY_TABLES.items():
-        connector = _generated_database(tmp_path / f"{family}-vertical-fault.sqlite3")
+        connector = _generated_database(
+            database_factory.config(str(tmp_path / f"{family}-vertical-fault.sqlite3"))
+        )
         try:
             handle = _seed_vertical_family_parents(connector)
             empty: tuple[list[tuple[Any, ...]], ...] = tuple([] for _table in tables)
@@ -2461,10 +2554,13 @@ def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
 
 @pytest.mark.parametrize("family", tuple(_VERTICAL_FAMILY_TABLES))
 def test_four_vertical_family_corruption_is_zero_partial(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     family: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"{family}-vertical-corrupt.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"{family}-vertical-corrupt.sqlite3"))
+    )
     try:
         handle = _seed_vertical_family_parents(connector)
         key = (handle.gallery_id, handle.observation_id)
@@ -2570,10 +2666,13 @@ def test_four_vertical_family_mariadb_sql_is_static_and_seal_last() -> None:
 
 
 def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-staging.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-staging.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -2581,7 +2680,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         with pytest.raises(RuntimeError, match="begin crash"):
             with connector.transaction():
                 GalleryObservationStagingRepository.begin(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     build_id=build_id,
@@ -2589,18 +2688,21 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                     now=20,
                 )
                 raise RuntimeError("begin crash")
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_observation_id FROM operational_gallery_observation_allocators "
-            "WHERE gallery_id = 1"
+            "WHERE gallery_id = 1",
         ) == (1,)
         assert (
-            connector.fetch_all(
-                "SELECT staging_id FROM operational_gallery_observation_stagings"
+            inspect_all(
+                connector,
+                "SELECT staging_id FROM operational_gallery_observation_stagings",
             )
             == []
         )
 
-        gallery_key_value, scope_key, locator_sha256 = connector.fetch_one(
+        gallery_key_value, scope_key, locator_sha256 = inspect_one(
+            connector,
             "SELECT gallery_key, scope_key, locator_sha256 "
             "FROM catalog_gallery_identities WHERE gallery_id = %s",
             (gallery_id,),
@@ -2616,7 +2718,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         with pytest.raises(GalleryStagingConflictError, match="handoff differs"):
             with connector.transaction():
                 GalleryObservationStagingRepository.begin_from_identity(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     identity=GalleryIdentityHandoff(
@@ -2629,27 +2731,29 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                     ),
                     now=21,
                 )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT next_observation_id "
             "FROM operational_gallery_observation_allocators WHERE gallery_id = %s",
             (gallery_id,),
         ) == (1,)
         with connector.transaction():
             handle = GalleryObservationStagingRepository.begin_from_identity(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 identity=handoff,
                 now=21,
             )
         assert _begin(connector, gate, turn, build_id, gallery_id, now=22) == handle
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_checkpoints"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_checkpoints",
         ) == (4,)
         before_resume = _request_snapshot(connector)
         with connector.transaction():
             resumed = GalleryObservationStagingRepository.resume(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -2704,8 +2808,9 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             context.setattr(staging_module, "sha256", lambda _value=b"": _FixedHash())
             with pytest.raises(GalleryStagingConflictError, match="collision"):
                 _put_files(connector, gate, turn, handle, file_b, now=32)
-        assert connector.fetch_one(
-            "SELECT cursor, processed_byte_count "
+        assert inspect_one(
+            connector,
+            "SELECT `cursor`, processed_byte_count "
             "FROM operational_gallery_observation_staging_checkpoints "
             "WHERE staging_id = %s AND component = %s AND level = 0",
             (handle.staging_id, b"FILE"),
@@ -2715,7 +2820,8 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         assert file_done.state == "COMPLETE" and file_done.cursor == 257
         assert file_done.processed_byte_count == total_byte_count
         assert file_done.root_page_sha256 is not None
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT start_processed_byte_count, next_processed_byte_count "
             "FROM operational_gallery_observation_staging_receipts "
             "WHERE staging_id = %s AND component = %s AND level = 0",
@@ -2802,10 +2908,11 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             now=42,
         )
         assert tag_done.cursor == 2 and tag_done.root_page_sha256 is not None
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (2,)
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_tag_terms") == (2,)
         assert (
-            connector.fetch_all(
-                "SELECT value_sha256 FROM operational_canonical_value_uploads"
+            inspect_all(
+                connector,
+                "SELECT value_sha256 FROM operational_canonical_value_uploads",
             )
             == []
         )
@@ -2841,7 +2948,8 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             now=43,
         )
         assert metadata_first.cursor == 32_768
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT phase FROM operational_gallery_observation_staging_metadata_parsers "
             "WHERE staging_id = %s",
             (handle.staging_id,),
@@ -2907,7 +3015,8 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                 now=53,
             )
 
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT component, processed_byte_count "
             "FROM operational_gallery_observation_staging_checkpoints "
             "WHERE staging_id = %s AND component != %s AND level = 0 "
@@ -2923,15 +3032,15 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         with pytest.raises(GalleryStagingConflictError, match="FILE byte"):
             with connector.transaction():
                 GalleryObservationStagingRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     handle=handle,
                     now=59,
                 )
         assert (
-            connector.fetch_all(
-                "SELECT gallery_id FROM catalog_gallery_observation_stat"
+            inspect_all(
+                connector, "SELECT gallery_id FROM catalog_gallery_observation_stat"
             )
             == []
         )
@@ -2945,7 +3054,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         with pytest.raises(RuntimeError, match="seal crash"):
             with connector.transaction():
                 GalleryObservationStagingRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     handle=handle,
@@ -2953,29 +3062,28 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                 )
                 raise RuntimeError("seal crash")
         assert (
-            connector.fetch_all("SELECT build_id FROM catalog_source_build_galleries")
+            inspect_all(
+                connector, "SELECT build_id FROM catalog_source_build_galleries"
+            )
             == []
         )
         assert (
-            connector.fetch_all(
-                "SELECT gallery_id FROM catalog_gallery_observation_stat"
+            inspect_all(
+                connector, "SELECT gallery_id FROM catalog_gallery_observation_stat"
             )
             == []
         )
 
         seal_sql: list[str] = []
-        connector.connection.set_trace_callback(seal_sql.append)
-        try:
+        with trace_statements(connector, seal_sql):
             with connector.transaction():
                 sealed = GalleryObservationStagingRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     handle=handle,
                     now=61,
                 )
-        finally:
-            connector.connection.set_trace_callback(None)
         assert sealed.state == "SEALED" and sealed.observation_id == 1
         authority_queries = [
             sql
@@ -2991,12 +3099,14 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             and "FROM CATALOG_GALLERY_OBSERVATION_FILE_ANCHORS" in sql.upper()
             for sql in seal_sql
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT file_count, byte_count FROM catalog_gallery_observation_stat "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, sealed.observation_id),
         ) == (257, total_byte_count)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT observation_id FROM catalog_source_build_galleries "
             "WHERE build_id = %s AND gallery_id = 1",
             (build_id,),
@@ -3006,7 +3116,8 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             1,
             1,
         )
-        manifest = connector.fetch_one(
+        manifest = inspect_one(
+            connector,
             "SELECT manifest_sha256, computed_at FROM catalog_gallery_manifests "
             "WHERE gallery_id = %s AND observation_id = %s "
             "AND manifest_policy_id = 1",
@@ -3028,7 +3139,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             connector.transaction(),
         ):
             replayed_seal = GalleryObservationStagingRepository.seal(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -3059,7 +3170,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             pytest.raises(GalleryStagingConflictError, match="manifest differs"),
         ):
             GalleryObservationStagingRepository.seal(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -3117,7 +3228,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             connector.transaction(),
         ):
             sealed_build_replay = GalleryObservationStagingRepository.seal(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -3130,10 +3241,13 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
 
 
 def test_request_budget_backpressure_is_zero_write_and_replay_is_neutral(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-request-budget.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-request-budget.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3167,15 +3281,20 @@ def test_request_budget_backpressure_is_zero_write_and_replay_is_neutral(
         replay = _put_files(connector, gate, turn, handle, command, now=23)
         assert replay.replayed and replay.request_sha256 == receipt.request_sha256
         assert _request_budget_count(connector) == retained
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests",
         ) == (retained,)
     finally:
         connector.close()
 
 
-def test_fresh_tag_allocator_precedes_request_budget_head_lock(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "gallery-tag-budget-order.sqlite3")
+def test_fresh_tag_allocator_precedes_request_budget_head_lock(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-tag-budget-order.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3193,20 +3312,24 @@ def test_fresh_tag_allocator_precedes_request_budget_head_lock(tmp_path: Path) -
             now=21,
         )
         assert receipt.state == "COMPLETE"
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (1,)
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_tag_terms") == (1,)
         retained = _request_budget_count(connector)
         assert retained == 1
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests",
         ) == (retained,)
     finally:
         connector.close()
 
 
 def test_terminal_retirement_is_child_first_bounded_and_replayable(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-retirement.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-retirement.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3218,13 +3341,15 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
             gallery_id,
             now=20,
         )
-        final_stat = connector.fetch_one(
+        final_stat = inspect_one(
+            connector,
             "SELECT file_count, byte_count FROM catalog_gallery_observation_stat "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, seal.observation_id),
         )
         assert len(final_stat) == 2
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state, terminal_byte_count FROM "
             "operational_gallery_observation_stagings WHERE staging_id = %s",
             (handle.staging_id,),
@@ -3240,15 +3365,16 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
             match="prior gallery staging must retire",
         ):
             _begin(connector, gate, turn, build_id, 2, now=29)
-        request_count = connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        request_count = inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests",
         )[0]
         assert isinstance(request_count, int) and request_count > 0
         assert _request_budget_count(connector) == request_count
 
         with connector.transaction():
             pending = GalleryObservationStagingRepository.find_pending_retirement(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 owner=GalleryStagingOwner("SOURCE_BUILD", build_id),
@@ -3270,21 +3396,23 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
         with pytest.raises(RuntimeError, match="retirement crash"):
             with connector.transaction():
                 first = GalleryObservationStagingRepository.retire_sealed(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     seal=seal,
                     now=31,
                 )
                 assert first.phase == "RECEIPT_FRONTIER"
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT state FROM "
                     "operational_gallery_observation_stagings "
                     "WHERE staging_id = %s",
                     (handle.staging_id,),
                 ) == ("RETIRING_SEALED",)
                 raise RuntimeError("retirement crash")
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM operational_gallery_observation_stagings "
             "WHERE staging_id = %s",
             (handle.staging_id,),
@@ -3297,7 +3425,7 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
         while True:
             with connector.transaction():
                 retirement = GalleryObservationStagingRepository.retire_sealed(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     seal=seal,
@@ -3309,14 +3437,17 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
             if retirement.phase is not None:
                 phases.append(retirement.phase)
             retained = _request_budget_count(connector)
-            assert connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+            assert inspect_one(
+                connector,
+                "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests",
             ) == (retained,)
             if not retirement.complete:
                 with connector.transaction():
                     pending = (
                         GalleryObservationStagingRepository.find_pending_retirement(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             owner=GalleryStagingOwner("SOURCE_BUILD", build_id),
@@ -3330,7 +3461,9 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                 with pytest.raises(GalleryStagingRetiredError):
                     with connector.transaction():
                         GalleryObservationStagingRepository.seal(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             handle=handle,
@@ -3339,7 +3472,8 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                 match retirement.phase:
                     case "CHECKPOINT":
                         retained_before_corruption = _request_snapshot(connector)
-                        terminal_byte_count = connector.fetch_one(
+                        terminal_byte_count = inspect_one(
+                            connector,
                             "SELECT terminal_byte_count FROM "
                             "operational_gallery_observation_stagings "
                             "WHERE staging_id = %s",
@@ -3364,7 +3498,9 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                             ),
                         ):
                             GalleryObservationStagingRepository.retire_sealed(
-                                VNextUnitOfWork(connector, backend="sqlite"),
+                                VNextUnitOfWork(
+                                    connector, backend=connector_backend(connector)
+                                ),
                                 gate_lease=gate,
                                 ingest_turn=turn,
                                 seal=seal,
@@ -3373,7 +3509,8 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                         assert (
                             _request_snapshot(connector) == retained_before_corruption
                         )
-                        assert connector.fetch_one(
+                        assert inspect_one(
+                            connector,
                             "SELECT 1 FROM "
                             "operational_gallery_observation_staging_claims "
                             "WHERE staging_id = %s",
@@ -3389,7 +3526,9 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                         old_turn = turn
                         with connector.transaction():
                             turn = IngestFenceRepository.claim(
-                                VNextUnitOfWork(connector, backend="sqlite"),
+                                VNextUnitOfWork(
+                                    connector, backend=connector_backend(connector)
+                                ),
                                 owner_token=b"n" * 16,
                                 now=100_012,
                                 lease_duration=100_000,
@@ -3402,7 +3541,9 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
                         with pytest.raises(IngestFenceUnavailableError, match="stale"):
                             with connector.transaction():
                                 GalleryObservationStagingRepository.retire_sealed(
-                                    VNextUnitOfWork(connector, backend="sqlite"),
+                                    VNextUnitOfWork(
+                                        connector, backend=connector_backend(connector)
+                                    ),
                                     gate_lease=gate,
                                     ingest_turn=old_turn,
                                     seal=seal,
@@ -3422,14 +3563,15 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
             "ROOT",
         ]
         assert _request_budget_count(connector) == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT observation_id FROM catalog_source_build_galleries "
             "WHERE build_id = %s AND gallery_id = %s",
             (build_id, gallery_id),
         ) == (seal.observation_id,)
         with connector.transaction():
             replay = GalleryObservationStagingRepository.retire_sealed(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 seal=seal,
@@ -3457,9 +3599,12 @@ def test_terminal_retirement_is_child_first_bounded_and_replayable(
 
 
 def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-generic-retirement.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-generic-retirement.sqlite3"))
+    )
     try:
         shared, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3471,7 +3616,8 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             gallery_id,
             now=20,
         )
-        terminal_byte_count = connector.fetch_one(
+        terminal_byte_count = inspect_one(
+            connector,
             "SELECT terminal_byte_count FROM "
             "operational_gallery_observation_stagings WHERE staging_id = %s",
             (handle.staging_id,),
@@ -3503,7 +3649,8 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             now=32,
         )
         before = _request_snapshot(connector)
-        before_staging = connector.fetch_one(
+        before_staging = inspect_one(
+            connector,
             "SELECT state, terminal_byte_count FROM "
             "operational_gallery_observation_stagings WHERE staging_id = %s",
             (handle.staging_id,),
@@ -3513,7 +3660,7 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             pytest.raises(CleanupCorruptionError, match="authority is corrupt"),
         ):
             VNextCleanupRepository.advance(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=exclusive,
                 cycle=cycle,
                 command=CleanupBatchCommand(b"c" * 32, 1),
@@ -3521,7 +3668,8 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             )
         assert _request_snapshot(connector) == before
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT state, terminal_byte_count FROM "
                 "operational_gallery_observation_stagings WHERE staging_id = %s",
                 (handle.staging_id,),
@@ -3533,7 +3681,7 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             "WHERE gallery_id = %s AND observation_id = %s",
             (terminal_byte_count, gallery_id, seal.observation_id),
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute(
                 "DELETE FROM operational_gallery_observation_stagings "
@@ -3541,14 +3689,14 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
                 (handle.staging_id,),
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         orphaned_children = _request_snapshot(connector)
         with (
             connector.transaction(),
             pytest.raises(CleanupCorruptionError, match="frozen root disappeared"),
         ):
             VNextCleanupRepository.advance(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=exclusive,
                 cycle=cycle,
                 command=CleanupBatchCommand(b"d" * 32, 1),
@@ -3560,9 +3708,12 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
 
 
 def test_metadata_parser_resumes_a_utf8_code_point_split_at_the_chunk_boundary(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-metadata-utf8-carry.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-metadata-utf8-carry.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3592,7 +3743,8 @@ def test_metadata_parser_resumes_a_utf8_code_point_split_at_the_chunk_boundary(
             now=21,
         )
         assert (first.cursor, first.state) == (32_768, "OPEN")
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT phase, fixed_carry, remaining_text_bytes, utf8_tail "
             "FROM operational_gallery_observation_staging_metadata_parsers "
             "WHERE staging_id = %s",
@@ -3612,13 +3764,15 @@ def test_metadata_parser_resumes_a_utf8_code_point_split_at_the_chunk_boundary(
             now=22,
         )
         assert (complete.cursor, complete.state) == (len(encoded), "COMPLETE")
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT phase, fixed_carry, remaining_text_bytes, utf8_tail "
             "FROM operational_gallery_observation_staging_metadata_parsers "
             "WHERE staging_id = %s",
             (handle.staging_id,),
         ) == ("DONE", b"", 0, b"")
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid, upload_time, download_time, modified_time "
             "FROM catalog_gallery_observation_metadata WHERE gallery_id = %s "
             "AND observation_id = %s",
@@ -3629,9 +3783,12 @@ def test_metadata_parser_resumes_a_utf8_code_point_split_at_the_chunk_boundary(
 
 
 def test_file_to_directory_match_miss_is_rejected_without_progress(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-directory-miss.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-directory-miss.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3674,7 +3831,8 @@ def test_file_to_directory_match_miss_is_rejected_without_progress(
             )
 
         assert _request_snapshot(connector) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT file_cursor_bytes, matched_count, state "
             "FROM operational_gallery_observation_staging_match_checkpoints "
             "WHERE staging_id = %s",
@@ -3685,10 +3843,13 @@ def test_file_to_directory_match_miss_is_rejected_without_progress(
 
 
 def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-frontier-carry.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-frontier-carry.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
@@ -3772,7 +3933,8 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
         assert final_receipt.state == "COMPLETE"
         assert final_receipt.cursor == len(encoded)
         assert final_receipt.root_page_sha256 is not None
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT descriptor_level.level, descriptor_count.subtree_item_count "
             "FROM catalog_gallery_observation_page_descriptor_seals AS sealed "
             "JOIN catalog_gallery_observation_page_descriptor_levels "
@@ -3782,12 +3944,14 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
             "WHERE sealed.page_sha256 = %s",
             (final_receipt.root_page_sha256,),
         ) == (1, len(encoded))
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_gallery_observation_page_children "
             "WHERE parent_sha256 = %s",
             (final_receipt.root_page_sha256,),
         ) == (256,)
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT q.level, f.position "
             "FROM operational_gallery_observation_staging_frontiers f "
             "JOIN operational_gallery_observation_staging_page_requests q "
@@ -3796,8 +3960,9 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
             (handle.staging_id, b"METADATA"),
         ) == [(1, 0)]
         retained = _request_budget_count(connector)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests",
         ) == (retained,)
         assert retained == 257
         before_replay = _request_snapshot(connector)
@@ -3857,7 +4022,7 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
         )
         with connector.transaction():
             seal = GalleryObservationStagingRepository.seal(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
@@ -3869,7 +4034,7 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
         for step in range(32):
             with connector.transaction():
                 retirement = GalleryObservationStagingRepository.retire_sealed(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     seal=seal,
@@ -3891,9 +4056,12 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
 
 
 def test_identical_observation_on_a_later_build_reuses_canonical_identity(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-reuse.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-reuse.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         first_build, gallery_id = _seed_working_gallery(connector, first_turn)
@@ -3969,7 +4137,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         ) -> GalleryStagingSeal:
             with connector.transaction():
                 return GalleryObservationStagingRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     handle=handle,
@@ -3987,13 +4155,14 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
 
         with connector.transaction():
             second_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"j" * 16,
                 now=100_012,
                 lease_duration=100_000,
             )
         second_build = b"c" * 16
-        scope_key, manifest_policy_id = connector.fetch_one(
+        scope_key, manifest_policy_id = inspect_one(
+            connector,
             "SELECT scope_key, manifest_policy_id "
             "FROM catalog_source_build_descriptor WHERE build_id = %s",
             (first_build,),
@@ -4034,7 +4203,8 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         )
         with pytest.raises(GalleryStagingConflictError, match="stat"):
             seal_observation(second_turn, second_handle, now=100_026)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM operational_gallery_observation_stagings "
             "WHERE staging_id = %s",
             (second_handle.staging_id,),
@@ -4051,12 +4221,14 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         assert (
             reused.observation_identity_sha256 == first_seal.observation_identity_sha256
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT observation_id FROM catalog_source_build_galleries "
             "WHERE build_id = %s AND gallery_id = %s",
             (second_build, gallery_id),
         ) == (first_seal.observation_id,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM operational_gallery_observation_stagings "
             "WHERE staging_id = %s",
             (second_handle.staging_id,),
@@ -4064,7 +4236,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         before_replay = _request_snapshot(connector)
         with connector.transaction():
             replayed = GalleryObservationStagingRepository.seal(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=second_turn,
                 handle=second_handle,
@@ -4079,7 +4251,8 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             True,
         )
         assert _request_snapshot(connector) == before_replay
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT terminal_byte_count FROM "
             "operational_gallery_observation_stagings WHERE staging_id = %s",
             (second_handle.staging_id,),
@@ -4088,13 +4261,14 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         # The generic GALLERY_OBSERVATION path may remove the provisional
         # REUSED control family, but it must first prove that its four roots
         # are byte-identical to the different final observation.
-        original_final_identity = connector.fetch_one(
+        original_final_identity = inspect_one(
+            connector,
             "SELECT observation_identity_sha256 FROM catalog_gallery_observations "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, first_seal.observation_id),
         )[0]
         assert original_final_identity == first_seal.observation_identity_sha256
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute(
                 "UPDATE catalog_gallery_observations "
@@ -4103,7 +4277,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
                 (b"z" * 32, gallery_id, first_seal.observation_id),
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         exclusive = _replace_shared_with_exclusive(
             connector,
             gate,
@@ -4124,19 +4298,20 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             pytest.raises(CleanupCorruptionError, match="authority is corrupt"),
         ):
             VNextCleanupRepository.advance(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=exclusive,
                 cycle=observation_cycle,
                 command=CleanupBatchCommand(b"o" * 32, 1),
                 now=100_034,
             )
         assert _request_snapshot(connector) == before_generic_failure
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM operational_gallery_observation_stagings "
             "WHERE staging_id = %s",
             (second_handle.staging_id,),
         ) == ("REUSED",)
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         try:
             connector.execute(
                 "UPDATE catalog_gallery_observations "
@@ -4145,14 +4320,15 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
                 (original_final_identity, gallery_id, first_seal.observation_id),
             )
         finally:
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
         gate = _replace_exclusive_with_shared(
             connector,
             exclusive,
             now=100_035,
             owner_token=b"h" * 16,
         )
-        second_request_count = connector.fetch_one(
+        second_request_count = inspect_one(
+            connector,
             "SELECT COUNT(*) FROM "
             "operational_gallery_observation_staging_requests "
             "WHERE staging_id = %s",
@@ -4163,14 +4339,15 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         for step in range(16):
             with connector.transaction():
                 retirement = GalleryObservationStagingRepository.retire_sealed(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=second_turn,
                     seal=reused,
                     now=100_040 + step,
                 )
             if step == 0:
-                assert connector.fetch_one(
+                assert inspect_one(
+                    connector,
                     "SELECT state FROM "
                     "operational_gallery_observation_stagings "
                     "WHERE staging_id = %s",
@@ -4183,7 +4360,8 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
         assert _request_budget_count(connector) == (
             retained_before - second_request_count
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT observation_id FROM catalog_source_build_galleries "
             "WHERE build_id = %s AND gallery_id = %s",
             (second_build, gallery_id),
@@ -4193,9 +4371,12 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
 
 
 def test_stale_turn_is_zero_write_and_explicit_takeover_changes_only_claim(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "gallery-takeover.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "gallery-takeover.sqlite3"))
+    )
     try:
         gate, old_turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, old_turn)
@@ -4204,7 +4385,7 @@ def test_stale_turn_is_zero_write_and_explicit_takeover_changes_only_claim(
 
         with connector.transaction():
             new_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=100_011,
                 lease_duration=100_000,
@@ -4228,7 +4409,7 @@ def test_stale_turn_is_zero_write_and_explicit_takeover_changes_only_claim(
 
         with connector.transaction():
             taken = GalleryObservationStagingRepository.takeover(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=new_turn,
                 handle=handle,
@@ -4236,7 +4417,8 @@ def test_stale_turn_is_zero_write_and_explicit_takeover_changes_only_claim(
             )
         assert taken.ingest_generation == new_turn.generation
         assert taken.claim_generation == handle.claim_generation + 1
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT ingest_generation, claim_generation "
             "FROM operational_gallery_observation_staging_claims "
             "WHERE staging_id = %s",
@@ -4256,9 +4438,12 @@ def test_staging_header_rejects_missing_or_double_owner(
 
 
 def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "staging-abandon.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "staging-abandon.sqlite3"))
+    )
     try:
         gate, old_turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, old_turn)
@@ -4269,7 +4454,7 @@ def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
             pytest.raises(GalleryStagingNotReadyError, match="interrupted generation"),
         ):
             GalleryObservationStagingRepository.abandon_interrupted_staging(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=old_turn,
                 owner=handle.owner,
@@ -4278,7 +4463,7 @@ def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
         assert _request_snapshot(connector) == before
         with connector.transaction():
             new_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"n" * 16,
                 now=100_011,
                 lease_duration=100_000,
@@ -4292,7 +4477,9 @@ def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
             with connector.transaction():
                 result = (
                     GalleryObservationStagingRepository.abandon_interrupted_staging(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=new_turn,
                         owner=handle.owner,
@@ -4300,11 +4487,13 @@ def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
                     )
                 )
             assert result is not None and result.deleted_count <= 256
-            header = connector.fetch_one(
+            header = inspect_one(
+                connector,
                 "SELECT state FROM operational_gallery_observation_stagings WHERE staging_id = %s",
                 (handle.staging_id,),
             )
-            binding = connector.fetch_one(
+            binding = inspect_one(
+                connector,
                 "SELECT build_id FROM operational_gallery_staging_source_builds WHERE staging_id = %s",
                 (handle.staging_id,),
             )
@@ -4317,12 +4506,14 @@ def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
         else:
             pytest.fail("interrupted staging did not drain")
         assert saw_abandoned
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT 1 FROM catalog_gallery_observation_allocations WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, handle.observation_id),
         ) == (1,)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_source_build_galleries WHERE build_id = %s AND gallery_id = %s",
                 (build_id, gallery_id),
             )
@@ -4331,7 +4522,7 @@ def test_abandon_interrupted_staging_fences_current_writer_and_drains_one_slot(
         with connector.transaction():
             assert (
                 GalleryObservationStagingRepository.abandon_interrupted_staging(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=new_turn,
                     owner=handle.owner,

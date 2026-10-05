@@ -12,7 +12,11 @@ from test_vnext_analysis_repository import (
     _seed_root,
     _source_build_id,
 )
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    open_generated_database,
+)
 
 import h2hdb.vnext_analysis_repository as analysis
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade, VNextSourceQualification
@@ -98,23 +102,26 @@ def _exercise_source_aggregates(connector: SQLConnector, *, backend: str) -> Non
 
 
 def test_sqlite_source_aggregates_match_python_oracle_for_a_full_page(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "source-aggregates.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "source-aggregates.sqlite3"))
+    )
     try:
-        _exercise_source_aggregates(connector, backend="sqlite")
+        _exercise_source_aggregates(connector, backend=connector_backend(connector))
     finally:
         connector.close()
 
 
 def test_live_mariadb_source_aggregates_match_python_oracle_for_a_full_page(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     from test_vnext_live_mariadb_analysis_repository import _connector
 
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    with _connector(mariadb_config) as connector:
-        _exercise_source_aggregates(connector, backend="mariadb")
+    VNextDatabaseAdminFacade(db_config).initialize()
+    with _connector(db_config) as connector:
+        _exercise_source_aggregates(connector, backend=connector_backend(connector))
 
 
 @pytest.mark.parametrize(

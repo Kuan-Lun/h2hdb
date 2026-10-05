@@ -3,11 +3,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
-from pathlib import Path
 from typing import BinaryIO
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    open_generated_database,
+    table_columns,
+)
 
 from h2hdb import vnext_identity as identity
 from h2hdb.domain import (
@@ -24,7 +28,7 @@ from h2hdb.domain import (
     StorageObjectKey,
 )
 from h2hdb.ports import ArtifactStorageAdapter
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_artifact_preparation_repository import ArtifactPersistenceReceipt
 
 _CANDIDATE = b"c" * 16
@@ -206,24 +210,27 @@ def test_descriptor_presentation_totality_rejects_thumbnail_without_pages() -> N
 
 
 def _foreign_keys(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     table: str,
 ) -> set[tuple[str, str, str]]:
-    rows = connector.fetch_all(f"PRAGMA foreign_key_list({table})")
-    return {(str(row[2]), str(row[3]), str(row[4])) for row in rows}
+    if connector_backend(connector) == "sqlite":
+        rows = connector.fetch_all(f"PRAGMA foreign_key_list({table})")
+        return {(str(row[2]), str(row[3]), str(row[4])) for row in rows}
+    rows = connector.fetch_all(
+        "SELECT REFERENCED_TABLE_NAME, COLUMN_NAME, REFERENCED_COLUMN_NAME "
+        "FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() "
+        "AND TABLE_NAME = %s AND REFERENCED_TABLE_NAME IS NOT NULL",
+        (table,),
+    )
+    return {(str(row[0]), str(row[1]), str(row[2])) for row in rows}
 
 
 def test_prepared_resource_blob_schema_binds_before_storage_confirmation(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "prepared-v2.sqlite3")
+    connector = open_generated_database(database_factory.config())
     try:
-        columns = tuple(
-            str(row[1])
-            for row in connector.fetch_all(
-                "PRAGMA table_info(catalog_prepared_resource_blob)"
-            )
-        )
+        columns = table_columns(connector, "catalog_prepared_resource_blob")
 
         assert columns == (
             "candidate_id",
@@ -250,8 +257,10 @@ def test_prepared_resource_blob_schema_binds_before_storage_confirmation(
         connector.close()
 
 
-def test_catalog_storage_object_retains_neutral_verified_blob(tmp_path: Path) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "catalog-v2.sqlite3")
+def test_catalog_storage_object_retains_neutral_verified_blob(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = open_generated_database(database_factory.config())
     try:
         assert (
             "catalog_artifact_blobs",

@@ -1,6 +1,9 @@
 import ast
+import os
 import subprocess
+import sys
 import tomllib
+from collections import Counter
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -19,6 +22,7 @@ from conftest import (
     live_mariadb_xdist_group,
     macos_performance_core_count,
     select_pytest_worker_count,
+    validate_smoke_profile_markers,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +59,17 @@ def test_live_mariadb_group_covers_indirect_db_config_parameter() -> None:
 def test_live_mariadb_group_does_not_classify_string_only_backend_cases() -> None:
     assert live_mariadb_xdist_group((), {"backend": "mariadb"}) is None
     assert live_mariadb_xdist_group(("sqlite_config",), {}) is None
+
+
+def test_declared_live_backend_case_is_grouped_before_dynamic_fixture_setup() -> None:
+    assert (
+        live_mariadb_xdist_group(
+            ("backend", "request"),
+            {"backend": "mariadb"},
+            declared_live=True,
+        )
+        == MARIADB_XDIST_GROUP
+    )
 
 
 def test_live_mariadb_group_rejects_a_conflicting_existing_group() -> None:
@@ -126,6 +141,35 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_vnext_source_collection.py",
             "test_first_scan_restart_reuses_sealed_gallery_and_redoes_only_unsealed_work",
         ),
+        # One committed identity fault covers each durable constructor boundary:
+        # fresh inventory and sealed-cut resume must refuse with typed errors,
+        # zero native mutations and an unchanged exact database snapshot.
+        (
+            "test_vnext_source_batches.py",
+            "test_source_preparation_rejects_corrupt_published_gallery_identity_without_writes",
+        ),
+        (
+            "test_vnext_source_restart.py",
+            "test_resume_rejects_corrupt_gallery_identity_without_writes",
+        ),
+        # Real canonical page swaps and missing children must retain typed
+        # publication refusal, unchanged durable state and recovery to READY.
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rejects_canonical_corruption_without_writes",
+        ),
+        # Missing/reordered semantic checkpoint authority and a CHECK-bypassed
+        # invalid state must be rejected before publication issue can write.
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_issue_rejects_checkpoint_corruption_without_writes",
+        ),
+        # Reusing a local plan cannot replace the fresh durable checkpoint read
+        # between a successful issue and preparation.
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rechecks_issued_checkpoint_without_writes",
+        ),
         # Two same-GID galleries exercise accepted-only analysis, rejection
         # tombstones and repaired-source restoration across three revisions.
         (
@@ -138,7 +182,7 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
         ),
         (
             "test_vnext_generated_epoch_e2e.py",
-            "test_default_generated_epoch_end_to_end_on_live_mariadb",
+            "test_default_generated_epoch_end_to_end_on_both_backends",
         ),
         (
             "test_vnext_pipeline_workflows.py",
@@ -163,6 +207,10 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
             "test_live_mariadb_fresh_facades_serialize_competing_first_bind",
         ),
     }
+    assert _declared_mariadb_smoke_inventory() == expected
+
+
+def _declared_mariadb_smoke_inventory() -> set[tuple[str, str]]:
     observed: set[tuple[str, str]] = set()
     for path in sorted((REPOSITORY_ROOT / "tests").glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -181,7 +229,105 @@ def test_mariadb_smoke_inventory_is_exact_and_reviewable() -> None:
                     ):
                         observed.add((path.name, node.name))
 
-    assert observed == expected
+    return observed
+
+
+def test_reviewed_mariadb_smoke_cases_are_actually_collected_without_deep() -> None:
+    environment = dict(os.environ, H2HDB_TEST_MARIADB="0")
+    environment.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-o",
+            "addopts=",
+            "-n",
+            "0",
+            "--collect-only",
+            "--strict-markers",
+            "-m",
+            "mariadb_smoke and mariadb and not deep",
+            "-q",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nodeids = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+    actual = Counter(
+        (Path(node.split("::")[0]).name, node.split("::")[1].split("[")[0])
+        for node in nodeids
+    )
+    expected = _declared_mariadb_smoke_inventory()
+    assert set(actual) == expected
+    # Most families admit one native case; the small corruption regressions
+    # retain both canonical faults and all three checkpoint refusal branches.
+    counts = dict.fromkeys(expected, 1)
+    counts[
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rejects_canonical_corruption_without_writes",
+        )
+    ] = 2
+    counts[
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_issue_rejects_checkpoint_corruption_without_writes",
+        )
+    ] = 3
+    counts[
+        (
+            "test_vnext_publication_corruption.py",
+            "test_publication_prepare_rechecks_issued_checkpoint_without_writes",
+        )
+    ] = 2
+    assert actual == counts
+
+
+@pytest.mark.parametrize(
+    ("filename", "markers", "live", "reject"),
+    [
+        ("test_small.py", ("mariadb_smoke", "deep"), True, True),
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("mariadb_smoke", "merge_smoke", "deep"),
+            True,
+            True,
+        ),
+        # Heavy files still need their independent merge-smoke exemption.
+        (
+            "test_vnext_pipeline_workflows.py",
+            ("mariadb_smoke", "deep"),
+            True,
+            False,
+        ),
+        ("test_small.py", ("deep",), True, False),
+        ("test_small.py", ("mariadb_smoke", "deep"), False, False),
+    ],
+)
+def test_explicit_deep_cannot_silently_hide_an_eligible_native_smoke(
+    filename: str, markers: tuple[str, ...], live: bool, reject: bool
+) -> None:
+    if reject:
+        with pytest.raises(
+            ValueError, match="smoke case also explicitly declares deep"
+        ):
+            validate_smoke_profile_markers(
+                test_file_name=filename, marker_names=markers, live_mariadb=live
+            )
+    else:
+        validate_smoke_profile_markers(
+            test_file_name=filename, marker_names=markers, live_mariadb=live
+        )
 
 
 @pytest.mark.parametrize(

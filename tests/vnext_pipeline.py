@@ -14,6 +14,7 @@ import dataclasses
 import struct
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from datetime import datetime
 from enum import Enum
 from hashlib import sha256
@@ -756,6 +757,41 @@ class IngestTurnReceipts:
 Boundary = Callable[[str], None] | None
 
 
+@dataclasses.dataclass
+class SessionOwner:
+    """A test client that retains the exact capability returned by renewal."""
+
+    facade: VNextIngestFacade
+    current: VNextIngestSession
+    lease_duration: int
+    clock: Callable[[], int]
+    renewals: int = 0
+
+    def heartbeat(self) -> None:
+        deadline = min(
+            self.current.gate_lease_expires_at,
+            self.current.ingest_lease_expires_at,
+        )
+        if deadline - self.clock() <= self.lease_duration // 2:
+            self.current = self.facade.renew_ingest(self.current, self.lease_duration)
+            self.renewals += 1
+
+
+def _session_at_boundary(
+    facade: VNextIngestFacade,
+    session: VNextIngestSession | SessionOwner,
+    boundary: Boundary,
+    label: str,
+) -> VNextIngestSession:
+    if isinstance(session, SessionOwner):
+        assert session.facade is facade
+        session.heartbeat()
+        _notify(boundary, label)
+        return session.current
+    _notify(boundary, label)
+    return session
+
+
 def _notify(boundary: Boundary, label: str) -> None:
     if boundary is not None:
         boundary(label)
@@ -763,7 +799,7 @@ def _notify(boundary: Boundary, label: str) -> None:
 
 def run_source(
     facade: VNextIngestFacade,
-    session: VNextIngestSession,
+    session: VNextIngestSession | SessionOwner,
     policy: VNextResolvedIngestPolicy,
     source: MemorySource,
     *,
@@ -772,11 +808,13 @@ def run_source(
 ) -> VNextIngestSourceReceipt:
     with facade.prepare_source(source, policy=policy) as prepared:
         for _ in range(step_budget):
-            _notify(boundary, "source.issue")
-            issued = facade.issue_source_step(session, policy, prepared)
+            current = _session_at_boundary(facade, session, boundary, "source.issue")
+            issued = facade.issue_source_step(current, policy, prepared)
             local = facade.prepare_source_step(prepared, issued)
-            _notify(boundary, f"source.commit:{issued._action.value}")
-            result = facade.commit_source_step(session, local)
+            current = _session_at_boundary(
+                facade, session, boundary, f"source.commit:{issued._action.value}"
+            )
+            result = facade.commit_source_step(current, local)
             if result.phase is not VNextIngestPhase.SOURCE:
                 raise RuntimeError("source advancement returned another phase")
             if result.terminal:
@@ -810,7 +848,7 @@ def collect_source(
 
 def run_analysis(
     facade: VNextIngestFacade,
-    session: VNextIngestSession,
+    session: VNextIngestSession | SessionOwner,
     policy: VNextResolvedIngestPolicy,
     build_id: bytes,
     *,
@@ -821,8 +859,8 @@ def run_analysis(
     prepared = facade.prepare_analysis(build_id, policy, max_rows=max_rows)
     with prepared:
         for _ in range(step_budget):
-            _notify(boundary, "analysis.issue")
-            issued = facade.issue_analysis_step(session, prepared)
+            current = _session_at_boundary(facade, session, boundary, "analysis.issue")
+            issued = facade.issue_analysis_step(current, prepared)
             local = facade.prepare_analysis_step(prepared, issued)
             payload = issued._payload
             stage = (
@@ -830,8 +868,10 @@ def run_analysis(
                 if payload is not None and payload.stage is not None
                 else "none"
             )
-            _notify(boundary, f"analysis.commit:{stage}")
-            result = facade.commit_analysis_step(session, local)
+            current = _session_at_boundary(
+                facade, session, boundary, f"analysis.commit:{stage}"
+            )
+            result = facade.commit_analysis_step(current, local)
             if result.terminal:
                 if (
                     not result.stage_terminal
@@ -845,7 +885,7 @@ def run_analysis(
 
 def run_publication(
     facade: VNextIngestFacade,
-    session: VNextIngestSession,
+    session: VNextIngestSession | SessionOwner,
     policy: VNextResolvedIngestPolicy,
     library: MemoryLibrary,
     *,
@@ -854,8 +894,8 @@ def run_publication(
 ) -> VNextIngestAdvanceResult:
     adapters = {library.adapter_id: library}
     for _ in range(step_budget):
-        _notify(boundary, "publication.issue")
-        issued = facade.issue_publication_step(session, policy)
+        current = _session_at_boundary(facade, session, boundary, "publication.issue")
+        issued = facade.issue_publication_step(current, policy)
         prepared = facade.prepare_publication_step(
             issued,
             artifact_adapters=adapters,
@@ -863,8 +903,10 @@ def run_publication(
             library_activation=library,
         )
         with prepared:
-            _notify(boundary, f"publication.commit:{issued.operation}")
-            result = facade.commit_publication_step(session, prepared)
+            current = _session_at_boundary(
+                facade, session, boundary, f"publication.commit:{issued.operation}"
+            )
+            result = facade.commit_publication_step(current, prepared)
         if result.phase not in {
             VNextIngestPhase.PUBLICATION,
             VNextIngestPhase.FINALIZATION,
@@ -879,7 +921,7 @@ def run_publication(
 
 def run_publication_recovery(
     facade: VNextIngestFacade,
-    session: VNextIngestSession,
+    session: VNextIngestSession | SessionOwner,
     library: MemoryLibrary,
     *,
     step_budget: int = 10_000,
@@ -889,8 +931,10 @@ def run_publication_recovery(
 
     adapters = {library.adapter_id: library}
     for _ in range(step_budget):
-        _notify(boundary, "publication-recovery.issue")
-        issued = facade.try_issue_publication_recovery_step(session)
+        current = _session_at_boundary(
+            facade, session, boundary, "publication-recovery.issue"
+        )
+        issued = facade.try_issue_publication_recovery_step(current)
         if issued is None:
             return None
         prepared = facade.prepare_publication_step(
@@ -900,8 +944,13 @@ def run_publication_recovery(
             library_activation=library,
         )
         with prepared:
-            _notify(boundary, f"publication-recovery.commit:{issued.operation}")
-            result = facade.commit_publication_step(session, prepared)
+            current = _session_at_boundary(
+                facade,
+                session,
+                boundary,
+                f"publication-recovery.commit:{issued.operation}",
+            )
+            result = facade.commit_publication_step(current, prepared)
         if result.phase is not VNextIngestPhase.FINALIZATION:
             raise RuntimeError("publication recovery returned another phase")
         if result.terminal:
@@ -935,21 +984,22 @@ def run_ingest_turn(
     policy: VNextIngestPolicy | None = None,
     periodic: bool = True,
     max_rows: int = 128,
-    session: VNextIngestSession | None = None,
+    session: VNextIngestSession | SessionOwner | None = None,
     boundary: Boundary = None,
 ) -> IngestTurnReceipts:
     """Drive one complete source-to-finalization turn and complete ingest.
 
-    ``boundary`` is invoked with a label immediately before every facade call
-    that opens a fenced write transaction; tests use it to inject concurrent
-    authority changes at every mutation boundary.
+    ``boundary`` labels each workflow mutation; tests use it to inject concurrent
+    authority changes. An optional ``SessionOwner`` performs public heartbeat
+    renewal before those boundaries and supplies its latest exact capability.
+    Preparation is synchronous: work that itself outlives its lease still fails.
     """
 
     if session is None:
         _notify(boundary, "claim")
         session = claim_session(facade, periodic=periodic)
-    _notify(boundary, "ensure_policy")
-    resolved = facade.ensure_policy(session, policy or ingest_policy())
+    current = _session_at_boundary(facade, session, boundary, "ensure_policy")
+    resolved = facade.ensure_policy(current, policy or ingest_policy())
     run_publication_recovery(
         facade,
         session,
@@ -966,10 +1016,10 @@ def run_ingest_turn(
         boundary=boundary,
     )
     publication = run_publication(facade, session, resolved, library, boundary=boundary)
-    _notify(boundary, "complete")
-    completion = facade.complete_ingest(session)
+    current = _session_at_boundary(facade, session, boundary, "complete")
+    completion = facade.complete_ingest(current)
     return IngestTurnReceipts(
-        session,
+        current,
         resolved,
         source_receipt,
         analysis,
@@ -1000,7 +1050,8 @@ def drain_maintenance(
 
 
 def initialize_database(config: CoreConfig) -> SchemaProvisioningReport:
-    report = VNextDatabaseAdminFacade(config).initialize()
+    with closing(VNextDatabaseAdminFacade(config)) as admin:
+        report = admin.initialize()
     if report.state != "READY":
         raise RuntimeError("epoch initialization did not reach READY")
     return report
@@ -1009,7 +1060,8 @@ def initialize_database(config: CoreConfig) -> SchemaProvisioningReport:
 def full_check(config: CoreConfig) -> SchemaEpochReport:
     """Run the complete production READY audit (every wheel validator)."""
 
-    return VNextDatabaseAdminFacade(config).check()
+    with closing(VNextDatabaseAdminFacade(config)) as admin:
+        return admin.check()
 
 
 def _canonical(value: object) -> object:
@@ -1035,46 +1087,50 @@ def _canonical(value: object) -> object:
 def catalog_view(config: CoreConfig) -> dict[str, Any]:
     """Public observable catalog state, timestamp-free, for equivalence checks."""
 
-    facade = VNextCatalogFacade(config)
-    revision = facade.get_catalog_revision()
-    page = facade.discover_publications(revision=revision, limit=128)
-    publications: list[dict[str, Any]] = []
-    for publication in page.publications:
-        presentation = facade.get_publication_presentation(
-            publication.publication_id,
-            revision=revision,
-        )
-        publications.append(
-            {
-                "publication": _canonical(publication),
-                "presentation": _canonical(presentation),
-                "artifacts": [
-                    _canonical(facade.get_artifact(item.artifact_id, revision=revision))
-                    for item in publication.artifacts
-                ],
-            }
-        )
-    facets = {
-        facet.value: _canonical(
-            facade.list_publication_facets(facet=facet, revision=revision, limit=128)
-        )
-        for facet in CatalogFacetKind
-    }
-    recent = {
-        order.value: _canonical(
-            facade.list_recent_publications(order=order, revision=revision)
-        )
-        for order in CatalogRecentOrder
-    }
-    return {
-        "revision": revision.revision,
-        "publication_count": revision.publication_count,
-        "artifact_count": revision.artifact_count,
-        "publications": publications,
-        "facets": facets,
-        "recent": recent,
-        "next_cursor": _canonical(page.next_cursor),
-    }
+    with closing(VNextCatalogFacade(config)) as facade:
+        revision = facade.get_catalog_revision()
+        page = facade.discover_publications(revision=revision, limit=128)
+        publications: list[dict[str, Any]] = []
+        for publication in page.publications:
+            presentation = facade.get_publication_presentation(
+                publication.publication_id,
+                revision=revision,
+            )
+            publications.append(
+                {
+                    "publication": _canonical(publication),
+                    "presentation": _canonical(presentation),
+                    "artifacts": [
+                        _canonical(
+                            facade.get_artifact(item.artifact_id, revision=revision)
+                        )
+                        for item in publication.artifacts
+                    ],
+                }
+            )
+        facets = {
+            facet.value: _canonical(
+                facade.list_publication_facets(
+                    facet=facet, revision=revision, limit=128
+                )
+            )
+            for facet in CatalogFacetKind
+        }
+        recent = {
+            order.value: _canonical(
+                facade.list_recent_publications(order=order, revision=revision)
+            )
+            for order in CatalogRecentOrder
+        }
+        return {
+            "revision": revision.revision,
+            "publication_count": revision.publication_count,
+            "artifact_count": revision.artifact_count,
+            "publications": publications,
+            "facets": facets,
+            "recent": recent,
+            "next_cursor": _canonical(page.next_cursor),
+        }
 
 
 def library_view(library: MemoryLibrary) -> dict[str, Any]:

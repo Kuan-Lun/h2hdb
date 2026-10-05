@@ -5,10 +5,16 @@ from unittest.mock import patch
 
 import pytest
 from vnext_catalog_registry_fixtures import seed_manifest_policy
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    open_generated_database,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
@@ -31,13 +37,14 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    seed_manifest_policy(connector)
+def _database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    with connector.transaction():
+        seed_manifest_policy(connector)
     return connector
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with (
         connector.transaction(),
         patch(
@@ -46,13 +53,13 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
         ),
     ):
         gate = MaintenanceGateRepository.claim_shared(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=10,
             lease_duration=10_000,
         )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=10_000,
@@ -61,7 +68,7 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _put(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: CanonicalValueUploadPlan,
@@ -70,7 +77,7 @@ def _put(
 ) -> None:
     with connector.transaction():
         CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -79,7 +86,7 @@ def _put(
     for page in plan.iter_pages():
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -88,7 +95,7 @@ def _put(
             )
     with connector.transaction():
         CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -97,7 +104,7 @@ def _put(
 
 
 def _ready_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
 ) -> None:
@@ -110,7 +117,7 @@ def _ready_build(
         _put(connector, gate, turn, root, start=20)
         with connector.transaction():
             SourceBuildRepository.handoff_root(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 command=command,
@@ -135,8 +142,10 @@ def _plans() -> tuple[CanonicalValueUploadPlan, CanonicalValueUploadPlan]:
     )
 
 
-def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "hash-cache.sqlite3")
+def test_hash_cache_handoff_replay_exact_lookup_and_miss(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(database_factory.config(str(tmp_path / "hash-cache.sqlite3")))
     source, fingerprint = _plans()
     try:
         gate, turn = _authorities(connector)
@@ -146,7 +155,7 @@ def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None
         file_plan = FileHashObservationPlan.from_parts((b"file-", b"bytes"))
         with connector.transaction():
             first = VNextHashCacheRepository.handoff(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 source_plan=source,
@@ -158,7 +167,8 @@ def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None
             )
         assert not first.replayed
         assert (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE value_sha256 IN (%s, %s)",
                 (source.value_sha256, fingerprint.value_sha256),
@@ -167,7 +177,7 @@ def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None
         )
         with connector.transaction():
             replay = VNextHashCacheRepository.handoff(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 source_plan=source,
@@ -180,7 +190,7 @@ def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None
         assert replay.replayed
         with connector.read_transaction():
             hit = VNextHashCacheRepository.lookup_exact(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 source_plan=source,
                 fingerprint_plan=fingerprint,
             )
@@ -193,7 +203,9 @@ def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None
             with connector.read_transaction():
                 assert (
                     VNextHashCacheRepository.lookup_exact(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         source_plan=missing_source,
                         fingerprint_plan=fingerprint,
                     )
@@ -208,9 +220,12 @@ def test_hash_cache_handoff_replay_exact_lookup_and_miss(tmp_path: Path) -> None
 
 
 def test_hash_cache_handoff_crash_is_atomic_and_conflict_is_fail_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "hash-cache-crash.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "hash-cache-crash.sqlite3"))
+    )
     source, fingerprint = _plans()
     try:
         gate, turn = _authorities(connector)
@@ -221,7 +236,7 @@ def test_hash_cache_handoff_crash_is_atomic_and_conflict_is_fail_closed(
         with pytest.raises(RuntimeError, match="crash"):
             with connector.transaction():
                 VNextHashCacheRepository.handoff(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     source_plan=source,
@@ -233,12 +248,13 @@ def test_hash_cache_handoff_crash_is_atomic_and_conflict_is_fail_closed(
                 )
                 raise RuntimeError("crash")
         assert (
-            connector.fetch_all("SELECT 1 FROM operational_hash_cache_observations")
+            inspect_all(connector, "SELECT 1 FROM operational_hash_cache_observations")
             == []
         )
         assert (
             len(
-                connector.fetch_all(
+                inspect_all(
+                    connector,
                     "SELECT 1 FROM operational_canonical_value_uploads "
                     "WHERE value_sha256 IN (%s, %s)",
                     (source.value_sha256, fingerprint.value_sha256),
@@ -248,7 +264,7 @@ def test_hash_cache_handoff_crash_is_atomic_and_conflict_is_fail_closed(
         )
         with connector.transaction():
             VNextHashCacheRepository.handoff(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 source_plan=source,
@@ -263,7 +279,7 @@ def test_hash_cache_handoff_crash_is_atomic_and_conflict_is_fail_closed(
             pytest.raises(FileHashCacheConflictError, match="exact tuple"),
         ):
             VNextHashCacheRepository.handoff(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 source_plan=source,

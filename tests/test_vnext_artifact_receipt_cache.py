@@ -9,11 +9,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from vnext_test_database import DatabaseFactory
 
 import h2hdb.vnext_artifact_preparation_repository as artifact_repository
 import h2hdb.vnext_ingest_publication as publication
 from h2hdb import VNextSourceChangedError
-from h2hdb.config_loader import CoreConfig, DatabaseConfig
+from h2hdb.config_loader import CoreConfig
 from h2hdb.domain import (
     CatalogResourceKind,
     StorageObjectDescriptor,
@@ -173,10 +174,8 @@ class _ArtifactHarness:
         return SimpleNamespace(replayed=False)
 
 
-def _context(path: Path) -> RepositoryContext:
-    return RepositoryContext.from_config(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-    )
+def _context(config: CoreConfig) -> RepositoryContext:
+    return RepositoryContext.from_config(config)
 
 
 def _session() -> VNextIngestSession:
@@ -332,6 +331,7 @@ def _run_two_phase(
 
 
 def test_optional_receipt_cache_is_differentially_equivalent_and_renders_once(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -347,14 +347,16 @@ def test_optional_receipt_cache_is_differentially_equivalent_and_renders_once(
     optimized_costs, reference_costs = WorkCosts(), WorkCosts()
     with collect_ingest_work(optimized_costs, lambda: 0.0):
         optimized, optimized_renders, optimized_durable = _run_two_phase(
-            _context(tmp_path / "optimized.sqlite3"),
+            _context(database_factory.config(str(tmp_path / "optimized.sqlite3"))),
             harness,
             family,
             restart_after_pending=False,
         )
     with collect_ingest_work(reference_costs, lambda: 0.0):
         reference, reference_renders, reference_durable = _run_two_phase(
-            _context(tmp_path / "restart-reference.sqlite3"),
+            _context(
+                database_factory.config(str(tmp_path / "restart-reference.sqlite3"))
+            ),
             harness,
             family,
             restart_after_pending=True,
@@ -387,6 +389,7 @@ def test_optional_receipt_cache_is_differentially_equivalent_and_renders_once(
     ],
 )
 def test_cached_source_failure_matches_restart_reference(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     error_type: type[RuntimeError],
@@ -405,14 +408,18 @@ def test_cached_source_failure_matches_restart_reference(
     pending = _work(authority, (family,))
 
     optimized = publication.VNextIngestPublication(
-        _context(tmp_path / "optimized-source-failure.sqlite3"),
+        _context(
+            database_factory.config(str(tmp_path / "optimized-source-failure.sqlite3"))
+        ),
         clock=lambda: 10,
     )
     _commit(optimized, session, initial, _prepare(optimized, initial))
     optimized_receipt = harness.receipts[-1]
 
     reference = publication.VNextIngestPublication(
-        _context(tmp_path / "restart-source-failure.sqlite3"),
+        _context(
+            database_factory.config(str(tmp_path / "restart-source-failure.sqlite3"))
+        ),
         clock=lambda: 10,
     )
     _commit(reference, session, initial, _prepare(reference, initial))
@@ -421,7 +428,9 @@ def test_cached_source_failure_matches_restart_reference(
     gc.collect()
     assert reference_receipt.close_count == 1
     reference = publication.VNextIngestPublication(
-        _context(tmp_path / "restart-source-failure.sqlite3"),
+        _context(
+            database_factory.config(str(tmp_path / "restart-source-failure.sqlite3"))
+        ),
         clock=lambda: 10,
     )
 
@@ -438,6 +447,7 @@ def test_cached_source_failure_matches_restart_reference(
 
 
 def test_response_loss_after_pending_commit_does_not_retain_local_receipt(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -449,7 +459,7 @@ def test_response_loss_after_pending_commit_does_not_retain_local_receipt(
     intent, family = _intent_and_family(authority)
     harness = _ArtifactHarness(authority, intent)
     harness.install(monkeypatch)
-    context = _context(tmp_path / "response-loss.sqlite3")
+    context = _context(database_factory.config(str(tmp_path / "response-loss.sqlite3")))
     original_factory = context.SQLConnector
     lose_response = {"enabled": True}
 
@@ -485,6 +495,7 @@ def test_response_loss_after_pending_commit_does_not_retain_local_receipt(
 
 
 def test_oversized_receipt_is_closed_instead_of_retained(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -498,7 +509,7 @@ def test_oversized_receipt_is_closed_instead_of_retained(
     harness.receipt_size_bytes = 256 * 1024 * 1024 + 1
     harness.install(monkeypatch)
     machine = publication.VNextIngestPublication(
-        _context(tmp_path / "oversized-receipt.sqlite3"),
+        _context(database_factory.config(str(tmp_path / "oversized-receipt.sqlite3"))),
         clock=lambda: 10,
     )
     session = _session()
@@ -548,6 +559,7 @@ def test_cache_capacity_counts_acquisition_and_thumbnail_at_exact_boundary() -> 
 
 
 def test_authority_drift_and_cached_audit_drift_use_reference_rerender(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -562,7 +574,7 @@ def test_authority_drift_and_cached_audit_drift_use_reference_rerender(
     session = _session()
 
     drift_machine = publication.VNextIngestPublication(
-        _context(tmp_path / "authority-drift.sqlite3"),
+        _context(database_factory.config(str(tmp_path / "authority-drift.sqlite3"))),
         clock=lambda: 10,
     )
     initial = _work(authority, None)
@@ -581,7 +593,7 @@ def test_authority_drift_and_cached_audit_drift_use_reference_rerender(
     assert _cached(drift_machine) is None
 
     audit_machine = publication.VNextIngestPublication(
-        _context(tmp_path / "audit-drift.sqlite3"),
+        _context(database_factory.config(str(tmp_path / "audit-drift.sqlite3"))),
         clock=lambda: 10,
     )
     _commit(audit_machine, session, initial, _prepare(audit_machine, initial))
@@ -616,6 +628,7 @@ def test_authority_drift_and_cached_audit_drift_use_reference_rerender(
 
 
 def test_cached_audit_drift_rerender_failure_fails_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -628,7 +641,11 @@ def test_cached_audit_drift_rerender_failure_fails_closed(
     harness = _ArtifactHarness(authority, intent)
     harness.install(monkeypatch)
     machine = publication.VNextIngestPublication(
-        _context(tmp_path / "audit-drift-rerender-failure.sqlite3"),
+        _context(
+            database_factory.config(
+                str(tmp_path / "audit-drift-rerender-failure.sqlite3")
+            )
+        ),
         clock=lambda: 10,
     )
     session = _session()
@@ -655,6 +672,7 @@ def test_cached_audit_drift_rerender_failure_fails_closed(
 
 
 def test_prepared_close_and_protection_failure_release_exclusive_ownership(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -668,7 +686,7 @@ def test_prepared_close_and_protection_failure_release_exclusive_ownership(
     harness.install(monkeypatch)
     session = _session()
     machine = publication.VNextIngestPublication(
-        _context(tmp_path / "close-and-fault.sqlite3"),
+        _context(database_factory.config(str(tmp_path / "close-and-fault.sqlite3"))),
         clock=lambda: 10,
     )
     initial = _work(authority, None)

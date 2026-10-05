@@ -3,12 +3,17 @@ import platform
 import subprocess
 import uuid
 from collections.abc import Collection, Iterator, Mapping
+from contextlib import ExitStack, closing, contextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_test_database import DatabaseFactory, database_connection_lifetime
 
 from h2hdb import CoreConfig, DatabaseConfig
+
+pytest_plugins = ("backend_contract",)
 
 MARIADB_IMAGE = "mariadb:10.11.11"
 MARIADB_VERSION_PREFIX = "10.11.11-"
@@ -127,11 +132,17 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 def live_mariadb_xdist_group(
     fixture_names: Collection[str],
     parameters: Mapping[str, object],
+    *,
+    declared_live: bool = False,
 ) -> str | None:
     if (
-        "mariadb_container" in fixture_names
+        declared_live
+        or "mariadb_container" in fixture_names
         or "mariadb_config" in fixture_names
-        or parameters.get("db_config") == "mariadb"
+        or any(
+            parameters.get(name) == "mariadb"
+            for name in ("db_config", "database_factory")
+        )
     ):
         return MARIADB_XDIST_GROUP
     return None
@@ -151,6 +162,21 @@ def item_requires_deep_profile(
         live_mariadb and "mariadb_smoke" not in declared_markers
     )
     return heavy_file_requires_deep or live_mariadb_requires_deep
+
+
+def validate_smoke_profile_markers(
+    *, test_file_name: str, marker_names: Collection[str], live_mariadb: bool
+) -> None:
+    if (
+        live_mariadb
+        and {"mariadb_smoke", "deep"}.issubset(marker_names)
+        and not item_requires_deep_profile(
+            test_file_name=test_file_name,
+            marker_names=marker_names,
+            live_mariadb=live_mariadb,
+        )
+    ):
+        raise ValueError("eligible MariaDB smoke case also explicitly declares deep")
 
 
 def _item_fixture_names(item: pytest.Item) -> tuple[str, ...]:
@@ -213,6 +239,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         group_name = live_mariadb_xdist_group(
             _item_fixture_names(item),
             _item_parameters(item),
+            declared_live=item.get_closest_marker("mariadb") is not None,
         )
         live_mariadb = group_name is not None
         if group_name is not None:
@@ -230,9 +257,18 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 )
             item.add_marker(pytest.mark.mariadb, append=False)
 
+        markers = {marker.name for marker in item.iter_markers()}
+        try:
+            validate_smoke_profile_markers(
+                test_file_name=item.path.name,
+                marker_names=markers,
+                live_mariadb=live_mariadb,
+            )
+        except ValueError as error:
+            raise pytest.UsageError(f"{item.nodeid} {error}") from error
         if item_requires_deep_profile(
             test_file_name=item.path.name,
-            marker_names={marker.name for marker in item.iter_markers()},
+            marker_names=markers,
             live_mariadb=live_mariadb,
         ):
             item.add_marker(pytest.mark.deep, append=False)
@@ -292,8 +328,8 @@ def mariadb_container(
         container.stop()
 
 
-@pytest.fixture
-def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
+@contextmanager
+def _mariadb_database(mariadb_container: Any) -> Iterator[CoreConfig]:
     try:
         import mysql.connector
     except ImportError as error:
@@ -340,7 +376,8 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
         )
     )
     try:
-        yield config
+        with database_connection_lifetime(config):
+            yield config
     finally:
         admin_connection = mysql.connector.connect(
             host=host, port=port, user="root", password=MARIADB_ROOT_PASSWORD
@@ -351,6 +388,101 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
             admin_connection.commit()
         finally:
             admin_connection.close()
+
+
+@pytest.fixture
+def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
+    with _mariadb_database(mariadb_container) as config:
+        yield config
+
+
+_FACTORY_BACKENDS = (
+    pytest.param("sqlite", id="sqlite"),
+    # The centralized classifier owns deep selection, including smoke exemptions.
+    pytest.param("mariadb", id="mariadb", marks=pytest.mark.mariadb),
+)
+
+
+@contextmanager
+def _owned_database_factory(
+    request: pytest.FixtureRequest, tmp_path: Path, backend: str
+) -> Iterator[DatabaseFactory]:
+    with ExitStack() as cleanup:
+        if backend == "sqlite":
+
+            def allocate(name: str) -> CoreConfig:
+                key = sha256(name.encode()).hexdigest()
+                return CoreConfig(
+                    database=DatabaseConfig(
+                        sql_type="sqlite", database=str(tmp_path / f"{key}.sqlite3")
+                    )
+                )
+
+            def dispose_sqlite(config: CoreConfig) -> None:
+                path = Path(config.database.database)
+                for owned_path in (
+                    path,
+                    Path(str(path) + "-wal"),
+                    Path(str(path) + "-shm"),
+                ):
+                    owned_path.unlink(missing_ok=True)
+
+            with closing(
+                DatabaseFactory("sqlite", allocate, dispose_sqlite)
+            ) as factory:
+                yield factory
+        else:
+            container = request.getfixturevalue("mariadb_container")
+
+            databases: dict[str, ExitStack] = {}
+
+            def allocate_mariadb(_name: str) -> CoreConfig:
+                lifetime = ExitStack()
+                cleanup.callback(lifetime.close)
+                config = lifetime.enter_context(_mariadb_database(container))
+                databases[config.database.database] = lifetime
+                return config
+
+            def dispose_mariadb(config: CoreConfig) -> None:
+                databases.pop(config.database.database).close()
+
+            with closing(
+                DatabaseFactory("mariadb", allocate_mariadb, dispose_mariadb)
+            ) as factory:
+                yield factory
+
+
+@pytest.fixture(params=_FACTORY_BACKENDS)
+def database_factory(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> Iterator[DatabaseFactory]:
+    """Own every named native database used by one portable test."""
+    with _owned_database_factory(request, tmp_path, request.param) as factory:
+        yield factory
+
+
+@pytest.fixture(scope="module", params=_FACTORY_BACKENDS)
+def module_database_factory(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[DatabaseFactory]:
+    """Own immutable fault corpora and reusable targets across one module."""
+    with _owned_database_factory(
+        request, tmp_path_factory.mktemp("fault-corpora"), request.param
+    ) as factory:
+        yield factory
+
+
+@pytest.fixture
+def mariadb_database_factory(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> Iterator[DatabaseFactory]:
+    """Named native databases for explicitly engine-specific MariaDB contracts.
+
+    The connection guard still requires a backend_specific reason on each case;
+    portable cases must instead use the parametrized database_factory.
+    """
+    with _owned_database_factory(request, tmp_path, "mariadb") as factory:
+        yield factory
 
 
 @pytest.fixture

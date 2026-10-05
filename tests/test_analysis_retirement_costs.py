@@ -11,6 +11,7 @@ from vnext_analysis_fixtures import seed_analysis_run
 from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 from vnext_publication_cleanup_fixtures import partial_publication_setup
+from vnext_test_database import atomic_fixture
 
 import h2hdb.vnext_cleanup_repository as cleanup
 from h2hdb import CoreConfig
@@ -68,6 +69,7 @@ class _Sample:
     queries: tuple[str, ...]
 
 
+@atomic_fixture
 def _seed_run(connector: SQLConnector, identity: bytes, files: int) -> None:
     seed_analysis_run(
         connector,
@@ -252,10 +254,10 @@ def test_analysis_retirement_repeated_cycles_revalidate_retained_sibling(
 
 
 def test_analysis_cost_oracle_rejects_original_scalar_path(
-    sqlite_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
+    db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     files = 65
-    gate, cycle = _seed(sqlite_config, files)
+    gate, cycle = _seed(db_config, files)
     plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.ANALYSIS_RUN]
     with monkeypatch.context() as patch:
         for phase in _FACTS:
@@ -267,6 +269,6 @@ def test_analysis_cost_oracle_rejects_original_scalar_path(
                     for spec in plan.phases[phase]
                 ),
             )
-        samples = _drain(sqlite_config, gate, cycle, monkeypatch, files=files)
+        samples = _drain(db_config, gate, cycle, monkeypatch, files=files)
     with pytest.raises(AssertionError, match="SQL cost"):
         _assert_costs(samples, files=files)

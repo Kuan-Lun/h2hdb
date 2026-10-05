@@ -1,7 +1,8 @@
 """Finite one-pass correspondence, source semantics, and rejected old-query cost.
 
 Dimensions: changed galleries, hashes per observation, unrelated history, and
-128-row page capacity. Units: connector rows/calls and SQLite VM instructions;
+128-row page capacity. Units: connector rows/calls, SQLite VM instructions,
+and MariaDB native Handler reads under the probe's existing indexed bound;
 wall time is diagnostic only. The independently retained UNION implementation
 must fail the same cost bound, so LIMIT alone cannot satisfy the regression.
 """
@@ -17,6 +18,13 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from vnext_test_database import (
+    DatabaseFactory,
+    generated_databases,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+)
 
 from h2hdb import vnext_analysis_repository as analysis
 from h2hdb.vnext_analysis_hash_keys import build_analysis_hash_key_plan
@@ -162,11 +170,11 @@ def test_changed_hash_page_rejects_forged_membership_and_coordinates(
     "galleries,hashes", [(127, 1), (128, 1), (129, 1), (2, 127), (2, 128), (2, 129)]
 )
 def test_runtime_source_pages_match_one_pass_cost_at_both_capacity_boundaries(
-    probe: ModuleType, galleries: int, hashes: int
+    database_factory: DatabaseFactory, probe: ModuleType, galleries: int, hashes: int
 ) -> None:
     shape = probe.Shape(galleries, hashes)
-    with probe.databases("sqlite", 1) as connections:
-        result = probe.measure_case(next(connections), "sqlite", shape)
+    with generated_databases(database_factory, 1) as connections:
+        result = probe.measure_case(next(connections), database_factory.backend, shape)
     assert result["source_calls"] == shape.source_calls
     assert result["source_memberships"] == galleries
     assert result["source_occurrences"] == 2 * galleries * hashes
@@ -174,12 +182,13 @@ def test_runtime_source_pages_match_one_pass_cost_at_both_capacity_boundaries(
 
 
 def test_unrelated_history_adds_no_source_calls_or_source_rows(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
     shapes = (probe.Shape(2, 129), probe.Shape(2, 129, 1000))
-    with probe.databases("sqlite", 2) as connections:
+    with generated_databases(database_factory, 2) as connections:
         results = [
-            probe.measure_case(connector, "sqlite", shape)
+            probe.measure_case(connector, database_factory.backend, shape)
             for connector, shape in zip(connections, shapes, strict=True)
         ]
     for name in (
@@ -189,38 +198,49 @@ def test_unrelated_history_adds_no_source_calls_or_source_rows(
         "unique_hashes",
     ):
         assert results[0][name] == results[1][name]
-    assert (
-        abs(results[0]["sqlite_vm_steps"] - results[1]["sqlite_vm_steps"])
-        <= 100 * shapes[0].source_calls
-    )
+    if database_factory.backend == "sqlite":
+        assert (
+            abs(results[0]["sqlite_vm_steps"] - results[1]["sqlite_vm_steps"])
+            <= 100 * shapes[0].source_calls
+        )
+    else:
+        assert results[0]["handler_read_delta"] == results[1]["handler_read_delta"]
 
 
 def test_deliberate_old_union_mutant_fails_actual_vm_work_bound(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
     shape = probe.Shape(32, 128)
-    with probe.databases("sqlite", 1) as connections:
+    with generated_databases(database_factory, 1) as connections:
         result = probe.measure_case(
-            next(connections), "sqlite", shape, complete_old=True
+            next(connections), database_factory.backend, shape, complete_old=True
         )
     reads = probe.Reads(
         calls=result["source_calls"],
         memberships=result["source_memberships"],
         occurrences=result["source_occurrences"],
-        vm_steps=result["sqlite_vm_steps"],
+        vm_steps=result["sqlite_vm_steps"] or 0,
     )
     probe.require_linear_source_cost(reads, shape)
-    reads.vm_steps = result["old"]["vm_steps"]
-    with pytest.raises(RuntimeError, match="VM work exceeds"):
-        probe.require_linear_source_cost(reads, shape)
+    if database_factory.backend == "sqlite":
+        reads.vm_steps = result["old"]["vm_steps"]
+        with pytest.raises(RuntimeError, match="VM work exceeds"):
+            probe.require_linear_source_cost(reads, shape)
+    else:
+        with pytest.raises(RuntimeError, match="MariaDB work exceeds"):
+            probe.require_mariadb_source_cost(
+                result["old"]["handler_read_delta"], shape
+            )
 
 
 def test_current_baseline_rejected_removed_added_and_duplicate_hash_semantics(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
-    with probe.databases("sqlite", 1) as connections:
+    with generated_databases(database_factory, 1) as connections:
         connector = next(connections)
-        probe.seed(connector, "sqlite", probe.Shape(5, 2, 20))
+        probe.seed(connector, database_factory.backend, probe.Shape(5, 2, 20))
         with connector.transaction():
             connector.execute(
                 "DELETE FROM catalog_source_build_galleries WHERE build_id = %s AND gallery_id = 1",
@@ -266,7 +286,7 @@ def test_current_baseline_rejected_removed_added_and_duplicate_hash_semantics(
             assert plan.source_page(after=None, limit=128) == expected
             assert plan.source_page(after=expected[2], limit=128) == expected[3:]
             assert (
-                tuple(row[0] for row in connector.fetch_all(*probe.old_query(None)))
+                tuple(row[0] for row in inspect_all(connector, *probe.old_query(None)))
                 == expected
             )
         finally:
@@ -284,6 +304,7 @@ def test_current_baseline_rejected_removed_added_and_duplicate_hash_semantics(
 
 @pytest.mark.parametrize("fault", ["working_slot", "changed_checkpoint"])
 def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failure(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fault: str,
@@ -291,7 +312,6 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
     from test_vnext_analysis_repository import (
         _authorities,
         _begin,
-        _generated_database,
         _run_stage,
         _seed_initial_snapshot,
     )
@@ -299,7 +319,7 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
     from h2hdb.vnext_analysis_hash_keys import AnalysisHashKeyPlan
     from h2hdb.vnext_transaction import VNextUnitOfWork
 
-    connector = _generated_database(tmp_path / "changed-hash-authority.sqlite3")
+    connector = open_generated_database(database_factory.config())
     plans: list[AnalysisHashKeyPlan] = []
     try:
         gate, turn = _authorities(connector)
@@ -319,7 +339,7 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
         )
         with connector.transaction():
             issue = analysis.AnalysisRepository.issue_next_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=database_factory.backend),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -347,10 +367,13 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
             analysis.AnalysisNotReadyError, match="working slot|input changed"
         ):
             analysis.AnalysisRepository.prepare_changed_hash_plan(
-                connector, backend="sqlite", authority=issue.preparation_authority
+                connector,
+                backend=database_factory.backend,
+                authority=issue.preparation_authority,
             )
         assert len(plans) == 1 and plans[0]._closed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_changed_file_hashes WHERE analysis_id = %s",
             (run.analysis_id,),
         ) == (0,)
@@ -359,11 +382,12 @@ def test_plan_rechecks_durable_source_authority_after_reads_and_closes_on_failur
 
 
 def test_preparation_progress_counts_galleries_instead_of_hashes(
+    database_factory: DatabaseFactory,
     probe: ModuleType,
 ) -> None:
-    with probe.databases("sqlite", 1) as connections:
+    with generated_databases(database_factory, 1) as connections:
         connector = next(connections)
-        probe.seed(connector, "sqlite", probe.Shape(2, 129))
+        probe.seed(connector, database_factory.backend, probe.Shape(2, 129))
         counts: list[int] = []
         keys = tuple(
             analysis._iter_changed_source_hashes(

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector, SQLiteDuplicateKeyError
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_download_ingest_repository import (
     DownloadCapabilityCollisionError,
     DownloadIngestCorruptionError,
@@ -20,32 +27,43 @@ from h2hdb.vnext_download_ingest_repository import (
 from h2hdb.vnext_transaction import StaleWriteError, VNextUnitOfWork
 
 
-class _FaultConnector(SQLiteConnector):
+@dataclass
+class _Faults:
     fail_fragment: str | None = None
     fail_affected_fragment: str | None = None
 
-    def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
-        if self.fail_fragment is not None and self.fail_fragment in query:
-            raise RuntimeError("injected coordinated transaction failure")
-        super().execute(query, data)
 
-    def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
+def _install_faults(
+    connector: SQLConnector, monkeypatch: pytest.MonkeyPatch
+) -> _Faults:
+    faults = _Faults()
+    original_execute = connector.execute
+    original_affected = connector.execute_affected
+
+    def execute(query: str, data: tuple[Any, ...] = ()) -> None:
+        if faults.fail_fragment is not None and faults.fail_fragment in query:
+            raise RuntimeError("injected coordinated transaction failure")
+        original_execute(query, data)
+
+    def affected(query: str, data: tuple[Any, ...] = ()) -> int:
         if (
-            self.fail_affected_fragment is not None
-            and self.fail_affected_fragment in query
+            faults.fail_affected_fragment is not None
+            and faults.fail_affected_fragment in query
         ):
             return 0
-        return super().execute_affected(query, data)
+        return original_affected(query, data)
+
+    monkeypatch.setattr(connector, "execute", execute)
+    monkeypatch.setattr(connector, "execute_affected", affected)
+    return faults
 
 
-def _generated_database(
-    path: Path, *, connector_type: type[SQLiteConnector] = SQLiteConnector
-) -> SQLiteConnector:
-    return open_generated_sqlite_database(path, connector_type=connector_type)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
 def _claim_download(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
     token: bytes,
     *,
@@ -58,72 +76,86 @@ def _claim_download(
     )
     with connector.transaction():
         return DownloadIngestRepository.claim_download(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             now=now,
             lease_duration=duration,
         )
 
 
-def _snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
+def _snapshot(connector: SQLConnector) -> tuple[object, ...]:
     return (
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT generation, started_at, completed_at "
-            "FROM operational_download_generations ORDER BY generation"
+            "FROM operational_download_generations ORDER BY generation",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT current_generation, completed_generation, last_transition_at "
-            "FROM operational_download_coordination_heads"
+            "FROM operational_download_coordination_heads",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT generation, owner_token, claimed_at, lease_expires_at "
-            "FROM operational_download_generation_owners ORDER BY generation"
+            "FROM operational_download_generation_owners ORDER BY generation",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT download_generation, owner_token, handoff_kind, requested_at "
-            "FROM operational_download_ingest_handoffs ORDER BY download_generation"
+            "FROM operational_download_ingest_handoffs ORDER BY download_generation",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT download_generation, ingest_generation, consumed_at "
             "FROM operational_download_ingest_consumptions "
-            "ORDER BY download_generation"
+            "ORDER BY download_generation",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT ingest_generation, owner_token, completed_at "
             "FROM operational_coordinated_ingest_completions "
-            "ORDER BY ingest_generation"
+            "ORDER BY ingest_generation",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT generation, started_at, completed_at "
-            "FROM operational_ingest_generations ORDER BY generation"
+            "FROM operational_ingest_generations ORDER BY generation",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT current_generation, completed_generation, phase "
-            "FROM operational_ingest_coordination_heads"
+            "FROM operational_ingest_coordination_heads",
         ),
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT generation, owner_token, claimed_at, lease_expires_at "
-            "FROM operational_ingest_generation_owners ORDER BY generation"
+            "FROM operational_ingest_generation_owners ORDER BY generation",
         ),
     )
 
 
 def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connector = _generated_database(tmp_path / "download-handoff.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "download-handoff.sqlite3"))
+    )
     try:
         turn = _claim_download(connector, monkeypatch, b"d" * 16, now=10, duration=50)
         assert turn == DownloadTurn(1, b"d" * 16, 60)
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT generation, started_at, completed_at "
-            "FROM operational_download_generations ORDER BY generation"
+            "FROM operational_download_generations ORDER BY generation",
         ) == [(0, 10, 10), (1, 10, None)]
 
         before_resume = _snapshot(connector)
         with connector.transaction():
             assert (
                 DownloadIngestRepository.resume_download(
-                    VNextUnitOfWork(connector, backend="sqlite"), turn, now=20
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    turn,
+                    now=20,
                 )
                 == turn
             )
@@ -135,12 +167,15 @@ def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
 
         with connector.transaction():
             handoff = DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"), turn, now=25
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                turn,
+                now=25,
             )
         assert handoff.handoff_kind is HandoffKind.DOWNLOADER
         assert (
-            connector.fetch_all(
-                "SELECT generation FROM operational_download_generation_owners"
+            inspect_all(
+                connector,
+                "SELECT generation FROM operational_download_generation_owners",
             )
             == []
         )
@@ -149,7 +184,9 @@ def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
         with connector.transaction():
             assert (
                 DownloadIngestRepository.handoff_download(
-                    VNextUnitOfWork(connector, backend="sqlite"), turn, now=25
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    turn,
+                    now=25,
                 )
                 == handoff
             )
@@ -158,13 +195,17 @@ def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
         with pytest.raises(DownloadIngestReplayMismatchError, match="replay tuple"):
             with connector.transaction():
                 DownloadIngestRepository.handoff_download(
-                    VNextUnitOfWork(connector, backend="sqlite"), turn, now=26
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    turn,
+                    now=26,
                 )
         assert _snapshot(connector) == committed
         with pytest.raises(DownloadIngestUnavailableError, match="stale"):
             with connector.transaction():
                 DownloadIngestRepository.resume_download(
-                    VNextUnitOfWork(connector, backend="sqlite"), turn, now=26
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    turn,
+                    now=26,
                 )
         assert _snapshot(connector) == committed
     finally:
@@ -172,10 +213,13 @@ def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
 
 
 def test_recoverable_handoff_and_exact_completion_poll(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _generated_database(tmp_path / "download-handoff-poll.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "download-handoff-poll.sqlite3"))
+    )
     try:
         turn = _claim_download(
             connector,
@@ -186,14 +230,14 @@ def test_recoverable_handoff_and_exact_completion_poll(
         )
         with connector.transaction():
             handoff = DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn,
                 now=20,
                 recover_existing=True,
             )
         with connector.transaction():
             recovered = DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 turn,
                 now=21,
                 recover_existing=True,
@@ -202,7 +246,7 @@ def test_recoverable_handoff_and_exact_completion_poll(
 
         with connector.read_transaction():
             assert not DownloadIngestRepository.is_download_handoff_complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 handoff,
             )
 
@@ -212,24 +256,24 @@ def test_recoverable_handoff_and_exact_completion_poll(
         )
         with connector.transaction():
             ingest_turn = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=30,
                 lease_duration=100,
             )
         with connector.read_transaction():
             assert not DownloadIngestRepository.is_download_handoff_complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 handoff,
             )
         with connector.transaction():
             DownloadIngestRepository.complete_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 ingest_turn,
                 now=40,
             )
         with connector.read_transaction():
             assert DownloadIngestRepository.is_download_handoff_complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 handoff,
             )
     finally:
@@ -237,9 +281,12 @@ def test_recoverable_handoff_and_exact_completion_poll(
 
 
 def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "physical-keys.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "physical-keys.sqlite3"))
+    )
     try:
         connector.execute_many(
             "INSERT INTO operational_download_generations "
@@ -251,7 +298,7 @@ def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
             "(generation, started_at, completed_at) VALUES (%s, %s, NULL)",
             [(1, 1), (2, 2)],
         )
-        with pytest.raises(SQLiteDuplicateKeyError):
+        with pytest.raises(DatabaseDuplicateKeyError):
             connector.execute(
                 "INSERT INTO operational_download_ingest_handoffs "
                 "(download_generation, owner_token, handoff_kind, requested_at) "
@@ -273,14 +320,14 @@ def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
             "VALUES (%s, %s, %s)",
             (1, 1, 3),
         )
-        with pytest.raises(SQLiteDuplicateKeyError):
+        with pytest.raises(DatabaseDuplicateKeyError):
             connector.execute(
                 "INSERT INTO operational_download_ingest_consumptions "
                 "(download_generation, ingest_generation, consumed_at) "
                 "VALUES (%s, %s, %s)",
                 (1, 2, 4),
             )
-        with pytest.raises(SQLiteDuplicateKeyError):
+        with pytest.raises(DatabaseDuplicateKeyError):
             connector.execute(
                 "INSERT INTO operational_download_ingest_consumptions "
                 "(download_generation, ingest_generation, consumed_at) "
@@ -293,7 +340,7 @@ def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
             "(ingest_generation, owner_token, completed_at) VALUES (%s, %s, %s)",
             (1, b"i" * 16, 5),
         )
-        with pytest.raises(SQLiteDuplicateKeyError):
+        with pytest.raises(DatabaseDuplicateKeyError):
             connector.execute(
                 "INSERT INTO operational_coordinated_ingest_completions "
                 "(ingest_generation, owner_token, completed_at) "
@@ -305,16 +352,20 @@ def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
 
 
 def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connector = _generated_database(tmp_path / "linked.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "linked.sqlite3"))
+    )
     try:
         download = _claim_download(
             connector, monkeypatch, b"d" * 16, now=10, duration=100
         )
         with connector.transaction():
             DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"), download, now=20
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                download,
+                now=20,
             )
         monkeypatch.setattr(
             "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
@@ -322,7 +373,7 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         )
         with connector.transaction():
             ingest = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=21,
                 lease_duration=100,
             )
@@ -330,16 +381,19 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         assert ingest.download_generation == 1
         assert ingest.handoff_owner_token == b"d" * 16
         assert ingest.handoff_kind is HandoffKind.DOWNLOADER
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT download_generation, ingest_generation, consumed_at "
-            "FROM operational_download_ingest_consumptions"
+            "FROM operational_download_ingest_consumptions",
         ) == [(1, 1, 21)]
 
         active = _snapshot(connector)
         with connector.transaction():
             assert (
                 DownloadIngestRepository.resume_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), ingest, now=22
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    ingest,
+                    now=22,
                 )
                 == ingest
             )
@@ -347,7 +401,7 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         with pytest.raises(DownloadIngestReplayMismatchError, match="consumption"):
             with connector.transaction():
                 DownloadIngestRepository.resume_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     replace(ingest, consumed_at=22),
                     now=22,
                 )
@@ -355,7 +409,7 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         with pytest.raises(DownloadIngestUnavailableError, match="already consumed"):
             with connector.transaction():
                 DownloadIngestRepository.claim_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     now=22,
                     lease_duration=100,
                 )
@@ -363,27 +417,34 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
 
         with connector.transaction():
             completion = DownloadIngestRepository.complete_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"), ingest, now=30
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                ingest,
+                now=30,
             )
         assert completion.download_generation == 1
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT current_generation, completed_generation "
-            "FROM operational_download_coordination_heads"
+            "FROM operational_download_coordination_heads",
         ) == (1, 1)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT completed_at FROM operational_download_generations "
-            "WHERE generation = 1"
+            "WHERE generation = 1",
         ) == (30,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT current_generation, completed_generation, phase "
-            "FROM operational_ingest_coordination_heads"
+            "FROM operational_ingest_coordination_heads",
         ) == (1, 1, "READY")
 
         durable = _snapshot(connector)
         with connector.transaction():
             assert (
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), ingest, now=30
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    ingest,
+                    now=30,
                 )
                 == completion
             )
@@ -391,7 +452,9 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         with connector.transaction():
             assert (
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), ingest, now=31
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    ingest,
+                    now=31,
                 )
                 == completion
             )
@@ -399,7 +462,7 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         with pytest.raises(DownloadIngestReplayMismatchError, match="another owner"):
             with connector.transaction():
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     replace(
                         ingest,
                         ingest_turn=replace(ingest.ingest_turn, owner_token=b"x" * 16),
@@ -416,7 +479,9 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
         with connector.transaction():
             assert (
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), ingest, now=30
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    ingest,
+                    now=30,
                 )
                 == completion
             )
@@ -426,9 +491,11 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
 
 
 def test_expired_download_takeover_is_fail_closed_and_preserves_exact_kind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connector = _generated_database(tmp_path / "takeover.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "takeover.sqlite3"))
+    )
     try:
         download = _claim_download(
             connector, monkeypatch, b"d" * 16, now=10, duration=10
@@ -440,31 +507,34 @@ def test_expired_download_takeover_is_fail_closed_and_preserves_exact_kind(
         with pytest.raises(DownloadIngestUnavailableError, match="live lease"):
             with connector.transaction():
                 DownloadIngestRepository.claim_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     now=19,
                     lease_duration=100,
                 )
 
         with connector.transaction():
             ingest = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=20,
                 lease_duration=100,
             )
         assert ingest.handoff_kind is HandoffKind.EXPIRED_TAKEOVER
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT owner_token, handoff_kind, requested_at "
-            "FROM operational_download_ingest_handoffs"
+            "FROM operational_download_ingest_handoffs",
         ) == (b"d" * 16, "EXPIRED_TAKEOVER", 20)
-        assert not connector.fetch_all(
-            "SELECT generation FROM operational_download_generation_owners"
+        assert not inspect_all(
+            connector, "SELECT generation FROM operational_download_generation_owners"
         )
 
         before = _snapshot(connector)
         with pytest.raises(DownloadIngestReplayMismatchError, match="replay tuple"):
             with connector.transaction():
                 DownloadIngestRepository.handoff_download(
-                    VNextUnitOfWork(connector, backend="sqlite"), download, now=20
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    download,
+                    now=20,
                 )
         assert _snapshot(connector) == before
     finally:
@@ -472,9 +542,11 @@ def test_expired_download_takeover_is_fail_closed_and_preserves_exact_kind(
 
 
 def test_periodic_ingest_has_no_download_claim_and_completion_leaves_head_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connector = _generated_database(tmp_path / "periodic.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "periodic.sqlite3"))
+    )
     try:
         monkeypatch.setattr(
             "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
@@ -482,40 +554,48 @@ def test_periodic_ingest_has_no_download_claim_and_completion_leaves_head_unchan
         )
         with connector.transaction():
             periodic = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=5,
                 lease_duration=100,
                 periodic=True,
             )
         assert periodic.is_periodic
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT current_generation, completed_generation, last_transition_at "
-            "FROM operational_download_coordination_heads"
+            "FROM operational_download_coordination_heads",
         ) == (0, 0, 5)
-        assert not connector.fetch_all(
-            "SELECT download_generation FROM operational_download_ingest_handoffs"
+        assert not inspect_all(
+            connector,
+            "SELECT download_generation FROM operational_download_ingest_handoffs",
         )
-        assert not connector.fetch_all(
-            "SELECT download_generation FROM operational_download_ingest_consumptions"
+        assert not inspect_all(
+            connector,
+            "SELECT download_generation FROM operational_download_ingest_consumptions",
         )
 
         with pytest.raises(DownloadIngestUnavailableError, match="not quiescent"):
             _claim_download(connector, monkeypatch, b"d" * 16, now=6, duration=100)
         with connector.transaction():
             completion = DownloadIngestRepository.complete_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"), periodic, now=10
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                periodic,
+                now=10,
             )
         assert completion.download_generation is None
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT current_generation, completed_generation, last_transition_at "
-            "FROM operational_download_coordination_heads"
+            "FROM operational_download_coordination_heads",
         ) == (0, 0, 5)
 
         durable = _snapshot(connector)
         with connector.transaction():
             assert (
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), periodic, now=10
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    periodic,
+                    now=10,
                 )
                 == completion
             )
@@ -528,7 +608,9 @@ def test_periodic_ingest_has_no_download_claim_and_completion_leaves_head_unchan
         with connector.transaction():
             assert (
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), periodic, now=10
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    periodic,
+                    now=10,
                 )
                 == completion
             )
@@ -545,24 +627,26 @@ def test_periodic_ingest_has_no_download_claim_and_completion_leaves_head_unchan
     ),
 )
 def test_faults_roll_back_cross_authority_transactions(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_fragment: str,
 ) -> None:
-    connector = cast(
-        _FaultConnector,
-        _generated_database(
-            tmp_path / f"fault-{failure_fragment[-12:]}.sqlite3",
-            connector_type=_FaultConnector,
-        ),
+    connector = _generated_database(
+        database_factory.config(
+            str(tmp_path / f"fault-{failure_fragment[-12:]}.sqlite3")
+        )
     )
+    faults = _install_faults(connector, monkeypatch)
     try:
         download = _claim_download(
             connector, monkeypatch, b"d" * 16, now=10, duration=100
         )
         with connector.transaction():
             DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"), download, now=20
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                download,
+                now=20,
             )
         monkeypatch.setattr(
             "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
@@ -570,88 +654,93 @@ def test_faults_roll_back_cross_authority_transactions(
         )
         if "consumptions" in failure_fragment:
             before = _snapshot(connector)
-            connector.fail_fragment = failure_fragment
+            faults.fail_fragment = failure_fragment
             with pytest.raises(RuntimeError, match="injected"):
                 with connector.transaction():
                     DownloadIngestRepository.claim_ingest(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         now=21,
                         lease_duration=100,
                     )
-            connector.fail_fragment = None
+            faults.fail_fragment = None
             assert _snapshot(connector) == before
             return
 
         with connector.transaction():
             ingest = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=21,
                 lease_duration=100,
             )
         before = _snapshot(connector)
-        connector.fail_fragment = failure_fragment
+        faults.fail_fragment = failure_fragment
         with pytest.raises(RuntimeError, match="injected"):
             with connector.transaction():
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), ingest, now=30
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    ingest,
+                    now=30,
                 )
-        connector.fail_fragment = None
+        faults.fail_fragment = None
         assert _snapshot(connector) == before
     finally:
         connector.close()
 
 
 def test_owner_transfer_and_head_cas_faults_roll_back_every_prior_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    claim_connector = cast(
-        _FaultConnector,
-        _generated_database(
-            tmp_path / "claim-cas.sqlite3", connector_type=_FaultConnector
-        ),
+    claim_connector = _generated_database(
+        database_factory.config(str(tmp_path / "claim-cas.sqlite3"))
     )
+    claim_faults = _install_faults(claim_connector, monkeypatch)
     try:
-        claim_connector.fail_affected_fragment = (
+        claim_faults.fail_affected_fragment = (
             "UPDATE operational_download_coordination_heads SET current_generation"
         )
         with pytest.raises(StaleWriteError, match="download coordination head"):
             _claim_download(
                 claim_connector, monkeypatch, b"d" * 16, now=10, duration=100
             )
-        assert not claim_connector.fetch_all(
-            "SELECT generation FROM operational_download_generations"
+        assert not inspect_all(
+            claim_connector, "SELECT generation FROM operational_download_generations"
         )
-        assert not claim_connector.fetch_all(
-            "SELECT singleton_id FROM operational_download_coordination_heads"
+        assert not inspect_all(
+            claim_connector,
+            "SELECT singleton_id FROM operational_download_coordination_heads",
         )
     finally:
         claim_connector.close()
 
-    connector = cast(
-        _FaultConnector,
-        _generated_database(
-            tmp_path / "transfer-cas.sqlite3", connector_type=_FaultConnector
-        ),
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "transfer-cas.sqlite3"))
     )
+    faults = _install_faults(connector, monkeypatch)
     try:
         download = _claim_download(
             connector, monkeypatch, b"d" * 16, now=10, duration=100
         )
         before_handoff = _snapshot(connector)
-        connector.fail_affected_fragment = (
+        faults.fail_affected_fragment = (
             "DELETE FROM operational_download_generation_owners"
         )
         with pytest.raises(DownloadIngestCorruptionError, match="deletion affected 0"):
             with connector.transaction():
                 DownloadIngestRepository.handoff_download(
-                    VNextUnitOfWork(connector, backend="sqlite"), download, now=20
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    download,
+                    now=20,
                 )
-        connector.fail_affected_fragment = None
+        faults.fail_affected_fragment = None
         assert _snapshot(connector) == before_handoff
 
         with connector.transaction():
             DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"), download, now=20
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                download,
+                now=20,
             )
         monkeypatch.setattr(
             "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
@@ -659,12 +748,12 @@ def test_owner_transfer_and_head_cas_faults_roll_back_every_prior_write(
         )
         with connector.transaction():
             ingest = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=21,
                 lease_duration=100,
             )
         before_completion = _snapshot(connector)
-        connector.fail_affected_fragment = (
+        faults.fail_affected_fragment = (
             "UPDATE operational_download_coordination_heads SET completed_generation"
         )
         with pytest.raises(
@@ -672,18 +761,22 @@ def test_owner_transfer_and_head_cas_faults_roll_back_every_prior_write(
         ):
             with connector.transaction():
                 DownloadIngestRepository.complete_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"), ingest, now=30
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    ingest,
+                    now=30,
                 )
-        connector.fail_affected_fragment = None
+        faults.fail_affected_fragment = None
         assert _snapshot(connector) == before_completion
     finally:
         connector.close()
 
 
 def test_capability_collisions_and_missing_authority_are_zero_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connector = _generated_database(tmp_path / "corruption.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "corruption.sqlite3"))
+    )
     try:
         download = _claim_download(
             connector, monkeypatch, b"d" * 16, now=10, duration=100
@@ -696,7 +789,7 @@ def test_capability_collisions_and_missing_authority_are_zero_write(
         with pytest.raises(DownloadIngestCorruptionError, match="exactly one owner"):
             with connector.transaction():
                 DownloadIngestRepository.claim_ingest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     now=20,
                     lease_duration=100,
                 )
@@ -715,7 +808,9 @@ def test_capability_collisions_and_missing_authority_are_zero_write(
         )
         with connector.transaction():
             DownloadIngestRepository.handoff_download(
-                VNextUnitOfWork(connector, backend="sqlite"), download, now=20
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                download,
+                now=20,
             )
         monkeypatch.setattr(
             "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
@@ -723,13 +818,15 @@ def test_capability_collisions_and_missing_authority_are_zero_write(
         )
         with connector.transaction():
             ingest = DownloadIngestRepository.claim_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=21,
                 lease_duration=100,
             )
         with connector.transaction():
             DownloadIngestRepository.complete_ingest(
-                VNextUnitOfWork(connector, backend="sqlite"), ingest, now=30
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                ingest,
+                now=30,
             )
 
         durable = _snapshot(connector)

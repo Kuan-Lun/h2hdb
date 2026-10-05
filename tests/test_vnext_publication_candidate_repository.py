@@ -3,7 +3,6 @@ from __future__ import annotations
 import unicodedata
 from hashlib import sha256
 from pathlib import Path
-from shutil import copyfile
 from typing import Any
 from unittest.mock import patch
 
@@ -23,20 +22,30 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
+from vnext_database_snapshot import clone_database
 from vnext_gallery_page_fixtures import (
     seed_gallery_page_bounds,
     seed_gallery_page_descriptor,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_sealed_source_build,
     seed_snapshot_manifest,
 )
 from vnext_publication_fixtures import seed_publication_commit
+from vnext_test_database import (
+    DatabaseFactory,
+    atomic_fixture,
+    connector_backend,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    trace_statements,
+)
 
-from h2hdb import catalog_refinement
+from h2hdb import CoreConfig, catalog_refinement
 from h2hdb import vnext_identity as identity
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_canonical_value_repository import CanonicalValueRepository
 from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import (
@@ -85,12 +94,13 @@ def test_publication_candidate_dto_rejects_non_graph_abandoned_state() -> None:
         )
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
+@atomic_fixture
 def _canonical_identity(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     value_sha256: bytes,
     *,
     domain: bytes,
@@ -123,20 +133,20 @@ def _canonical_identity(
     )
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=1_000_000,
@@ -144,8 +154,9 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
     return gate, turn
 
 
+@atomic_fixture
 def _seed_base_publication_commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     snapshot_manifest_sha256: bytes,
 ) -> None:
@@ -205,8 +216,9 @@ def _seed_base_publication_commit(
     )
 
 
+@atomic_fixture
 def _seed_completed_analysis(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     turn: IngestTurn,
     *,
     with_base: bool,
@@ -353,14 +365,16 @@ def _seed_completed_analysis(
         )
 
 
+@atomic_fixture
 def _seed_selected_galleries(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     count: int,
     locator_components_by_gallery: dict[int, tuple[str, ...]] | None = None,
 ) -> None:
-    scopes = connector.fetch_all(
-        "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 2"
+    scopes = inspect_all(
+        connector,
+        "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 2",
     )
     assert len(scopes) == 1
     scope_key = scopes[0][0]
@@ -503,8 +517,9 @@ def _seed_selected_galleries(
     )
 
 
+@atomic_fixture
 def _seed_projection_metadata(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     count: int,
     with_tags: bool = False,
@@ -596,7 +611,7 @@ def _seed_projection_metadata(
 
 
 def _complete_selection(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -614,7 +629,7 @@ def _complete_selection(
         while True:
             with connector.transaction():
                 batch = method(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -628,7 +643,7 @@ def _complete_selection(
 
 
 def _upload_projection_canonical_values(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: Any,
@@ -639,7 +654,7 @@ def _upload_projection_canonical_values(
         try:
             with connector.transaction():
                 CanonicalValueRepository.allocate(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=upload,
@@ -648,7 +663,9 @@ def _upload_projection_canonical_values(
             for page in upload.iter_pages():
                 with connector.transaction():
                     CanonicalValueRepository.put_page(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         plan=upload,
@@ -657,7 +674,7 @@ def _upload_projection_canonical_values(
                     )
             with connector.transaction():
                 CanonicalValueRepository.seal(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     plan=upload,
@@ -668,7 +685,7 @@ def _upload_projection_canonical_values(
 
 
 def _begin(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -681,7 +698,7 @@ def _begin(
             return_value=_CANDIDATE,
         ):
             return PublicationCandidateRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=_ANALYSIS,
@@ -693,20 +710,20 @@ def _begin(
 
 
 def _take_over_ingest_turn(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
 ) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         renewed_gate = MaintenanceGateRepository.renew(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate,
             now=90,
             lease_duration=2_000_000,
         )
     with connector.transaction():
         replacement = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"n" * 16,
             now=turn.lease_expires_at,
             lease_duration=1_000_000,
@@ -721,10 +738,13 @@ def _take_over_ingest_turn(
 
 @pytest.mark.parametrize("with_base", [False, True], ids=["genesis", "successor"])
 def test_begin_derives_revision_channel_and_exact_optional_bases(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     with_base: bool,
 ) -> None:
-    connector = _generated_database(tmp_path / f"begin-{with_base}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"begin-{with_base}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=with_base)
 
@@ -740,35 +760,42 @@ def test_begin_derives_revision_channel_and_exact_optional_bases(
     assert candidate.base_catalog_revision == (1 if with_base else None)
     assert candidate.base_catalog_generation == (1 if with_base else None)
     assert not candidate.replayed
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT analysis_id, reserved_revision, artifact_policy_id, "
         "display_title_policy_id, artifacts_required, created_at "
         "FROM catalog_publication_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (_ANALYSIS, expected_revision, 1, 1, 0, 100)
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT candidate_id FROM catalog_publication_candidate_projection_seals "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT candidate_id FROM operational_catalog_working_candidates "
         "WHERE slot = %s",
         (1,),
     ) == (_CANDIDATE,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT COUNT(*) FROM catalog_publication_stages",
     ) == (17,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT COUNT(*) FROM catalog_publication_checkpoints WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (16,)
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"FINALIZE_ARTIFACTS"),
     )
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_revisions WHERE revision = %s",
         (expected_revision,),
     )
@@ -776,9 +803,12 @@ def test_begin_derives_revision_channel_and_exact_optional_bases(
 
 
 def test_begin_response_loss_replays_sole_working_root_and_compares_request(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "begin-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "begin-replay.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     first = _begin(connector, gate, turn)
@@ -788,7 +818,7 @@ def test_begin_response_loss_replays_sole_working_root_and_compares_request(
             "h2hdb.vnext_publication_candidate_repository._new_candidate_id"
         ) as generated:
             replay = PublicationCandidateRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=_ANALYSIS,
@@ -799,10 +829,11 @@ def test_begin_response_loss_replays_sole_working_root_and_compares_request(
             )
     generated.assert_not_called()
     assert replay.replayed and replay.candidate_id == first.candidate_id
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM catalog_publication_candidates"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM catalog_publication_candidates"
     ) == (1,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         ("CATALOG",),
     ) == (2,)
@@ -812,8 +843,12 @@ def test_begin_response_loss_replays_sole_working_root_and_compares_request(
     connector.close()
 
 
-def test_begin_rejects_forged_source_working_assignment(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "begin-source-assignment.sqlite3")
+def test_begin_rejects_forged_source_working_assignment(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "begin-source-assignment.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     assert (
@@ -828,13 +863,15 @@ def test_begin_rejects_forged_source_working_assignment(tmp_path: Path) -> None:
     with pytest.raises(PublicationCandidateConflictError, match="assignment|creation"):
         _begin(connector, gate, turn)
 
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT build_id, assigned_at FROM operational_source_working_builds "
         "WHERE slot = %s",
         (1,),
     ) == (_BUILD, 14)
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-    assert connector.fetch_one(
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_candidates")
+    assert inspect_one(
+        connector,
         "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         ("CATALOG",),
     ) == (1,)
@@ -842,9 +879,12 @@ def test_begin_rejects_forged_source_working_assignment(tmp_path: Path) -> None:
 
 
 def test_begin_resume_rejects_forged_catalog_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "resume-catalog-assignment.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "resume-catalog-assignment.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _begin(connector, gate, turn)
@@ -860,17 +900,20 @@ def test_begin_resume_rejects_forged_catalog_working_assignment(
     with pytest.raises(PublicationCandidateConflictError, match="assignment|creation"):
         _begin(connector, gate, turn, now=101)
 
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT candidate_id, assigned_at FROM "
         "operational_catalog_working_candidates WHERE slot = %s",
         (1,),
     ) == (_CANDIDATE, 99)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT candidate_id FROM catalog_publication_candidates "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (_CANDIDATE,)
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT candidate_id FROM catalog_publication_candidate_projection_seals "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
@@ -879,9 +922,12 @@ def test_begin_resume_rejects_forged_catalog_working_assignment(
 
 
 def test_forged_artifact_policy_canonical_preimage_fails_without_reservation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "forged-policy.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "forged-policy.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(
         connector,
@@ -896,11 +942,12 @@ def test_forged_artifact_policy_canonical_preimage_fails_without_reservation(
     ):
         _begin(connector, gate, turn)
 
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-    assert not connector.fetch_one(
-        "SELECT 1 FROM operational_catalog_working_candidates"
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_candidates")
+    assert not inspect_one(
+        connector, "SELECT 1 FROM operational_catalog_working_candidates"
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         ("CATALOG",),
     ) == (1,)
@@ -908,9 +955,12 @@ def test_forged_artifact_policy_canonical_preimage_fails_without_reservation(
 
 
 def test_begin_rejects_permanent_candidate_identity_after_transient_cleanup(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "permanent-candidate-collision.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "permanent-candidate-collision.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=True)
     connector.execute(
@@ -921,30 +971,40 @@ def test_begin_rejects_permanent_candidate_identity_after_transient_cleanup(
         "DELETE FROM catalog_publication_commit_head_receipts WHERE channel = %s",
         (_CHANNEL,),
     )
-    before = connector.connection.total_changes
+    writes: list[str] = []
+    with trace_statements(connector, writes):
+        with (
+            patch(
+                "h2hdb.vnext_publication_candidate_repository._new_candidate_id",
+                return_value=_BASE_CANDIDATE,
+            ),
+            pytest.raises(PublicationCandidateConflictError, match="already exists"),
+        ):
+            with connector.transaction():
+                PublicationCandidateRepository.begin(
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=_ANALYSIS,
+                    artifact_policy_id=1,
+                    display_title_policy_id=1,
+                    artifacts_required=False,
+                    now=100,
+                )
 
-    with (
-        patch(
-            "h2hdb.vnext_publication_candidate_repository._new_candidate_id",
-            return_value=_BASE_CANDIDATE,
-        ),
-        pytest.raises(PublicationCandidateConflictError, match="already exists"),
-    ):
-        with connector.transaction():
-            PublicationCandidateRepository.begin(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=turn,
-                analysis_id=_ANALYSIS,
-                artifact_policy_id=1,
-                display_title_policy_id=1,
-                artifacts_required=False,
-                now=100,
-            )
-
-    assert connector.connection.total_changes == before
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-    assert connector.fetch_one(
+    assert (
+        len(
+            [
+                sql
+                for sql in writes
+                if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+            ]
+        )
+        == 0
+    )
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_candidates")
+    assert inspect_one(
+        connector,
         "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         ("CATALOG",),
     ) == (2,)
@@ -952,9 +1012,12 @@ def test_begin_rejects_permanent_candidate_identity_after_transient_cleanup(
 
 
 def test_begin_rejects_drifted_closed_stage_registry_before_reservation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "stage-registry-drift.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stage-registry-drift.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     connector.execute(
@@ -965,8 +1028,9 @@ def test_begin_rejects_drifted_closed_stage_registry_before_reservation(
     with pytest.raises(PublicationCandidateConflictError, match="closed runtime map"):
         _begin(connector, gate, turn)
 
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-    assert connector.fetch_one(
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_candidates")
+    assert inspect_one(
+        connector,
         "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         ("CATALOG",),
     ) == (1,)
@@ -975,10 +1039,13 @@ def test_begin_rejects_drifted_closed_stage_registry_before_reservation(
 
 @pytest.mark.parametrize("authority", ["mapping", "working"])
 def test_begin_requires_exact_live_generation_and_source_working_authority(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     authority: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"missing-{authority}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"missing-{authority}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     if authority == "mapping":
@@ -989,8 +1056,9 @@ def test_begin_requires_exact_live_generation_and_source_working_authority(
     with pytest.raises(PublicationCandidateNotReadyError):
         _begin(connector, gate, turn)
 
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-    assert connector.fetch_one(
+    assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_candidates")
+    assert inspect_one(
+        connector,
         "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         ("CATALOG",),
     ) == (1,)
@@ -999,10 +1067,13 @@ def test_begin_requires_exact_live_generation_and_source_working_authority(
 
 @pytest.mark.parametrize("phase", ["fresh", "resume"])
 def test_begin_or_resume_base_race_fails_without_allocator_leak(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     phase: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"base-race-{phase}.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / f"base-race-{phase}.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=True)
     if phase == "resume":
@@ -1016,20 +1087,25 @@ def test_begin_or_resume_base_race_fails_without_allocator_leak(
         _begin(connector, gate, turn, now=101)
 
     if phase == "fresh":
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-        assert connector.fetch_one(
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_candidates"
+        )
+        assert inspect_one(
+            connector,
             "SELECT next_revision FROM operational_revision_allocators "
             "WHERE stream = %s",
             ("CATALOG",),
         ) == (2,)
     else:
-        assert connector.fetch_one(
-            "SELECT candidate_id FROM catalog_publication_candidates"
+        assert inspect_one(
+            connector, "SELECT candidate_id FROM catalog_publication_candidates"
         ) == (_CANDIDATE,)
-        assert not connector.fetch_one(
-            "SELECT candidate_id FROM catalog_publication_candidate_projection_seals"
+        assert not inspect_one(
+            connector,
+            "SELECT candidate_id FROM catalog_publication_candidate_projection_seals",
         )
-        assert not connector.fetch_one(
+        assert not inspect_one(
+            connector,
             "SELECT receipt_id FROM catalog_publication_commits "
             "WHERE candidate_id = %s",
             (_CANDIDATE,),
@@ -1038,10 +1114,11 @@ def test_begin_or_resume_base_race_fails_without_allocator_leak(
 
 
 def test_each_begin_mutation_fault_rolls_back_allocator_candidate_and_bases(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     base_path = tmp_path / "begin-fault-base.sqlite3"
-    base = _generated_database(base_path)
+    base = _generated_database(database_factory.config(str(base_path)))
     gate, turn = _authorities(base)
     _seed_completed_analysis(base, turn, with_base=True)
     base.close()
@@ -1049,8 +1126,10 @@ def test_each_begin_mutation_fault_rolls_back_allocator_candidate_and_bases(
     # Allocator, candidate, common base, atomic checkpoint set, working root.
     for failure_at in range(1, 6):
         path = tmp_path / f"begin-fault-{failure_at}.sqlite3"
-        copyfile(base_path, path)
-        connector = SQLiteConnector(str(path))
+        clone_database(
+            database_factory.config(str(base_path)), database_factory.config(str(path))
+        )
+        connector = database_connector(database_factory.config(str(path)))
         connector.connect()
         original_execute = connector.execute
         original_execute_affected = connector.execute_affected
@@ -1088,12 +1167,17 @@ def test_each_begin_mutation_fault_rolls_back_allocator_candidate_and_bases(
             _begin(connector, gate, turn)
 
         assert mutation_number == failure_at
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
-        assert not connector.fetch_one(
-            "SELECT 1 FROM operational_catalog_working_candidates"
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_candidates"
         )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_checkpoints")
-        assert connector.fetch_one(
+        assert not inspect_one(
+            connector, "SELECT 1 FROM operational_catalog_working_candidates"
+        )
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_checkpoints"
+        )
+        assert inspect_one(
+            connector,
             "SELECT next_revision FROM operational_revision_allocators "
             "WHERE stream = %s",
             ("CATALOG",),
@@ -1102,16 +1186,19 @@ def test_each_begin_mutation_fault_rolls_back_allocator_candidate_and_bases(
 
 
 def test_empty_selection_and_independent_validation_use_terminal_empty_receipts(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-empty.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-empty.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _begin(connector, gate, turn)
 
     with connector.transaction():
         built = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1125,7 +1212,7 @@ def test_empty_selection_and_independent_validation_use_terminal_empty_receipts(
 
     with connector.transaction():
         replay = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1151,7 +1238,7 @@ def test_empty_selection_and_independent_validation_use_terminal_empty_receipts(
 
     with connector.transaction():
         validated = PublicationCandidateRepository.validate_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1159,7 +1246,8 @@ def test_empty_selection_and_independent_validation_use_terminal_empty_receipts(
             now=103,
         )
     assert validated.terminal and validated.next_state == "COMPLETE"
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT COUNT(*) FROM catalog_publication_batch_receipts "
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
@@ -1169,10 +1257,15 @@ def test_empty_selection_and_independent_validation_use_terminal_empty_receipts(
 
 @pytest.mark.parametrize("capability", ["source", "catalog"])
 def test_publication_batch_rejects_forged_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     capability: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"batch-{capability}-assignment.sqlite3")
+    connector = _generated_database(
+        database_factory.config(
+            str(tmp_path / f"batch-{capability}-assignment.sqlite3")
+        )
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _begin(connector, gate, turn)
@@ -1205,7 +1298,7 @@ def test_publication_batch_rejects_forged_working_assignment(
         pytest.raises(PublicationCandidateConflictError, match="assignment|creation"),
     ):
         PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1213,8 +1306,9 @@ def test_publication_batch_rejects_forged_working_assignment(
             now=101,
         )
 
-    assert connector.fetch_one(query, (1,)) == expected
-    assert not connector.fetch_one(
+    assert inspect_one(connector, query, (1,)) == expected
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_batch_receipts WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
@@ -1223,11 +1317,14 @@ def test_publication_batch_rejects_forged_working_assignment(
 
 @pytest.mark.parametrize("capability", ["source", "catalog"])
 def test_projection_receipt_revalidation_requires_exact_working_assignment(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     capability: str,
 ) -> None:
     connector = _generated_database(
-        tmp_path / f"projection-revalidate-{capability}-assignment.sqlite3"
+        database_factory.config(
+            str(tmp_path / f"projection-revalidate-{capability}-assignment.sqlite3")
+        )
     )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
@@ -1235,7 +1332,7 @@ def test_projection_receipt_revalidation_requires_exact_working_assignment(
     _complete_selection(connector, gate, turn)
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1257,7 +1354,7 @@ def test_projection_receipt_revalidation_requires_exact_working_assignment(
     with pytest.raises(PublicationCandidateNotReadyError, match="working-root"):
         PublicationCandidateRepository.prepare_catalog_projection(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         )
     connector.close()
@@ -1265,9 +1362,12 @@ def test_projection_receipt_revalidation_requires_exact_working_assignment(
 
 @pytest.mark.deep
 def test_selection_and_validation_cross_the_fixed_128_row_keyset_boundary(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-large.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-large.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=129)
@@ -1278,7 +1378,7 @@ def test_selection_and_validation_cross_the_fixed_128_row_keyset_boundary(
         with connector.transaction():
             built.append(
                 PublicationCandidateRepository.process_selection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -1296,7 +1396,7 @@ def test_selection_and_validation_cross_the_fixed_128_row_keyset_boundary(
         with connector.transaction():
             validated.append(
                 PublicationCandidateRepository.validate_selection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -1307,20 +1407,24 @@ def test_selection_and_validation_cross_the_fixed_128_row_keyset_boundary(
     assert [batch.row_count for batch in validated] == [128, 1, 0]
     assert validated[-1].next_state == "COMPLETE"
     assert validated[-1].next_processed_count == 129
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT COUNT(*) FROM catalog_publication_selections WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (129,)
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM catalog_publication_identities"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM catalog_publication_identities"
     ) == (129,)
     connector.close()
 
 
 def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "catalog-projection.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "catalog-projection.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
@@ -1330,7 +1434,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
 
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1341,12 +1445,12 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
     with (
         PublicationCandidateRepository.prepare_catalog_projection(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as plan,
         PublicationCandidateRepository.prepare_catalog_projection_validation(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as validation,
     ):
@@ -1362,7 +1466,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
 
         with connector.transaction():
             built = PublicationCandidateRepository.process_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -1373,7 +1477,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         assert built.row_count == 24 and not built.terminal
         with connector.transaction():
             replay = PublicationCandidateRepository.process_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -1384,7 +1488,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         assert replay.replayed and replay.committed_at == built.committed_at
         with connector.transaction():
             terminal = PublicationCandidateRepository.process_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -1396,7 +1500,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
 
         with connector.transaction():
             checked = PublicationCandidateRepository.validate_catalog_projection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -1408,7 +1512,7 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         with connector.transaction():
             checked_terminal = (
                 PublicationCandidateRepository.validate_catalog_projection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -1421,47 +1525,54 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         assert checked_terminal.next_processed_count == 24
 
     publication_key = identity.publication_key(10_001)
-    assert connector.fetch_one(
-        "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
+    assert inspect_one(
+        connector,
+        "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1",
     ) == (1,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT gallery_id, modified_at "
         "FROM catalog_publications WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
     ) == (1, 3)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT download_time FROM catalog_publications "
         "WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
     ) == (2,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT upload_time FROM catalog_publications "
         "WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
     ) == (1,)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT position, publication_key FROM catalog_publication_order "
-        "WHERE revision = 1"
+        "WHERE revision = 1",
     ) == (0, publication_key)
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM catalog_contributors WHERE revision = 1"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM catalog_contributors WHERE revision = 1"
     ) == (2,)
-    assert connector.fetch_one(
-        "SELECT COUNT(*) FROM catalog_subjects WHERE revision = 1"
+    assert inspect_one(
+        connector, "SELECT COUNT(*) FROM catalog_subjects WHERE revision = 1"
     ) == (2,)
     expected_search_tokens = {b"1", b"artist", b"english", b"title", b"uploader"}
     expected_search_digests = {
         identity.canonical_value_digest("search_lexeme_utf8_v1", token)
         for token in expected_search_tokens
     }
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT row_count FROM catalog_search_documents "
         "WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
     ) == (len(expected_search_digests),)
     assert {
         row[0]
-        for row in connector.fetch_all(
+        for row in inspect_all(
+            connector,
             "SELECT value_sha256 FROM catalog_search_postings "
             "WHERE revision = 1 AND publication_key = %s",
             (publication_key,),
@@ -1469,7 +1580,8 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
     } == expected_search_digests
     assert {
         row[0]
-        for row in connector.fetch_all(
+        for row in inspect_all(
+            connector,
             "SELECT value_sha256 FROM catalog_title_search_postings "
             "WHERE revision = 1 AND publication_key = %s",
             (publication_key,),
@@ -1482,31 +1594,36 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
         "catalog_language_utf8_v1",
         b"english",
     )
-    assert connector.fetch_all(
+    assert inspect_all(
+        connector,
         "SELECT position, language_sha256, occurrence_count "
-        "FROM catalog_language_facet_order WHERE revision = 1"
+        "FROM catalog_language_facet_order WHERE revision = 1",
     ) == [(0, language_sha256, 1)]
     assert (
-        connector.fetch_all(
+        inspect_all(
+            connector,
             "SELECT position, tag_id, occurrence_count "
-            "FROM catalog_subject_facet_order WHERE revision = 1"
+            "FROM catalog_subject_facet_order WHERE revision = 1",
         )
         == []
     )
-    assert connector.fetch_all(
-        "SELECT role, occurrence_count FROM catalog_contributor_facet_order "
-        "WHERE revision = 1 ORDER BY position"
-    ) == [(b"artist", 1), (b"uploader", 1)]
-    assert connector.fetch_one(
-        "SELECT policy_id FROM catalog_discovery_seals WHERE revision = 1"
-    ) == (1,)
-    catalog_refinement._validate_active_discovery_projection(
+    assert inspect_all(
         connector,
-        revision=1,
-        display_title_policy_id=1,
-        expected_publication_count=1,
-    )
-    assert not connector.fetch_one(
+        "SELECT role, occurrence_count FROM catalog_contributor_facet_order "
+        "WHERE revision = 1 ORDER BY position",
+    ) == [(b"artist", 1), (b"uploader", 1)]
+    assert inspect_one(
+        connector, "SELECT policy_id FROM catalog_discovery_seals WHERE revision = 1"
+    ) == (1,)
+    with connector.read_transaction():
+        catalog_refinement._validate_active_discovery_projection(
+            connector,
+            revision=1,
+            display_title_policy_id=1,
+            expected_publication_count=1,
+        )
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM operational_canonical_value_uploads WHERE generation = %s",
         (turn.generation,),
     )
@@ -1515,9 +1632,12 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
 
 @pytest.mark.deep
 def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "catalog-projection-large.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "catalog-projection-large.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=50)
@@ -1526,7 +1646,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
     _complete_selection(connector, gate, turn)
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1536,12 +1656,12 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
     with (
         PublicationCandidateRepository.prepare_catalog_projection(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as plan,
         PublicationCandidateRepository.prepare_catalog_projection_validation(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as validation,
     ):
@@ -1569,7 +1689,9 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                 with connector.transaction():
                     built.append(
                         PublicationCandidateRepository.process_catalog_projection_batch(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             candidate_id=_CANDIDATE,
@@ -1590,7 +1712,9 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
             with connector.transaction():
                 checked.append(
                     PublicationCandidateRepository.validate_catalog_projection_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         candidate_id=_CANDIDATE,
@@ -1601,16 +1725,20 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
                 )
         assert [batch.row_count for batch in checked] == [128, 128, 128, 128, 90, 0]
         assert checked[-1].terminal and checked[-1].next_processed_count == 602
-    assert connector.fetch_one(
-        "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
+    assert inspect_one(
+        connector,
+        "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1",
     ) == (50,)
     connector.close()
 
 
 def test_catalog_projection_major_statement_faults_roll_back_all_children(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "catalog-projection-fault.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "catalog-projection-fault.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
@@ -1619,7 +1747,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
     _complete_selection(connector, gate, turn)
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1627,7 +1755,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         )
     with PublicationCandidateRepository.prepare_catalog_projection(
         connector,
-        backend="sqlite",
+        backend=connector_backend(connector),
         authority=authority,
     ) as plan:
         _upload_projection_canonical_values(
@@ -1688,7 +1816,9 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
             ):
                 with connector.transaction():
                     PublicationCandidateRepository.process_catalog_projection_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         candidate_id=_CANDIDATE,
@@ -1696,30 +1826,38 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                         batch_key=b"fault-" + bytes((index,)),
                         now=112 + index,
                     )
-            assert not connector.fetch_one("SELECT 1 FROM catalog_revision_descriptors")
-            assert not connector.fetch_one("SELECT 1 FROM catalog_publications")
-            assert not connector.fetch_one("SELECT 1 FROM catalog_publication_order")
-            assert not connector.fetch_one("SELECT 1 FROM catalog_publication_titles")
-            assert not connector.fetch_one("SELECT 1 FROM catalog_contributors")
-            assert not connector.fetch_one(
-                "SELECT 1 FROM catalog_title_search_postings"
+            assert not inspect_one(
+                connector, "SELECT 1 FROM catalog_revision_descriptors"
             )
-            assert not connector.fetch_one(
+            assert not inspect_one(connector, "SELECT 1 FROM catalog_publications")
+            assert not inspect_one(connector, "SELECT 1 FROM catalog_publication_order")
+            assert not inspect_one(
+                connector, "SELECT 1 FROM catalog_publication_titles"
+            )
+            assert not inspect_one(connector, "SELECT 1 FROM catalog_contributors")
+            assert not inspect_one(
+                connector, "SELECT 1 FROM catalog_title_search_postings"
+            )
+            assert not inspect_one(
+                connector,
                 "SELECT 1 FROM catalog_publication_batch_receipts WHERE stage = %s",
                 (b"BUILD_CATALOG_PROJECTION",),
             )
-            assert connector.fetch_one(
-                "SELECT generation, cursor, processed_count, state "
+            assert inspect_one(
+                connector,
+                "SELECT generation, `cursor`, processed_count, state "
                 "FROM catalog_publication_checkpoints "
                 "WHERE candidate_id = %s AND stage = %s",
                 (_CANDIDATE, b"BUILD_CATALOG_PROJECTION"),
             ) == (1, b"", 0, "OPEN")
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE generation = %s LIMIT 1",
                 (turn.generation,),
             ) == (1,)
-        missing_claim = connector.fetch_one(
+        missing_claim = inspect_one(
+            connector,
             "SELECT value_sha256 FROM operational_canonical_value_uploads "
             "WHERE generation = %s ORDER BY value_sha256 LIMIT 1",
             (turn.generation,),
@@ -1733,7 +1871,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         with pytest.raises(PublicationCandidateNotReadyError, match="upload claim"):
             with connector.transaction():
                 PublicationCandidateRepository.process_catalog_projection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -1741,14 +1879,17 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                     batch_key=b"missing-claim",
                     now=120,
                 )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_revision_descriptors")
+        assert not inspect_one(connector, "SELECT 1 FROM catalog_revision_descriptors")
     connector.close()
 
 
 def test_independent_catalog_validation_rejects_missing_child_without_progress(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "catalog-projection-corrupt.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "catalog-projection-corrupt.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
@@ -1757,7 +1898,7 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
     _complete_selection(connector, gate, turn)
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1766,12 +1907,12 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
     with (
         PublicationCandidateRepository.prepare_catalog_projection(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as plan,
         PublicationCandidateRepository.prepare_catalog_projection_validation(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
         ) as validation,
     ):
@@ -1785,7 +1926,7 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
         for index in range(2):
             with connector.transaction():
                 PublicationCandidateRepository.process_catalog_projection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -1804,7 +1945,7 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
         with pytest.raises(PublicationCandidateConflictError, match="independent"):
             with connector.transaction():
                 PublicationCandidateRepository.validate_catalog_projection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -1812,13 +1953,15 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
                     batch_key=b"validate-corrupt",
                     now=114,
                 )
-    assert connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state "
+    assert inspect_one(
+        connector,
+        "SELECT generation, `cursor`, processed_count, state "
         "FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"VALIDATE_CATALOG_PROJECTION"),
     ) == (1, b"", 0, "OPEN")
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_batch_receipts WHERE stage = %s",
         (b"VALIDATE_CATALOG_PROJECTION",),
     )
@@ -1826,16 +1969,19 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
 
 
 def test_selection_response_loss_replays_under_a_new_live_ingest_turn(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-new-turn-replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-new-turn-replay.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
     _begin(connector, gate, turn)
     with connector.transaction():
         first = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1850,7 +1996,7 @@ def test_selection_response_loss_replays_under_a_new_live_ingest_turn(
     )
     with connector.transaction():
         replay = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=replacement_gate,
             ingest_turn=replacement_turn,
             candidate_id=_CANDIDATE,
@@ -1861,7 +2007,8 @@ def test_selection_response_loss_replays_under_a_new_live_ingest_turn(
     assert replay.replayed
     assert replay.committed_at == first.committed_at == 101
     assert replay.next_cursor == first.next_cursor == (1).to_bytes(8, "big")
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT COUNT(*) FROM catalog_publication_batch_receipts "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"BUILD_SELECTION"),
@@ -1870,9 +2017,12 @@ def test_selection_response_loss_replays_under_a_new_live_ingest_turn(
 
 
 def test_selection_receipts_retain_only_the_current_batch(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-current-receipt.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-current-receipt.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
@@ -1880,7 +2030,7 @@ def test_selection_receipts_retain_only_the_current_batch(
 
     with connector.transaction():
         first = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1891,7 +2041,7 @@ def test_selection_receipts_retain_only_the_current_batch(
 
     with connector.transaction():
         terminal = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1899,7 +2049,8 @@ def test_selection_receipts_retain_only_the_current_batch(
             now=102,
         )
     assert terminal.terminal and terminal.start_generation == 2
-    assert connector.fetch_all(
+    assert inspect_all(
+        connector,
         "SELECT start_generation, batch_key "
         "FROM catalog_publication_batch_receipt_stored "
         "WHERE candidate_id = %s AND stage = %s",
@@ -1908,7 +2059,7 @@ def test_selection_receipts_retain_only_the_current_batch(
 
     with connector.transaction():
         replayed = PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1921,7 +2072,7 @@ def test_selection_receipts_retain_only_the_current_batch(
     with pytest.raises(PublicationCandidateNotReadyError, match="already COMPLETE"):
         with connector.transaction():
             PublicationCandidateRepository.process_selection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -1932,9 +2083,12 @@ def test_selection_receipts_retain_only_the_current_batch(
 
 
 def test_selection_missing_predecessor_rolls_back_successor_and_checkpoint(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-missing-receipt.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-missing-receipt.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
@@ -1942,7 +2096,7 @@ def test_selection_missing_predecessor_rolls_back_successor_and_checkpoint(
 
     with connector.transaction():
         PublicationCandidateRepository.process_selection_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -1958,7 +2112,7 @@ def test_selection_missing_predecessor_rolls_back_successor_and_checkpoint(
     with pytest.raises(PublicationCandidateCorruptionError, match="predecessor"):
         with connector.transaction():
             PublicationCandidateRepository.process_selection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -1966,13 +2120,15 @@ def test_selection_missing_predecessor_rolls_back_successor_and_checkpoint(
                 now=102,
             )
 
-    assert connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state, updated_at "
+    assert inspect_one(
+        connector,
+        "SELECT generation, `cursor`, processed_count, state, updated_at "
         "FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"BUILD_SELECTION"),
     ) == (2, (1).to_bytes(8, "big"), 1, "OPEN", 101)
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT COUNT(*) FROM catalog_publication_batch_receipt_stored "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"BUILD_SELECTION"),
@@ -1981,9 +2137,12 @@ def test_selection_missing_predecessor_rolls_back_successor_and_checkpoint(
 
 
 def test_selection_reauthorizes_candidate_base_heads_before_mutation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-head-race.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-head-race.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=True)
     _begin(connector, gate, turn)
@@ -1995,7 +2154,7 @@ def test_selection_reauthorizes_candidate_base_heads_before_mutation(
     with pytest.raises(PublicationCandidateHeadRaceError):
         with connector.transaction():
             PublicationCandidateRepository.process_selection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -2003,9 +2162,12 @@ def test_selection_reauthorizes_candidate_base_heads_before_mutation(
                 now=101,
             )
 
-    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_batch_receipts")
-    assert connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state "
+    assert not inspect_one(
+        connector, "SELECT 1 FROM catalog_publication_batch_receipts"
+    )
+    assert inspect_one(
+        connector,
+        "SELECT generation, `cursor`, processed_count, state "
         "FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"BUILD_SELECTION"),
@@ -2014,9 +2176,12 @@ def test_selection_reauthorizes_candidate_base_heads_before_mutation(
 
 
 def test_independent_selection_validation_rejects_missing_materialized_child(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "selection-corruption.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "selection-corruption.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=2)
@@ -2024,7 +2189,7 @@ def test_independent_selection_validation_rejects_missing_materialized_child(
     for index in range(2):
         with connector.transaction():
             PublicationCandidateRepository.process_selection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -2043,7 +2208,7 @@ def test_independent_selection_validation_rejects_missing_materialized_child(
     with pytest.raises(PublicationCandidateConflictError, match="independent"):
         with connector.transaction():
             PublicationCandidateRepository.validate_selection_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 candidate_id=_CANDIDATE,
@@ -2051,12 +2216,14 @@ def test_independent_selection_validation_rejects_missing_materialized_child(
                 now=103,
             )
 
-    assert not connector.fetch_one(
+    assert not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_publication_batch_receipts WHERE stage = %s",
         (b"VALIDATE_SELECTION",),
     )
-    assert connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state "
+    assert inspect_one(
+        connector,
+        "SELECT generation, `cursor`, processed_count, state "
         "FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"VALIDATE_SELECTION"),
@@ -2065,10 +2232,11 @@ def test_independent_selection_validation_rejects_missing_materialized_child(
 
 
 def test_each_selection_batch_mutation_fault_rolls_back_children_receipt_and_cas(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     base_path = tmp_path / "selection-fault-base.sqlite3"
-    base = _generated_database(base_path)
+    base = _generated_database(database_factory.config(str(base_path)))
     gate, turn = _authorities(base)
     _seed_completed_analysis(base, turn, with_base=False)
     _seed_selected_galleries(base, count=1)
@@ -2078,8 +2246,10 @@ def test_each_selection_batch_mutation_fault_rolls_back_children_receipt_and_cas
     # Identity, two selection projections, atomic receipt, atomic checkpoint CAS.
     for failure_at in range(1, 6):
         path = tmp_path / f"selection-fault-{failure_at}.sqlite3"
-        copyfile(base_path, path)
-        connector = SQLiteConnector(str(path))
+        clone_database(
+            database_factory.config(str(base_path)), database_factory.config(str(path))
+        )
+        connector = database_connector(database_factory.config(str(path)))
         connector.connect()
         original_execute = connector.execute
         original_execute_affected = connector.execute_affected
@@ -2116,7 +2286,7 @@ def test_each_selection_batch_mutation_fault_rolls_back_children_receipt_and_cas
         ):
             with connector.transaction():
                 PublicationCandidateRepository.process_selection_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     candidate_id=_CANDIDATE,
@@ -2125,13 +2295,18 @@ def test_each_selection_batch_mutation_fault_rolls_back_children_receipt_and_cas
                 )
 
         assert mutation_number == failure_at
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_identities")
-        assert not connector.fetch_one("SELECT 1 FROM catalog_publication_selections")
-        assert not connector.fetch_one(
-            "SELECT 1 FROM catalog_publication_batch_receipts"
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_identities"
         )
-        assert connector.fetch_one(
-            "SELECT generation, cursor, processed_count, state "
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_selections"
+        )
+        assert not inspect_one(
+            connector, "SELECT 1 FROM catalog_publication_batch_receipts"
+        )
+        assert inspect_one(
+            connector,
+            "SELECT generation, `cursor`, processed_count, state "
             "FROM catalog_publication_checkpoints "
             "WHERE candidate_id = %s AND stage = %s",
             (_CANDIDATE, b"BUILD_SELECTION"),
@@ -2346,11 +2521,14 @@ def test_closed_publication_cursor_codecs_reject_noncanonical_frames(
 
 
 def test_tag_directory_projection_replays_same_value_across_namespaces(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """Variable namespace lengths preserve the catalog child cursor SQL order."""
 
-    connector = _generated_database(tmp_path / "tag-directory-namespace-order.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "tag-directory-namespace-order.sqlite3"))
+    )
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     _seed_selected_galleries(connector, count=1)
@@ -2382,7 +2560,7 @@ def test_tag_directory_projection_replays_same_value_across_namespaces(
     _complete_selection(connector, gate, turn)
     with connector.transaction():
         authority = PublicationCandidateRepository.issue_projection_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             candidate_id=_CANDIDATE,
@@ -2392,12 +2570,12 @@ def test_tag_directory_projection_replays_same_value_across_namespaces(
         with (
             PublicationCandidateRepository.prepare_catalog_projection(
                 connector,
-                backend="sqlite",
+                backend=connector_backend(connector),
                 authority=authority,
             ) as plan,
             PublicationCandidateRepository.prepare_catalog_projection_validation(
                 connector,
-                backend="sqlite",
+                backend=connector_backend(connector),
                 authority=authority,
             ) as validation,
             patch(
@@ -2421,7 +2599,9 @@ def test_tag_directory_projection_replays_same_value_across_namespaces(
                 while True:
                     with connector.transaction():
                         batch = method(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             candidate_id=_CANDIDATE,
@@ -2433,15 +2613,17 @@ def test_tag_directory_projection_replays_same_value_across_namespaces(
                     timestamp += 1
                     if batch.terminal:
                         break
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT namespace, position, tag_value_sha256 "
             "FROM catalog_tag_directory_order WHERE revision = 1 ORDER BY namespace",
         ) == [(namespace, 0, digest) for namespace in namespaces]
-        catalog_refinement._validate_active_discovery_projection(
-            connector,
-            revision=1,
-            display_title_policy_id=1,
-            expected_publication_count=1,
-        )
+        with connector.read_transaction():
+            catalog_refinement._validate_active_discovery_projection(
+                connector,
+                revision=1,
+                display_title_policy_id=1,
+                expected_publication_count=1,
+            )
     finally:
         connector.close()

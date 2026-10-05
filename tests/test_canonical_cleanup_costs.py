@@ -113,6 +113,10 @@ def test_historical_control_does_not_accept_silent_fixture_drift(
 
 @pytest.mark.deep
 @pytest.mark.mariadb
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="ANALYZE FORMAT=JSON r_loops/r_rows and Handler counters measure MariaDB optimizer work; portable cleanup results are covered by the paired growth and cleanup suites",
+)
 def test_real_pipeline_rejects_historical_quadratic_title_cache_work(
     mariadb_config: CoreConfig, tmp_path: Path, cost_probe: ModuleType
 ) -> None:

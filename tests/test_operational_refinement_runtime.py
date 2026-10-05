@@ -9,6 +9,14 @@ from typing import Any, cast
 
 import pytest
 from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_test_database import (
+    Backend,
+    DatabaseFactory,
+    connector_backend,
+    open_generated_database,
+    set_check_constraints,
+    set_foreign_key_checks,
+)
 
 import h2hdb.operational_refinement as operational_runtime
 from h2hdb import vnext_identity
@@ -32,57 +40,55 @@ from h2hdb.operational_refinement import (
     check_revision_allocator_contract_v1,
     validate_builtin_operational_manifest,
 )
-from h2hdb.schema_epoch import SQLiteSchemaEpochCatalog
+from h2hdb.schema_epoch import MariaDBSchemaEpochCatalog, SQLiteSchemaEpochCatalog
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 
 ARTIFACT_DATA = ARTIFACT
 
 
 @pytest.fixture
-def greenfield(tmp_path: Path) -> Iterator[SQLiteConnector]:
-    connector = SQLiteConnector(str(tmp_path / "operational-refinement.sqlite3"))
-    connector.connect()
+def greenfield(database_factory: DatabaseFactory) -> Iterator[SQLConnector]:
+    connector = open_generated_database(database_factory.config())
+    backend = connector_backend(connector)
+    catalog = (
+        SQLiteSchemaEpochCatalog()
+        if backend == "sqlite"
+        else MariaDBSchemaEpochCatalog()
+    )
     try:
-        # This fixture supplies completed state; bootstrap crash boundaries are
-        # covered by the schema lifecycle tests, not by these read validators.
+        catalog.create_control_table(connector)
         with connector.transaction():
-            SQLiteSchemaEpochCatalog().create_control_table(connector)
             connector.execute(
-                """
-                INSERT INTO h2hdb_schema_epoch
-                    (singleton_id, epoch, schema_version, state, manifest_sha256,
-                     started_at, ready_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
+                "INSERT INTO h2hdb_schema_epoch "
+                "(singleton_id, epoch, schema_version, state, manifest_sha256, started_at, ready_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     1,
                     ARTIFACT_DATA["epoch"],
                     ARTIFACT_DATA["schema_version"],
                     "BUILDING",
-                    _manifest_sha256("sqlite"),
+                    _manifest_sha256(backend),
                     0,
                     None,
                 ),
             )
-            payload = ARTIFACT_DATA["backends"]["sqlite"]
-            for _slice_id, statements in payload["slices"]:
-                for _statement_id, _kind, _name, sql in statements:
-                    connector.execute(sql)
-            for seed in payload["bootstrap_seeds"]:
-                connector.execute(seed["sql"], seed["parameters"])
-        yield connector
+        # These cases exercise read validators against malformed state, not native
+        # DDL constraints. Disable fixture enforcement before the seed transaction
+        # so both engines admit exactly the same deliberate corruption.
+        _disable_integrity(connector)
+        with connector.transaction():
+            yield connector
     finally:
         connector.close()
 
 
-def _disable_integrity(connector: SQLiteConnector) -> None:
-    connector.connection.execute("PRAGMA foreign_keys = OFF")
-    connector.connection.execute("PRAGMA ignore_check_constraints = ON")
+def _disable_integrity(connector: SQLConnector) -> None:
+    set_foreign_key_checks(connector, enabled=False)
+    set_check_constraints(connector, enabled=False)
 
 
 def _insert_minimal_published_revision(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     source_revision: int = 1,
     catalog_revision: int = 1,
@@ -125,7 +131,7 @@ def _insert_minimal_published_revision(
 
 
 def _insert_queue_history(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     count: int,
 ) -> tuple[bytes, ...]:
@@ -160,7 +166,7 @@ def _insert_queue_history(
 
 
 def _seed_canonical_payload(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     domain: str,
     payload: bytes,
@@ -193,7 +199,7 @@ def _seed_canonical_payload(
 
 
 def _insert_hash_cache_fixture(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     corrupt_last_source_preimage: bool = False,
 ) -> tuple[tuple[bytes, bytes], ...]:
@@ -264,49 +270,49 @@ def _cleanup_cycle_id(target_kind: str, shard_no: int, generation: int) -> bytes
 
 
 def _insert_maintenance_head(
-    connector: SQLiteConnector, *, mode: str, owner: bytes
+    connector: SQLConnector, *, mode: str, owner: bytes
 ) -> None:
-    connector.connection.execute(
+    connector.execute(
         """
         INSERT INTO operational_maintenance_gate_generations
             (gate_generation, mode, created_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (1, mode, 0),
     )
-    connector.connection.execute(
+    connector.execute(
         """
         INSERT INTO operational_maintenance_gate_heads
             (singleton_id, gate_generation, updated_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (1, 1, 0),
     )
-    connector.connection.execute(
+    connector.execute(
         """
         INSERT INTO operational_maintenance_gate_owners
             (owner_token, gate_generation, lease_expires_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (owner, 1, 10),
     )
 
 
-def _insert_ready_ingest_head(connector: SQLiteConnector) -> None:
-    connector.connection.execute(
+def _insert_ready_ingest_head(connector: SQLConnector) -> None:
+    connector.execute(
         """
         INSERT INTO operational_ingest_generations
             (generation, started_at, completed_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (0, 0, 0),
     )
-    connector.connection.execute(
+    connector.execute(
         """
         INSERT INTO operational_ingest_coordination_heads
             (singleton_id, current_generation, completed_generation,
              phase, last_transition_at)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
         """,
         (1, 0, 0, "READY", 0),
     )
@@ -363,7 +369,7 @@ def test_registry_is_closed_world_and_does_not_import_verification(
 
 @pytest.mark.merge_smoke
 def test_generated_greenfield_and_bootstrap_pass_every_read_validator(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
     for validator in builtin_operational_semantic_validators().values():
         validator(greenfield)
@@ -372,23 +378,23 @@ def test_generated_greenfield_and_bootstrap_pass_every_read_validator(
 
 @pytest.mark.parametrize("orphan", ("seal", "stream"))
 def test_full_check_rejects_operational_effect_roots_without_live_owner(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     orphan: str,
 ) -> None:
     _disable_integrity(greenfield)
     preparation_id = b"o" * 16
     if orphan == "seal":
-        greenfield.connection.execute(
+        greenfield.execute(
             "INSERT INTO operational_operational_preparation_effect_seals "
             "(preparation_id, event_count, final_chain_sha256, sealed_at) "
-            "VALUES (?, 0, ?, 1)",
+            "VALUES (%s, 0, %s, 1)",
             (preparation_id, b"e" * 32),
         )
         message = "effect seal lacks preparation or commit authority"
     else:
-        greenfield.connection.execute(
+        greenfield.execute(
             "INSERT INTO operational_operational_event_streams "
-            "(preparation_id, created_at) VALUES (?, 1)",
+            "(preparation_id, created_at) VALUES (%s, 1)",
             (preparation_id,),
         )
         message = "event stream lacks preparation or seal authority"
@@ -403,6 +409,10 @@ def test_runtime_blockers_name_every_delegated_high_cardinality_duty() -> None:
     ) - {
         "h2hdb.operational.epoch-manifest.v1",
         "h2hdb.operational.database-audit-schedule.v1",
+        # Collection contracts now have dedicated runtime validators; they do
+        # not delegate a missing high-cardinality writer proof here.
+        "h2hdb.operational.source-collection-staging-owner.v1",
+        "h2hdb.operational.source-collection-cleanup-reachability.v1",
     }
     cache = OPERATIONAL_RUNTIME_WRITER_BLOCKERS[
         "h2hdb.operational.canonical-hash-cache.v1"
@@ -422,7 +432,7 @@ def test_runtime_blockers_name_every_delegated_high_cardinality_duty() -> None:
 
 @pytest.mark.merge_smoke
 def test_queue_history_audit_rejects_gap_beyond_first_page(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
@@ -441,7 +451,7 @@ def test_queue_history_audit_rejects_gap_beyond_first_page(
 
 @pytest.mark.merge_smoke
 def test_queue_history_audit_rejects_late_consumption_gid_mismatch(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
@@ -465,7 +475,7 @@ def test_queue_history_audit_rejects_late_consumption_gid_mismatch(
 
 @pytest.mark.merge_smoke
 def test_hash_cache_audit_recomputes_late_framed_preimage(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
@@ -479,7 +489,7 @@ def test_hash_cache_audit_recomputes_late_framed_preimage(
 
 
 def test_hash_cache_audit_streams_each_distinct_canonical_preimage_once(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
@@ -550,7 +560,7 @@ def test_hash_cache_audit_streams_each_distinct_canonical_preimage_once(
 
 @pytest.mark.merge_smoke
 def test_hash_cache_audit_rejects_late_file_row_without_observation(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(operational_runtime, "_READY_AUDIT_PAGE_ROWS", 2)
@@ -572,14 +582,14 @@ def test_hash_cache_audit_rejects_late_file_row_without_observation(
 
 
 def test_static_physical_check_does_not_claim_to_rescan_corpus(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
     _disable_integrity(greenfield)
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_download_requests
             (gid, url, request_token, requested_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
         (1, "https://example.invalid", b"short", 0),
     )
@@ -589,22 +599,22 @@ def test_static_physical_check_does_not_claim_to_rescan_corpus(
 
 
 def test_fencing_checks_only_exact_current_coordination_authority(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
-    greenfield.connection.executemany(
+    greenfield.execute_many(
         """
         INSERT INTO operational_ingest_generations
             (generation, started_at, completed_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
-        ((0, 0, 0), (1, 1, None)),
+        [(0, 0, 0), (1, 1, None)],
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_ingest_coordination_heads
             (singleton_id, current_generation, completed_generation,
              phase, last_transition_at)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
         """,
         (1, 1, 0, "INGESTING", 1),
     )
@@ -613,11 +623,11 @@ def test_fencing_checks_only_exact_current_coordination_authority(
 
     owner = b"ingest-owner-001"
     assert len(owner) == 16
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_ingest_generation_owners
             (generation, owner_token, claimed_at, lease_expires_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
         (1, owner, 1, 10),
     )
@@ -625,60 +635,60 @@ def test_fencing_checks_only_exact_current_coordination_authority(
 
 
 def test_download_ingest_ready_projection_requires_exact_completion_chain(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
-    greenfield.connection.executemany(
+    greenfield.execute_many(
         """
         INSERT INTO operational_download_generations
             (generation, started_at, completed_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
-        ((0, 0, 0), (1, 1, 30)),
+        [(0, 0, 0), (1, 1, 30)],
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_download_coordination_heads
             (singleton_id, current_generation, completed_generation,
              last_transition_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
         (1, 1, 1, 30),
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_ingest_generations
             (generation, started_at, completed_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (1, 2, 30),
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_download_ingest_handoffs
             (download_generation, owner_token, handoff_kind, requested_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
         (1, b"d" * 16, "DOWNLOADER", 2),
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_download_ingest_consumptions
             (download_generation, ingest_generation, consumed_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (1, 1, 3),
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_coordinated_ingest_completions
             (ingest_generation, owner_token, completed_at)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (1, b"i" * 16, 30),
     )
     check_download_ingest_handoff_contract_v1(greenfield)
 
-    greenfield.connection.execute(
+    greenfield.execute(
         "UPDATE operational_download_generations SET completed_at = 31 "
         "WHERE generation = 1"
     )
@@ -687,7 +697,7 @@ def test_download_ingest_ready_projection_requires_exact_completion_chain(
 
 
 def test_shared_owner_requires_exactly_one_slot(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
     owner = b"shared-owner-001"
     assert len(owner) == 16
@@ -695,19 +705,19 @@ def test_shared_owner_requires_exactly_one_slot(
     with pytest.raises(OperationalSemanticValidationError, match="exactly one slot"):
         check_maintenance_gate_contract_v1(greenfield)
 
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (owner, 7),
     )
     check_maintenance_gate_contract_v1(greenfield)
 
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (owner, 8),
     )
@@ -716,48 +726,48 @@ def test_shared_owner_requires_exactly_one_slot(
 
 
 def test_exclusive_owner_requires_every_slot_zero_through_63(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
     owner = b"exclusive-owner1"
     assert len(owner) == 16
     _insert_maintenance_head(greenfield, mode="EXCLUSIVE", owner=owner)
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (owner, 0),
     )
     with pytest.raises(OperationalSemanticValidationError, match="slots 0..63"):
         check_maintenance_gate_contract_v1(greenfield)
 
-    greenfield.connection.executemany(
+    greenfield.execute_many(
         """
         INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
-        ((owner, slot) for slot in range(1, 64)),
+        [(owner, slot) for slot in range(1, 64)],
     )
     check_maintenance_gate_contract_v1(greenfield)
 
 
-def _insert_open_cleanup_job(connector: SQLiteConnector) -> tuple[bytes, str]:
-    target = connector.connection.execute("""
+def _insert_open_cleanup_job(connector: SQLConnector) -> tuple[bytes, str]:
+    target = connector.fetch_one("""
         SELECT target_kind, shard_no, target_key
         FROM operational_cleanup_sweep_targets
         WHERE target_kind = 'SOURCE_BUILD' AND shard_no = 0
-        """).fetchone()
+        """)
     assert target is not None
     target_kind, shard_no, target_key = target
     cleanup_id = _cleanup_cycle_id(target_kind, shard_no, 1)
-    connector.connection.execute(
+    connector.execute(
         """
         INSERT INTO operational_cleanup_jobs
             (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
              algorithm_version, max_rows_per_transaction,
              hash_cache_max_age_microseconds, frozen_root_count,
              frozen_root_set_sha256, state, created_at, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             cleanup_id,
@@ -774,17 +784,17 @@ def _insert_open_cleanup_job(connector: SQLiteConnector) -> tuple[bytes, str]:
             None,
         ),
     )
-    phase = connector.connection.execute("""
+    phase = connector.fetch_one("""
         SELECT phase
         FROM operational_cleanup_phases
         WHERE target_kind = 'SOURCE_BUILD' AND phase_order = 1
-        """).fetchone()
+        """)
     assert phase is not None
     return cleanup_id, cast(str, phase[0])
 
 
 def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
     _disable_integrity(greenfield)
     cleanup_id, phase = _insert_open_cleanup_job(greenfield)
@@ -799,7 +809,7 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
         input_sha256,
         0,
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_cleanup_checkpoints
             (cleanup_id, phase, generation, cursor_bytes, deleted_count,
@@ -807,7 +817,7 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
              receipt_start_cursor, receipt_prior_chain_sha256,
              receipt_prior_deleted_count, receipt_input_sha256,
              receipt_row_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             cleanup_id,
@@ -838,17 +848,15 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
         input_sha256,
         1,
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         "UPDATE operational_cleanup_checkpoints "
         "SET receipt_row_count = 1, receipt_start_cursor = x'', "
-        "deleted_count = 1, chain_sha256 = ?",
+        "deleted_count = 1, chain_sha256 = %s",
         (nonterminal_output,),
     )
     check_bounded_work_contract_v1(greenfield)
 
-    greenfield.connection.execute(
-        "UPDATE operational_cleanup_checkpoints SET state = 'COMPLETE'"
-    )
+    greenfield.execute("UPDATE operational_cleanup_checkpoints SET state = 'COMPLETE'")
     with pytest.raises(OperationalSemanticValidationError, match="equivalence"):
         check_bounded_work_contract_v1(greenfield)
     next_terminal_output = operational_runtime._cleanup_next_chain_sha256(
@@ -860,19 +868,21 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
         input_sha256,
         0,
     )
-    greenfield.connection.execute(
+    greenfield.execute(
         "UPDATE operational_cleanup_checkpoints SET receipt_row_count = 0, "
-        "receipt_start_cursor = cursor_bytes, receipt_prior_chain_sha256 = ?, "
-        "receipt_prior_deleted_count = 1, chain_sha256 = ?",
+        "receipt_start_cursor = cursor_bytes, receipt_prior_chain_sha256 = %s, "
+        "receipt_prior_deleted_count = 1, chain_sha256 = %s",
         (nonterminal_output, next_terminal_output),
     )
     check_bounded_work_contract_v1(greenfield)
 
 
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
 def test_generated_cleanup_layout_requires_state_to_root_phase_chains(
     monkeypatch: pytest.MonkeyPatch,
+    backend: Backend,
 ) -> None:
-    records = ARTIFACT_DATA["backends"]["sqlite"]["bootstrap_seeded_relations"]
+    records = ARTIFACT_DATA["backends"][backend]["bootstrap_seeded_relations"]
     phase_record = cast(
         dict[str, Any],
         next(value for value in records if value["relation"] == "cleanup_phase"),
@@ -886,26 +896,26 @@ def test_generated_cleanup_layout_requires_state_to_root_phase_chains(
     )
     monkeypatch.setitem(phase_record, "expected_rows", drifted)
     with pytest.raises(OperationalSemanticRegistryError, match="phase chain drifts"):
-        operational_runtime._cleanup_layout("sqlite")
+        operational_runtime._cleanup_layout(backend)
 
 
 def test_cleanup_cycle_codec_corruption_fails_closed(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
-    target = greenfield.connection.execute("""
+    target = greenfield.fetch_one("""
         SELECT target_key
         FROM operational_cleanup_sweep_targets
         WHERE target_kind = 'SOURCE_BUILD' AND shard_no = 0
-        """).fetchone()
+        """)
     assert target is not None
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_cleanup_jobs
             (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
              algorithm_version, max_rows_per_transaction,
              hash_cache_max_age_microseconds, frozen_root_count,
              frozen_root_set_sha256, state, created_at, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             b"x" * 16,
@@ -927,15 +937,15 @@ def test_cleanup_cycle_codec_corruption_fails_closed(
 
 
 def test_fixed_allocator_registry_corruption_fails_closed(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
-    greenfield.connection.execute(
+    greenfield.execute(
         "DELETE FROM operational_revision_allocators WHERE stream = 'SOURCE'"
     )
     with pytest.raises(OperationalSemanticValidationError, match="cardinality"):
         check_revision_allocator_contract_v1(greenfield)
 
-    greenfield.connection.execute(
+    greenfield.execute(
         "DELETE FROM operational_identity_allocators WHERE stream = 'TAG'"
     )
     with pytest.raises(OperationalSemanticValidationError, match="cardinality"):
@@ -945,7 +955,7 @@ def test_fixed_allocator_registry_corruption_fails_closed(
 @pytest.mark.merge_smoke
 @pytest.mark.parametrize("stream", ("SOURCE", "CATALOG"))
 def test_revision_allocator_rejects_published_revision_at_next_value(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
     stream: str,
 ) -> None:
     _insert_minimal_published_revision(greenfield)
@@ -964,7 +974,7 @@ def test_revision_allocator_rejects_published_revision_at_next_value(
 
 
 class _RecordingConnector(SQLConnector):
-    def __init__(self, delegate: SQLiteConnector) -> None:
+    def __init__(self, delegate: SQLConnector) -> None:
         self.delegate = delegate
         self.queries: list[tuple[str, tuple[Any, ...]]] = []
 
@@ -1003,8 +1013,8 @@ class _RecordingConnector(SQLConnector):
         return self.delegate.fetch_all(query, data)
 
 
-def _table_name(relation_name: str) -> str:
-    relations = ARTIFACT_DATA["backends"]["sqlite"]["relations"]
+def _table_name(relation_name: str, backend: str) -> str:
+    relations = ARTIFACT_DATA["backends"][backend]["relations"]
     return cast(
         str,
         next(
@@ -1016,34 +1026,50 @@ def _table_name(relation_name: str) -> str:
 
 
 def test_full_check_query_budget_limits_transition_and_owner_audits(
-    greenfield: SQLiteConnector,
+    greenfield: SQLConnector,
 ) -> None:
     _insert_ready_ingest_head(greenfield)
     owner = b"shared-owner-001"
     _insert_maintenance_head(greenfield, mode="SHARED", owner=owner)
-    greenfield.connection.execute(
+    greenfield.execute(
         """
         INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (owner, 0),
     )
-    greenfield.connection.executemany(
+    greenfield.execute_many(
         """
         INSERT INTO operational_download_requests
             (gid, url, request_token, requested_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
-        (
+        [
             (gid, f"https://example.invalid/{gid}", gid.to_bytes(16, "big"), 0)
             for gid in range(1, 1001)
-        ),
+        ],
     )
 
     recording = _RecordingConnector(greenfield)
     for validator in builtin_operational_semantic_validators().values():
         validator(recording)
 
+    # Current READY contracts also audit retained collection/staging ownership.
+    # These full-audit facts may be scanned, like queue history; the connector
+    # call budget below and the forbidden download-request scan stay unchanged.
+    collection_tables = {
+        "operational_gallery_observation_stagings",
+        "operational_gallery_staging_source_builds",
+        "operational_gallery_staging_collections",
+        "catalog_source_collections",
+        "operational_source_collection_states",
+        "operational_source_collection_claims",
+        "operational_gallery_observation_staging_claims",
+        "catalog_gallery_identities",
+        "operational_source_working_collections",
+        "catalog_source_collection_observations",
+        "catalog_gallery_observations",
+    }
     allowed_relations = {
         "database_audit_state",
         "storage_instance_binding",
@@ -1086,12 +1112,17 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         "file_hash_cache",
         "content_blob",
     }
-    allowed_tables = {_table_name(name) for name in allowed_relations}
+    allowed_tables = {
+        _table_name(name, connector_backend(greenfield)) for name in allowed_relations
+    }
     allowed_tables.add("h2hdb_schema_epoch")
-    cleanup_cycle_root_table = _table_name("cleanup_cycle_root")
+    allowed_tables.update(collection_tables)
+    cleanup_cycle_root_table = _table_name(
+        "cleanup_cycle_root", connector_backend(greenfield)
+    )
     assert cleanup_cycle_root_table == "operational_cleanup_cycle_roots"
     fixed_scan_tables = {
-        _table_name(name)
+        _table_name(name, connector_backend(greenfield))
         for name in {
             "database_audit_state",
             "storage_instance_binding",
@@ -1108,9 +1139,11 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
             "deletion_request_generation_head",
         }
     }
-    capped_request_table = _table_name("gallery_observation_staging_request")
+    capped_request_table = _table_name(
+        "gallery_observation_staging_request", connector_backend(greenfield)
+    )
     owner_audit_tables = {
-        _table_name(name)
+        _table_name(name, connector_backend(greenfield))
         for name in {
             "publication_commit",
             "operational_preparation",
@@ -1119,7 +1152,7 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         }
     }
     retained_fact_audit_tables = {
-        _table_name(name)
+        _table_name(name, connector_backend(greenfield))
         for name in {
             "deletion_request_generation",
             "deletion_request_attempt",
@@ -1145,21 +1178,35 @@ def test_full_check_query_budget_limits_transition_and_owner_audits(
         else:
             assert " LIMIT " in f" {normalized.upper()} "
 
-        plan = greenfield.connection.execute(
-            "EXPLAIN QUERY PLAN " + query.replace("%s", "?"), data
-        ).fetchall()
-        if any("SCAN" in cast(str, row[3]).upper() for row in plan):
+        if connector_backend(greenfield) == "sqlite":
+            plan = greenfield.fetch_all("EXPLAIN QUERY PLAN " + query, data)
+            has_scan = any("SCAN" in str(row[3]).upper() for row in plan)
+        else:
+            plan = greenfield.fetch_all("EXPLAIN " + query, data)
+            has_scan = any(str(row[3]).upper() in {"ALL", "INDEX"} for row in plan)
+        if has_scan:
             assert (
                 tables <= fixed_scan_tables
                 or tables == {capped_request_table}
                 or tables <= owner_audit_tables
                 or tables <= retained_fact_audit_tables
+                or tables <= collection_tables
             )
 
-    assert _table_name("download_request") not in queried_tables
-    assert _table_name("source_revision") in queried_tables
-    assert _table_name("catalog_revision") in queried_tables
-    assert _table_name("gallery_observation_staging") not in queried_tables
+    assert (
+        _table_name("download_request", connector_backend(greenfield))
+        not in queried_tables
+    )
+    assert (
+        _table_name("source_revision", connector_backend(greenfield)) in queried_tables
+    )
+    assert (
+        _table_name("catalog_revision", connector_backend(greenfield)) in queried_tables
+    )
+    assert (
+        _table_name("gallery_observation_staging", connector_backend(greenfield))
+        in queried_tables
+    )
     cycle_root_queries = [
         " ".join(query.split()).upper()
         for query, _data in recording.queries

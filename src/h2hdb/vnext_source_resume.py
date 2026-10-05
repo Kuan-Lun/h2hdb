@@ -259,7 +259,12 @@ def _load_resume_markers(
             raise SourceBuildConflictError(
                 "source resume qualification row is malformed"
             )
-        identity = GalleryIdentity(row[0], row[3], row[4], row[5])
+        try:
+            identity = GalleryIdentity(row[0], row[3], row[4], row[5])
+        except ValueError as error:
+            raise SourceBuildConflictError(
+                "source resume gallery identity differs from its durable coordinates"
+            ) from error
         require_positive_int63(row[1], field="resume observation_id")
         if (
             identity.gallery_id <= after_gallery

@@ -35,7 +35,6 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_bounds,
     seed_gallery_page_descriptor,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import (
     seed_sealed_source_build,
     seed_snapshot_manifest,
@@ -44,11 +43,20 @@ from vnext_publication_fixtures import (
     seed_publication_commit,
     seed_publication_finalization,
 )
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+    snapshot_rows,
+)
 
 import h2hdb.vnext_analysis_repository as analysis_module
+from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_analysis_family import (
     AnalysisFamilyCollisionError,
     require_exact_analysis_state_components,
@@ -96,9 +104,12 @@ _ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
 def test_already_uploaded_marker_rejects_cross_domain_canonical_value(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-marker-domain.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-marker-domain.sqlite3"))
+    )
     try:
         value = b"v" * 32
         receipt = CanonicalValueReadReceipt(
@@ -122,7 +133,7 @@ def test_already_uploaded_marker_rejects_cross_domain_canonical_value(
             pytest.raises(AnalysisCorruptionError, match="wrong digest domain"),
         ):
             analysis_module._gallery_has_already_uploaded_marker(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 1,
                 1,
             )
@@ -374,13 +385,16 @@ def test_gid_winner_terminal_keyspace_rejects_orphans_duplicates_and_noncandidat
     ],
 )
 def test_gid_narrow_materialization_response_loss_rolls_back_statement(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     table: str,
     materialize: Any,
 ) -> None:
-    connector = _generated_database(tmp_path / f"{table}.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / f"{table}.sqlite3"))
+    )
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         original_execute = connector.execute
 
         def execute_then_fail(sql: str, data: tuple[Any, ...] = ()) -> None:
@@ -395,30 +409,28 @@ def test_gid_narrow_materialization_response_loss_rolls_back_statement(
                     "execute",
                     side_effect=execute_then_fail,
                 ):
-                    materialize(VNextUnitOfWork(connector, backend="sqlite"))
-        assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+                    materialize(
+                        VNextUnitOfWork(connector, backend=connector_backend(connector))
+                    )
+        assert inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
     finally:
         connector.close()
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
-
-
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=10,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=11,
             lease_duration=1_000_000,
@@ -427,7 +439,7 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _canonical_identity(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     value_sha256: bytes,
     *,
     domain: bytes,
@@ -446,7 +458,7 @@ def _canonical_identity(
     )
 
 
-def _seed_root(connector: SQLiteConnector) -> bytes:
+def _seed_root(connector: SQLConnector) -> bytes:
     root = b"r" * 32
     _canonical_identity(connector, root, domain=b"source_root_v1", serial=1)
     scope = seed_source_scope(
@@ -511,7 +523,7 @@ def _seed_root(connector: SQLiteConnector) -> bytes:
 
 
 def _seed_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     scope: bytes,
@@ -552,7 +564,7 @@ def _seed_build(
 
 
 def _source_build_id(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     scope: bytes,
     manifest_sha256: bytes,
@@ -560,7 +572,8 @@ def _source_build_id(
     file_count: int = 0,
     byte_count: int = 0,
 ) -> bytes:
-    source_root = connector.fetch_one(
+    source_root = inspect_one(
+        connector,
         "SELECT source_root_sha256 FROM catalog_source_scopes WHERE scope_key = %s",
         (scope,),
     )
@@ -579,7 +592,7 @@ def _source_build_id(
 
 
 def _seed_published_commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     snapshot_manifest_sha256: bytes,
@@ -594,9 +607,10 @@ def _seed_published_commit(
     revision = generation
 
     if analysis_id is None:
-        analysis_row = connector.fetch_one(
+        analysis_row = inspect_one(
+            connector,
             "SELECT analysis_id FROM catalog_analysis_runs "
-            "WHERE state = 'COMPLETE' ORDER BY analysis_id LIMIT 1"
+            "WHERE state = 'COMPLETE' ORDER BY analysis_id LIMIT 1",
         )
         assert len(analysis_row) == 1
         analysis_id = analysis_row[0]
@@ -666,7 +680,8 @@ def _seed_published_commit(
         duplicate_losers=0,
         committed_at=committed_at,
     )
-    existing_head = connector.fetch_one(
+    existing_head = inspect_one(
+        connector,
         "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
         "WHERE channel = %s",
         (b"default",),
@@ -687,7 +702,7 @@ def _seed_published_commit(
 
 
 def _seed_qualification(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
@@ -719,7 +734,7 @@ def _seed_qualification(
 
 
 def _seed_gallery(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     scope: bytes,
@@ -731,7 +746,8 @@ def _seed_gallery(
     qualification: identity.VNextSourceQualification | None = None,
 ) -> None:
     locator = sha256(b"locator" + gallery_id.to_bytes(8, "big")).digest()
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_source_locator_identity WHERE locator_sha256 = %s",
         (locator,),
     ):
@@ -753,7 +769,8 @@ def _seed_gallery(
             scope_key=scope,
             locator_sha256=locator,
         )
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_source_build_expected_gallery "
         "WHERE build_id = %s AND gallery_id = %s",
         (build_id, gallery_id),
@@ -797,7 +814,8 @@ def _seed_gallery(
         (build_id, gallery_id, observation_id),
     )
     for digest, count in occurrences:
-        if not connector.fetch_one(
+        if not inspect_one(
+            connector,
             "SELECT 1 FROM catalog_content_blobs WHERE file_sha256 = %s",
             (digest,),
         ):
@@ -821,7 +839,7 @@ def _seed_gallery(
 
 
 def _map_working_build(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     build_id: bytes,
     generation: int,
@@ -847,7 +865,7 @@ def _map_working_build(
 
 
 def _insert_scan_fact(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
@@ -865,7 +883,7 @@ def _insert_scan_fact(
 
 
 def _insert_stat_fact(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
@@ -882,7 +900,7 @@ def _insert_stat_fact(
 
 
 def _seed_preparation_facts(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
@@ -907,19 +925,22 @@ def _seed_preparation_facts(
     bounds_by_page: dict[bytes, tuple[bytes, bytes]] = {}
     for encoded in tree.pages:
         page = decode_gallery_observation_page(encoded.page_bytes)
-        existing = connector.fetch_one(
+        existing = inspect_one(
+            connector,
             "SELECT page_bytes FROM catalog_gallery_observation_pages "
             "WHERE page_sha256 = %s",
             (encoded.page_sha256,),
         )
         if existing:
             assert existing == (encoded.page_bytes,)
-            first = connector.fetch_one(
+            first = inspect_one(
+                connector,
                 "SELECT first_key FROM catalog_gallery_observation_page_key_bounds_first_keys "
                 "WHERE page_sha256 = %s",
                 (encoded.page_sha256,),
             )
-            last = connector.fetch_one(
+            last = inspect_one(
+                connector,
                 "SELECT last_key FROM catalog_gallery_observation_page_key_bounds_last_keys "
                 "WHERE page_sha256 = %s",
                 (encoded.page_sha256,),
@@ -962,7 +983,8 @@ def _seed_preparation_facts(
         "(gallery_id, observation_id, root_page_sha256) VALUES (%s, %s, %s)",
         (gallery_id, observation_id, tree.root_page_sha256),
     )
-    source_gallery_name = connector.fetch_one(
+    source_gallery_name = inspect_one(
+        connector,
         "SELECT locator.source_gallery_name "
         "FROM catalog_gallery_identities AS identity "
         "JOIN catalog_source_locator_identity AS locator "
@@ -970,14 +992,17 @@ def _seed_preparation_facts(
         "WHERE identity.gallery_id = %s",
         (gallery_id,),
     )[0]
-    if not connector.fetch_one(
-        "SELECT 1 FROM catalog_gallery_gid_identities WHERE gid = %s", (metadata.gid,)
+    if not inspect_one(
+        connector,
+        "SELECT 1 FROM catalog_gallery_gid_identities WHERE gid = %s",
+        (metadata.gid,),
     ):
         connector.execute(
             "INSERT INTO catalog_gallery_gid_identities (gid) VALUES (%s)",
             (metadata.gid,),
         )
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_source_gallery_name_gids WHERE source_gallery_name = %s",
         (source_gallery_name,),
     ):
@@ -986,7 +1011,8 @@ def _seed_preparation_facts(
             "VALUES (%s, %s)",
             (source_gallery_name, metadata.gid),
         )
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_gallery_source_name_accesses WHERE gallery_id = %s",
         (gallery_id,),
     ):
@@ -1030,8 +1056,10 @@ def _seed_preparation_facts(
     )
     name = f"content-{gallery_id}.jpg".encode("ascii")
     file_key = identity.file_key(name)
-    if not connector.fetch_one(
-        "SELECT 1 FROM catalog_file_name_identities WHERE file_key = %s", (file_key,)
+    if not inspect_one(
+        connector,
+        "SELECT 1 FROM catalog_file_name_identities WHERE file_key = %s",
+        (file_key,),
     ):
         seed_file_name_identity(
             connector,
@@ -1050,7 +1078,7 @@ def _seed_preparation_facts(
 
 
 def _put_canonical_plan(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     plan: CanonicalValueUploadPlan,
@@ -1059,7 +1087,7 @@ def _put_canonical_plan(
 ) -> None:
     with connector.transaction():
         CanonicalValueRepository.allocate(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -1068,7 +1096,7 @@ def _put_canonical_plan(
     for page in plan.iter_pages():
         with connector.transaction():
             CanonicalValueRepository.put_page(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 plan=plan,
@@ -1077,7 +1105,7 @@ def _put_canonical_plan(
             )
     with connector.transaction():
         CanonicalValueRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             plan=plan,
@@ -1086,7 +1114,7 @@ def _put_canonical_plan(
 
 
 def _issue_preparation_authority(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -1095,7 +1123,7 @@ def _issue_preparation_authority(
 ) -> Any:
     with connector.transaction():
         return AnalysisRepository.issue_preparation_authority(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             analysis_id=analysis_id,
@@ -1104,7 +1132,7 @@ def _issue_preparation_authority(
 
 
 def _run_prepared_gallery_stage(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -1135,7 +1163,7 @@ def _run_prepared_gallery_stage(
     preparations = tuple(
         prepare(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=authority,
             gallery_id=gallery_id,
         )
@@ -1158,7 +1186,7 @@ def _run_prepared_gallery_stage(
         first_key = prefix + b"-rows"
         with connector.transaction():
             first = method(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=analysis_id,
@@ -1184,7 +1212,9 @@ def _run_prepared_gallery_stage(
                     ),
                 ):
                     replay = method(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=analysis_id,
@@ -1219,7 +1249,7 @@ def _run_prepared_gallery_stage(
             )
         with connector.transaction():
             terminal = method(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=analysis_id,
@@ -1238,7 +1268,7 @@ def _run_prepared_gallery_stage(
 
 
 def _run_removed_gallery_stage(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -1249,7 +1279,7 @@ def _run_removed_gallery_stage(
 ) -> tuple[Any, Any]:
     with connector.transaction():
         first = method(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             analysis_id=analysis_id,
@@ -1261,7 +1291,7 @@ def _run_removed_gallery_stage(
     assert first.row_count == 1 and not first.terminal
     with connector.transaction():
         terminal = method(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             analysis_id=analysis_id,
@@ -1275,7 +1305,7 @@ def _run_removed_gallery_stage(
 
 
 def _run_single_live_gallery_downstream(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -1397,7 +1427,7 @@ def _run_single_live_gallery_downstream(
 
 
 def _prepare_upload_and_handoff_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -1413,7 +1443,7 @@ def _prepare_upload_and_handoff_snapshot(
     )
     with AnalysisRepository.prepare_snapshot_manifest(
         connector,
-        backend="sqlite",
+        backend=connector_backend(connector),
         authority=authority,
     ) as preparation:
         _put_canonical_plan(
@@ -1425,7 +1455,7 @@ def _prepare_upload_and_handoff_snapshot(
         )
         with connector.transaction():
             return AnalysisRepository.handoff_snapshot_manifest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation=preparation,
@@ -1434,7 +1464,7 @@ def _prepare_upload_and_handoff_snapshot(
 
 
 def _begin(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -1444,7 +1474,7 @@ def _begin(
 ) -> Any:
     with connector.transaction():
         return AnalysisRepository.begin(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             build_id=build_id,
@@ -1455,7 +1485,7 @@ def _begin(
 
 
 def _run_stage(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     method: Any,
@@ -1468,7 +1498,11 @@ def _run_stage(
 ) -> list[Any]:
     results = []
     with analysis_source_pages(
-        connector, backend="sqlite", gate=gate, turn=turn, analysis_id=analysis_id
+        connector,
+        backend=connector_backend(connector),
+        gate=gate,
+        turn=turn,
+        analysis_id=analysis_id,
     ) as prepare:
         for index in range(1000):
             preparation = (
@@ -1487,7 +1521,7 @@ def _run_stage(
             )
             with connector.transaction():
                 result = method(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=analysis_id,
@@ -1512,7 +1546,9 @@ def _run_stage(
                         ),
                     ):
                         replay = method(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             analysis_id=analysis_id,
@@ -1555,7 +1591,7 @@ def _run_stage(
 
 
 def _run_file_slice(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -1612,7 +1648,7 @@ def _run_file_slice(
 
 
 def _seed_initial_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     generation: int = 1,
 ) -> tuple[bytes, bytes, bytes, bytes]:
@@ -1657,9 +1693,12 @@ def _seed_initial_snapshot(
 
 
 def test_begin_rejects_a_different_policy_for_the_same_build_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-sole-build-policy.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-sole-build-policy.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -1693,7 +1732,7 @@ def test_begin_rejects_a_different_policy_for_the_same_build_zero_write(
         ):
             with connector.transaction():
                 AnalysisRepository.begin(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     build_id=build,
@@ -1702,7 +1741,8 @@ def test_begin_rejects_a_different_policy_for_the_same_build_zero_write(
                     now=31,
                 )
         assert _logical_database_dump(connector) == before
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT analysis_id, policy_id FROM catalog_analysis_run_descriptor "
             "WHERE build_id = %s",
             (build,),
@@ -1712,11 +1752,12 @@ def test_begin_rejects_a_different_policy_for_the_same_build_zero_write(
 
 
 def _independent_file_oracle(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     build_id: bytes,
 ) -> dict[bytes, tuple[int, int, int]]:
     result: dict[bytes, tuple[int, int, int]] = {}
-    hashes = connector.fetch_all(
+    hashes = inspect_all(
+        connector,
         "SELECT DISTINCT occurrence.file_sha256 "
         "FROM catalog_source_build_galleries AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
@@ -1726,7 +1767,8 @@ def _independent_file_oracle(
         (build_id,),
     )
     for (digest,) in hashes:
-        members = connector.fetch_all(
+        members = inspect_all(
+            connector,
             "SELECT occurrence.gallery_id, occurrence.observation_id, "
             "occurrence.occurrence_count "
             "FROM catalog_source_build_galleries AS member "
@@ -1740,7 +1782,8 @@ def _independent_file_oracle(
         maximum = 0
         occurrence_count = 0
         for gallery_id, observation_id, count in members:
-            disposition = connector.fetch_one(
+            disposition = inspect_one(
+                connector,
                 "SELECT accepted FROM catalog_gallery_observation_validation_dispositions "
                 "WHERE gallery_id = %s AND observation_id = %s",
                 (gallery_id, observation_id),
@@ -1751,7 +1794,8 @@ def _independent_file_oracle(
             occurrence_count += int(count)
             artists = {
                 int(row[0])
-                for row in connector.fetch_all(
+                for row in inspect_all(
+                    connector,
                     "SELECT artist_tag_id FROM catalog_gallery_observation_artists "
                     "WHERE gallery_id = %s AND observation_id = %s",
                     (gallery_id, observation_id),
@@ -1765,9 +1809,12 @@ def _independent_file_oracle(
 
 
 def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-abandon.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-abandon.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -1804,17 +1851,21 @@ def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
                         side_effect=fail_statement,
                     ):
                         AnalysisRepository.abandon(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             analysis_id=run.analysis_id,
                             now=40,
                         )
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
                 (run.analysis_id,),
             ) == ("OPEN",)
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 "SELECT build_id FROM operational_source_working_builds "
                 "WHERE slot = %s",
                 (1,),
@@ -1822,7 +1873,7 @@ def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
 
         with connector.transaction():
             abandoned = AnalysisRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -1830,13 +1881,15 @@ def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
             )
         assert abandoned.state == "ABANDONED" and not abandoned.replayed
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
                 (1,),
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
@@ -1855,7 +1908,7 @@ def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
                 ),
             ):
                 replay = AnalysisRepository.abandon(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -1885,7 +1938,7 @@ def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
         with pytest.raises(AnalysisCorruptionError, match="retained"):
             with connector.transaction():
                 AnalysisRepository.abandon(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -1895,12 +1948,14 @@ def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
         connector.close()
 
 
-def _logical_database_dump(connector: SQLiteConnector) -> tuple[str, ...]:
-    return tuple(connector.connection.iterdump())
+def _logical_database_dump(
+    connector: SQLConnector,
+) -> dict[str, tuple[tuple[Any, ...], ...]]:
+    return snapshot_rows(connector)
 
 
 def _seed_abandoned_replay_blocker(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     blocker: str,
     analysis_id: bytes,
@@ -1971,11 +2026,14 @@ def _seed_abandoned_replay_blocker(
     ),
 )
 def test_abandoned_replay_rejects_terminal_blockers_without_mutation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     blocker: str,
 ) -> None:
-    connector = _generated_database(
-        tmp_path / f"analysis-abandon-replay-{blocker}.sqlite3"
+    connector = open_generated_database(
+        database_factory.config(
+            str(tmp_path / f"analysis-abandon-replay-{blocker}.sqlite3")
+        )
     )
     try:
         gate, turn = _authorities(connector)
@@ -1991,7 +2049,7 @@ def test_abandoned_replay_rejects_terminal_blockers_without_mutation(
         )
         with connector.transaction():
             abandoned = AnalysisRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -2001,7 +2059,7 @@ def test_abandoned_replay_rejects_terminal_blockers_without_mutation(
 
         with connector.transaction():
             replay = AnalysisRepository.abandon(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -2021,7 +2079,7 @@ def test_abandoned_replay_rejects_terminal_blockers_without_mutation(
         with pytest.raises(AnalysisCorruptionError, match="terminal-incompatible"):
             with connector.transaction():
                 AnalysisRepository.abandon(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -2029,12 +2087,14 @@ def test_abandoned_replay_rejects_terminal_blockers_without_mutation(
                 )
 
         assert _logical_database_dump(connector) == before
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
             (run.analysis_id,),
         ) == ("ABANDONED",)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
                 (1,),
             )
@@ -2044,8 +2104,12 @@ def test_abandoned_replay_rejects_terminal_blockers_without_mutation(
         connector.close()
 
 
-def test_abandon_rejects_complete_and_stale_ingest_authority(tmp_path: Path) -> None:
-    connector = _generated_database(tmp_path / "analysis-abandon-reject.sqlite3")
+def test_abandon_rejects_complete_and_stale_ingest_authority(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-abandon-reject.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -2066,13 +2130,14 @@ def test_abandon_rejects_complete_and_stale_ingest_authority(tmp_path: Path) -> 
         with pytest.raises(IngestFenceUnavailableError, match="stale"):
             with connector.transaction():
                 AnalysisRepository.abandon(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
                     analysis_id=run.analysis_id,
                     now=31,
                 )
-        started_at = connector.fetch_one(
+        started_at = inspect_one(
+            connector,
             "SELECT started_at FROM catalog_analysis_run_descriptor "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
@@ -2086,13 +2151,14 @@ def test_abandon_rejects_complete_and_stale_ingest_authority(tmp_path: Path) -> 
         with pytest.raises(AnalysisNotReadyError, match="COMPLETE"):
             with connector.transaction():
                 AnalysisRepository.abandon(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
                     now=32,
                 )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
             (1,),
         ) == (build,)
@@ -2101,9 +2167,12 @@ def test_abandon_rejects_complete_and_stale_ingest_authority(tmp_path: Path) -> 
 
 
 def test_component_terminal_receipt_requires_stage_specific_cursor_codec(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-component-codec.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-component-codec.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -2118,7 +2187,8 @@ def test_component_terminal_receipt_requires_stage_specific_cursor_codec(
         )
         sealed_at = (
             int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT started_at FROM catalog_analysis_run_descriptor "
                     "WHERE analysis_id = %s",
                     (run.analysis_id,),
@@ -2140,7 +2210,8 @@ def test_component_terminal_receipt_requires_stage_specific_cursor_codec(
         stage = b"validate_file_hash_decision"
 
         def set_terminal_cursor(cursor: bytes) -> None:
-            generation = connector.fetch_one(
+            generation = inspect_one(
+                connector,
                 "SELECT start_generation FROM catalog_analysis_batch_receipts "
                 "WHERE analysis_id = %s AND stage = %s AND row_count = %s",
                 (run.analysis_id, stage, 0),
@@ -2184,9 +2255,12 @@ def test_component_terminal_receipt_requires_stage_specific_cursor_codec(
 
 
 def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_closed(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-full.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-full.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -2230,7 +2304,8 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
         assert replay.analysis_id == run.analysis_id
         assert replay.input_manifest_sha256 == run.input_manifest_sha256
         assert replay.replayed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE build_id = %s",
             (build,),
         ) == (1,)
@@ -2239,7 +2314,8 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
         oracle = _independent_file_oracle(connector, build)
         resolved = {
             bytes(row[0]): (int(row[1]), int(row[2]), int(row[3]))
-            for row in connector.fetch_all(
+            for row in inspect_all(
+                connector,
                 "SELECT file_sha256, occurrence_count, artist_count, "
                 "maximum_gallery_artist_count "
                 "FROM catalog_analysis_file_hash_decision_resolved "
@@ -2248,7 +2324,8 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
             )
         }
         assert resolved == oracle == {first: (3, 3, 2), second: (1, 2, 2)}
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT old_value.old_excluded, new_value.new_excluded "
             "FROM catalog_analysis_exclusion_delta_seals AS sealed "
             "JOIN catalog_analysis_exclusion_delta_old_excluded_flags AS old_value "
@@ -2264,13 +2341,14 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
         with pytest.raises(AnalysisNotReadyError, match="five components"):
             with connector.transaction():
                 AnalysisRepository.complete(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
                     now=500,
                 )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state, completed_at FROM catalog_analysis_runs "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
@@ -2280,20 +2358,23 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
 
 
 def test_first_no_head_build_after_empty_ingest_turn_is_genesis(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-empty-turn-genesis.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-empty-turn-genesis.sqlite3"))
+    )
     try:
         gate, empty_turn = _authorities(connector)
         with connector.transaction():
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 empty_turn,
                 now=12,
             )
         with connector.transaction():
             first_build_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"j" * 16,
                 now=13,
                 lease_duration=1_000_000,
@@ -2320,9 +2401,12 @@ def test_first_no_head_build_after_empty_ingest_turn_is_genesis(
 
 
 def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-crash.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-crash.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -2343,7 +2427,7 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
         )
         with analysis_source_pages(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             gate=gate,
             turn=turn,
             analysis_id=run.analysis_id,
@@ -2359,7 +2443,8 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                     }
                     else {}
                 )
-                receipt_count = connector.fetch_one(
+                receipt_count = inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                     "WHERE analysis_id = %s",
                     (run.analysis_id,),
@@ -2367,7 +2452,9 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                 with pytest.raises(RuntimeError, match="injected crash"):
                     with connector.transaction():
                         method(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             analysis_id=run.analysis_id,
@@ -2378,7 +2465,8 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                         )
                         raise RuntimeError("injected crash")
                 assert (
-                    connector.fetch_one(
+                    inspect_one(
+                        connector,
                         "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                         "WHERE analysis_id = %s",
                         (run.analysis_id,),
@@ -2387,7 +2475,9 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                 )
                 with connector.transaction():
                     committed = method(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -2397,14 +2487,17 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                         **preparation,
                     )
                 assert committed.next_state == "OPEN"
-                before = connector.fetch_one(
+                before = inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                     "WHERE analysis_id = %s",
                     (run.analysis_id,),
                 )[0]
                 with connector.transaction():
                     replay = method(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -2433,7 +2526,8 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                     component_sealed=committed.component_sealed,
                 )
                 assert (
-                    connector.fetch_one(
+                    inspect_one(
+                        connector,
                         "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                         "WHERE analysis_id = %s",
                         (run.analysis_id,),
@@ -2448,7 +2542,9 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                     }
                 with connector.transaction():
                     terminal = method(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -2459,7 +2555,8 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                     )
                 assert terminal.next_state == "COMPLETE"
                 assert terminal.terminal and terminal.row_count == 0
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT row_count FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s AND state_component = %s",
             (run.analysis_id, b"file_hash_decision"),
@@ -2469,9 +2566,12 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
 
 
 def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-atomic-fault.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-atomic-fault.sqlite3"))
+    )
     receipt_table = "catalog_analysis_batch_receipt_stored"
     checkpoint_table = "catalog_analysis_checkpoints"
     mutation_tables = (receipt_table, checkpoint_table)
@@ -2489,7 +2589,7 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
         )
         with connector.transaction():
             first = AnalysisRepository.process_changed_gallery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -2499,13 +2599,15 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
             )
         assert not first.terminal
         checkpoint_key = (run.analysis_id, b"changed_gallery")
-        before_checkpoint = connector.fetch_one(
-            "SELECT generation, cursor, processed_count, state, updated_at "
+        before_checkpoint = inspect_one(
+            connector,
+            "SELECT generation, `cursor`, processed_count, state, updated_at "
             "FROM catalog_analysis_checkpoints "
             "WHERE analysis_id = %s AND stage = %s",
             checkpoint_key,
         )
-        before_receipt_count = connector.fetch_one(
+        before_receipt_count = inspect_one(
+            connector,
             f"SELECT COUNT(*) FROM {receipt_table} "
             "WHERE analysis_id = %s AND stage = %s",
             checkpoint_key,
@@ -2549,7 +2651,9 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
                         ),
                     ):
                         AnalysisRepository.process_changed_gallery_batch(
-                            VNextUnitOfWork(connector, backend="sqlite"),
+                            VNextUnitOfWork(
+                                connector, backend=connector_backend(connector)
+                            ),
                             gate_lease=gate,
                             ingest_turn=turn,
                             analysis_id=run.analysis_id,
@@ -2559,15 +2663,17 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
                         )
             assert mutation_number == failure_at
             assert (
-                connector.fetch_one(
-                    "SELECT generation, cursor, processed_count, state, updated_at "
+                inspect_one(
+                    connector,
+                    "SELECT generation, `cursor`, processed_count, state, updated_at "
                     "FROM catalog_analysis_checkpoints "
                     "WHERE analysis_id = %s AND stage = %s",
                     checkpoint_key,
                 )
                 == before_checkpoint
             )
-            assert connector.fetch_one(
+            assert inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {receipt_table} "
                 "WHERE analysis_id = %s AND stage = %s",
                 checkpoint_key,
@@ -2575,7 +2681,7 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
 
         with connector.transaction():
             terminal = AnalysisRepository.process_changed_gallery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -2586,7 +2692,7 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
         assert terminal.terminal and terminal.next_state == "COMPLETE"
         with connector.transaction():
             replay = AnalysisRepository.process_changed_gallery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -2600,14 +2706,15 @@ def test_atomic_receipt_and_checkpoint_every_statement_fault_rolls_back(
 
 
 def _complete_baseline_for_incremental(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
 ) -> None:
     snapshot = b"m" * 32
     with connector.transaction():
-        started_at = connector.fetch_one(
+        started_at = inspect_one(
+            connector,
             "SELECT started_at FROM catalog_analysis_run_descriptor "
             "WHERE analysis_id = %s",
             (analysis_id,),
@@ -2648,7 +2755,7 @@ def _complete_baseline_for_incremental(
 
 
 def _prepare_incremental(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
 ) -> tuple[IngestTurn, bytes, bytes, bytes, bytes]:
@@ -2676,13 +2783,13 @@ def _prepare_incremental(
             analysis_id=baseline.analysis_id,
         )
         IngestFenceRepository.complete(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             turn,
             now=520,
         )
     with connector.transaction():
         second_turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"j" * 16,
             now=521,
             lease_duration=1_000_000,
@@ -2738,9 +2845,12 @@ def _prepare_incremental(
 
 
 def test_incremental_overlay_has_exact_changed_shadow_tombstone_and_full_resolution(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-incremental.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-incremental.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         turn, build, unchanged, removed, added = _prepare_incremental(
@@ -2756,7 +2866,8 @@ def test_incremental_overlay_has_exact_changed_shadow_tombstone_and_full_resolut
         )
         assert run.overlay_depth == 1
         assert run.baseline_analysis_id == b"B" * 16
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT ancestor_depth, ancestor_analysis_id "
             "FROM catalog_analysis_state_ancestry WHERE analysis_id = %s "
             "ORDER BY ancestor_depth",
@@ -2771,25 +2882,29 @@ def test_incremental_overlay_has_exact_changed_shadow_tombstone_and_full_resolut
             start_now=600,
         )
 
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT gallery_id, change_kind FROM catalog_analysis_changed_galleries "
             "WHERE analysis_id = %s ORDER BY gallery_id",
             (run.analysis_id,),
         ) == [(2, "REPLACED")]
         assert {
             bytes(row[0])
-            for row in connector.fetch_all(
+            for row in inspect_all(
+                connector,
                 "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
                 "WHERE analysis_id = %s",
                 (run.analysis_id,),
             )
         } == {unchanged, removed, added}
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_shadow "
             "WHERE analysis_id = %s ORDER BY file_sha256",
             (run.analysis_id,),
         ) == [(added,)]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_tombstone "
             "WHERE analysis_id = %s ORDER BY file_sha256",
             (run.analysis_id,),
@@ -2797,7 +2912,8 @@ def test_incremental_overlay_has_exact_changed_shadow_tombstone_and_full_resolut
         oracle = _independent_file_oracle(connector, build)
         resolved = {
             bytes(row[0]): (int(row[1]), int(row[2]), int(row[3]))
-            for row in connector.fetch_all(
+            for row in inspect_all(
+                connector,
                 "SELECT file_sha256, occurrence_count, artist_count, "
                 "maximum_gallery_artist_count "
                 "FROM catalog_analysis_file_hash_decision_resolved "
@@ -2812,10 +2928,13 @@ def test_incremental_overlay_has_exact_changed_shadow_tombstone_and_full_resolut
 
 @pytest.mark.parametrize("corruption", ["omitted", "extra", "field"])
 def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     corruption: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"analysis-{corruption}.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / f"analysis-{corruption}.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -2886,7 +3005,7 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
             pytest.raises(AnalysisCorruptionError, match="partial|full evaluator"),
             analysis_source_pages(
                 connector,
-                backend="sqlite",
+                backend=connector_backend(connector),
                 gate=gate,
                 turn=turn,
                 analysis_id=run.analysis_id,
@@ -2896,7 +3015,7 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
             assert isinstance(preparation, AnalysisFileDecisionValidationPage)
             with connector.transaction():
                 AnalysisRepository.validate_file_hash_decision_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -2905,7 +3024,8 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
                     max_rows=128,
                     now=500,
                 )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
@@ -2915,9 +3035,12 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
 
 
 def test_completed_incremental_replay_survives_safe_base_and_candidate_compaction(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-incremental-replay.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-incremental-replay.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, build, _first, _removed, _added = _prepare_incremental(
@@ -2941,7 +3064,8 @@ def test_completed_incremental_replay_survives_safe_base_and_candidate_compactio
         )
         with connector.transaction():
             started_at = int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT started_at FROM catalog_analysis_run_descriptor "
                     "WHERE analysis_id = %s",
                     (run.analysis_id,),
@@ -2989,7 +3113,8 @@ def test_completed_incremental_replay_survives_safe_base_and_candidate_compactio
                 )
                 == 1
             )
-            candidate_id = connector.fetch_one(
+            candidate_id = inspect_one(
+                connector,
                 "SELECT candidate_id FROM catalog_publication_commits "
                 "WHERE receipt_id = %s",
                 (receipt_id,),
@@ -3003,13 +3128,13 @@ def test_completed_incremental_replay_survives_safe_base_and_candidate_compactio
                 == 1
             )
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 second_turn,
                 now=702,
             )
         with connector.transaction():
             fresh_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"k" * 16,
                 now=703,
                 lease_duration=1_000_000,
@@ -3056,7 +3181,8 @@ def test_completed_incremental_replay_survives_safe_base_and_candidate_compactio
         assert replay.overlay_depth == run.overlay_depth == 1
         assert replay.state == "COMPLETE"
         assert replay.replayed
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE build_id = %s",
             (build,),
         ) == (1,)
@@ -3065,9 +3191,12 @@ def test_completed_incremental_replay_survives_safe_base_and_candidate_compactio
 
 
 def test_new_analysis_rejects_incremental_build_with_lost_pinned_base(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-new-lost-build-base.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-new-lost-build-base.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, build, _first, _removed, _added = _prepare_incremental(
@@ -3096,7 +3225,8 @@ def test_new_analysis_rejects_incremental_build_with_lost_pinned_base(
                 analysis_id=b"N" * 16,
                 now=530,
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE analysis_id = %s",
             (b"N" * 16,),
         ) == (0,)
@@ -3105,9 +3235,12 @@ def test_new_analysis_rejects_incremental_build_with_lost_pinned_base(
 
 
 def test_lost_base_fails_from_identity_without_historical_provenance_scan(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-lost-base-provenance.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-lost-base-provenance.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, build, _first, _removed, _added = _prepare_incremental(
@@ -3144,7 +3277,8 @@ def test_lost_base_fails_from_identity_without_historical_provenance_scan(
                 analysis_id=b"P" * 16,
                 now=530,
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE analysis_id = %s",
             (b"P" * 16,),
         ) == (0,)
@@ -3153,9 +3287,12 @@ def test_lost_base_fails_from_identity_without_historical_provenance_scan(
 
 
 def test_existing_analysis_replay_rejects_lost_build_pinned_base(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-lost-build-base.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-lost-build-base.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, build, _first, _removed, _added = _prepare_incremental(
@@ -3198,9 +3335,14 @@ def test_existing_analysis_replay_rejects_lost_build_pinned_base(
 
 
 def test_existing_analysis_replay_rejects_base_candidate_lineage_tamper(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-base-candidate-tamper.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(
+            str(tmp_path / "analysis-base-candidate-tamper.sqlite3")
+        )
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, build, _first, _removed, _added = _prepare_incremental(
@@ -3217,7 +3359,8 @@ def test_existing_analysis_replay_rejects_base_candidate_lineage_tamper(
             now=530,
         )
         assert run.baseline_analysis_id == b"B" * 16
-        candidate = connector.fetch_one(
+        candidate = inspect_one(
+            connector,
             "SELECT committed.candidate_id "
             "FROM catalog_source_build_base_publication_commits AS base "
             "JOIN catalog_publication_commits AS committed "
@@ -3252,9 +3395,12 @@ def test_existing_analysis_replay_rejects_base_candidate_lineage_tamper(
 
 
 def test_arbitrary_noncanonical_incremental_build_is_rejected_without_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-arbitrary-id.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-arbitrary-id.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, valid_build, _first, _removed, _added = _prepare_incremental(
@@ -3262,11 +3408,13 @@ def test_arbitrary_noncanonical_incremental_build_is_rejected_without_write(
             gate,
             first_turn,
         )
-        scope = connector.fetch_one(
+        scope = inspect_one(
+            connector,
             "SELECT scope_key FROM catalog_source_builds WHERE build_id = %s",
             (valid_build,),
         )[0]
-        base_receipt = connector.fetch_one(
+        base_receipt = inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
@@ -3321,7 +3469,8 @@ def test_arbitrary_noncanonical_incremental_build_is_rejected_without_write(
                 analysis_id=b"X" * 16,
                 now=530,
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE analysis_id = %s",
             (b"X" * 16,),
         ) == (0,)
@@ -3330,14 +3479,18 @@ def test_arbitrary_noncanonical_incremental_build_is_rejected_without_write(
 
 
 def test_v3_base_free_analysis_begin_and_natural_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-v3-base-free.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-v3-base-free.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
             scope = _seed_root(connector)
-            source_root = connector.fetch_one(
+            source_root = inspect_one(
+                connector,
                 "SELECT source_root_sha256 FROM catalog_source_scopes "
                 "WHERE scope_key = %s",
                 (scope,),
@@ -3387,9 +3540,12 @@ def test_v3_base_free_analysis_begin_and_natural_replay(
 
 
 def test_v3_incremental_analysis_rejects_creation_time_and_base_tamper(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-v3-tamper.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-v3-tamper.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, canonical_build, _first, _removed, _added = _prepare_incremental(
@@ -3397,16 +3553,19 @@ def test_v3_incremental_analysis_rejects_creation_time_and_base_tamper(
             gate,
             first_turn,
         )
-        scope, manifest_policy_id = connector.fetch_one(
+        scope, manifest_policy_id = inspect_one(
+            connector,
             "SELECT scope_key, manifest_policy_id FROM catalog_source_builds "
             "WHERE build_id = %s",
             (canonical_build,),
         )
-        source_root = connector.fetch_one(
+        source_root = inspect_one(
+            connector,
             "SELECT source_root_sha256 FROM catalog_source_scopes WHERE scope_key = %s",
             (scope,),
         )[0]
-        base_receipt = connector.fetch_one(
+        base_receipt = inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
@@ -3468,8 +3627,8 @@ def test_v3_incremental_analysis_rejects_creation_time_and_base_tamper(
             analysis_id=b"R" * 16,
             now=531,
         ).replayed
-        run_count = connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_analysis_run_descriptor"
+        run_count = inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_analysis_run_descriptor"
         )
 
         assert (
@@ -3490,7 +3649,9 @@ def test_v3_incremental_analysis_rejects_creation_time_and_base_tamper(
                 now=532,
             )
         assert (
-            connector.fetch_one("SELECT COUNT(*) FROM catalog_analysis_run_descriptor")
+            inspect_one(
+                connector, "SELECT COUNT(*) FROM catalog_analysis_run_descriptor"
+            )
             == run_count
         )
 
@@ -3517,7 +3678,9 @@ def test_v3_incremental_analysis_rejects_creation_time_and_base_tamper(
                 now=533,
             )
         assert (
-            connector.fetch_one("SELECT COUNT(*) FROM catalog_analysis_run_descriptor")
+            inspect_one(
+                connector, "SELECT COUNT(*) FROM catalog_analysis_run_descriptor"
+            )
             == run_count
         )
     finally:
@@ -3525,9 +3688,12 @@ def test_v3_incremental_analysis_rejects_creation_time_and_base_tamper(
 
 
 def test_v2_successor_rejects_substituted_complete_publication_base(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-v2-base-substitution.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-v2-base-substitution.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         second_turn, canonical_build, _first, _removed, _added = _prepare_incremental(
@@ -3535,16 +3701,19 @@ def test_v2_successor_rejects_substituted_complete_publication_base(
             gate,
             first_turn,
         )
-        scope, manifest_policy_id = connector.fetch_one(
+        scope, manifest_policy_id = inspect_one(
+            connector,
             "SELECT scope_key, manifest_policy_id FROM catalog_source_builds "
             "WHERE build_id = %s",
             (canonical_build,),
         )
-        source_root = connector.fetch_one(
+        source_root = inspect_one(
+            connector,
             "SELECT source_root_sha256 FROM catalog_source_scopes WHERE scope_key = %s",
             (scope,),
         )[0]
-        first_receipt = connector.fetch_one(
+        first_receipt = inspect_one(
+            connector,
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits "
             "WHERE build_id = %s",
@@ -3577,10 +3746,11 @@ def test_v2_successor_rejects_substituted_complete_publication_base(
                 sealed_at=523,
             )
 
-        assert analysis_module._derive_pinned_baseline(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            build_id=successor,
-        )[:3] == (b"B" * 16, 1, 1)
+        with connector.read_transaction():
+            assert analysis_module._derive_pinned_baseline(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                build_id=successor,
+            )[:3] == (b"B" * 16, 1, 1)
 
         replacement_run = _begin(
             connector,
@@ -3600,7 +3770,8 @@ def test_v2_successor_rejects_substituted_complete_publication_base(
         )
         with connector.transaction():
             started_at = int(
-                connector.fetch_one(
+                inspect_one(
+                    connector,
                     "SELECT started_at FROM catalog_analysis_run_descriptor "
                     "WHERE analysis_id = %s",
                     (replacement_run.analysis_id,),
@@ -3658,7 +3829,8 @@ def test_v2_successor_rejects_substituted_complete_publication_base(
                 == 1
             )
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT candidate_analysis.analysis_id, candidate_analysis.build_id, "
             "candidate_analysis.state, provenance_analysis.analysis_id, "
             "provenance_analysis.build_id, provenance_analysis.state "
@@ -3694,7 +3866,8 @@ def test_v2_successor_rejects_substituted_complete_publication_base(
                 analysis_id=b"S" * 16,
                 now=610,
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE analysis_id = %s",
             (b"S" * 16,),
         ) == (0,)
@@ -3703,16 +3876,20 @@ def test_v2_successor_rejects_substituted_complete_publication_base(
 
 
 def test_stale_source_baseline_is_rejected_before_analysis_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-stale.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-stale.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         turn, build, _first, _removed, _added = _prepare_incremental(
             connector, gate, first_turn
         )
         with connector.transaction():
-            scope = connector.fetch_one(
+            scope = inspect_one(
+                connector,
                 "SELECT scope_key FROM catalog_source_builds WHERE build_id = %s",
                 (build,),
             )[0]
@@ -3763,7 +3940,8 @@ def test_stale_source_baseline_is_rejected_before_analysis_write(
                 analysis_id=b"S" * 16,
                 now=530,
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_runs WHERE analysis_id = %s",
             (b"S" * 16,),
         ) == (0,)
@@ -3772,9 +3950,12 @@ def test_stale_source_baseline_is_rejected_before_analysis_write(
 
 
 def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-large.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-large.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         with connector.transaction():
@@ -3814,7 +3995,7 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
         )
         with connector.transaction():
             first = AnalysisRepository.process_changed_gallery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -3824,14 +4005,15 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
             )
         assert first.row_count == first.next_processed_count == 128
         assert first.next_state == "OPEN"
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_analysis_changed_galleries "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
         ) == (128,)
         with connector.transaction():
             second = AnalysisRepository.process_changed_gallery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -3844,7 +4026,7 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
         assert second.next_state == "OPEN"
         with connector.transaction():
             terminal = AnalysisRepository.process_changed_gallery_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -3857,7 +4039,7 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
         assert terminal.next_state == "COMPLETE" and terminal.terminal
         with analysis_source_pages(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             gate=gate,
             turn=turn,
             analysis_id=run.analysis_id,
@@ -3866,7 +4048,7 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
             assert isinstance(page, AnalysisHashKeyPage)
             with connector.transaction():
                 clamped = AnalysisRepository.process_changed_file_hash_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -3891,7 +4073,9 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
                     ),
                 ):
                     clamped_replay = AnalysisRepository.process_changed_file_hash_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -3917,7 +4101,9 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
                         ),
                     )
                     AnalysisRepository.process_changed_file_hash_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -3926,7 +4112,8 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
                         max_rows=7,
                         now=45,
                     )
-            first_hash = connector.fetch_one(
+            first_hash = inspect_one(
+                connector,
                 "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
                 "WHERE analysis_id = %s ORDER BY file_sha256 LIMIT 1",
                 (run.analysis_id,),
@@ -3939,7 +4126,9 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
                         (run.analysis_id, first_hash),
                     )
                     AnalysisRepository.process_changed_file_hash_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -3951,7 +4140,9 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
             with pytest.raises(ValueError, match="max_rows"):
                 with connector.transaction():
                     AnalysisRepository.process_changed_file_hash_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -3965,9 +4156,12 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
 
 
 def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-all-components.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-all-components.sqlite3"))
+    )
     snapshot_preparation = None
     try:
         gate, turn = _authorities(connector)
@@ -4148,7 +4342,8 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             replay_each=True,
         )
         assert final_validation[-1].component_sealed
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT state_component, row_count "
             "FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s ORDER BY state_component",
@@ -4160,11 +4355,13 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             (b"gid_candidate", 1),
             (b"gid_winner", 1),
         ]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT file_no FROM catalog_gallery_observation_file_file_nos "
-            "WHERE gallery_id = 1 AND observation_id = 1 ORDER BY file_no"
+            "WHERE gallery_id = 1 AND observation_id = 1 ORDER BY file_no",
         ) == [(0,)]
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT content_sha256 "
             "FROM catalog_analysis_content_owner_candidate_resolved "
             "WHERE analysis_id = %s AND gallery_id = 1",
@@ -4180,7 +4377,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         )
         snapshot_preparation = AnalysisRepository.prepare_snapshot_manifest(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=snapshot_authority,
         )
         _put_canonical_plan(
@@ -4192,13 +4389,14 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         )
         with connector.transaction():
             first_handoff = AnalysisRepository.handoff_snapshot_manifest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation=snapshot_preparation,
                 now=1_620,
             )
-        persisted_completed_at = connector.fetch_one(
+        persisted_completed_at = inspect_one(
+            connector,
             "SELECT completed_at FROM catalog_analysis_run_completed_ats "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
@@ -4214,7 +4412,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         )
         snapshot_preparation = AnalysisRepository.prepare_snapshot_manifest(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=replay_authority,
         )
         with (
@@ -4231,7 +4429,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             connector.transaction(),
         ):
             replayed_handoff = AnalysisRepository.handoff_snapshot_manifest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation=snapshot_preparation,
@@ -4252,7 +4450,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         )
         corrupt_preparation = AnalysisRepository.prepare_snapshot_manifest(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=corrupt_authority,
         )
         try:
@@ -4271,7 +4469,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 pytest.raises(AnalysisCorruptionError, match="sealed count family"),
             ):
                 AnalysisRepository.handoff_snapshot_manifest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation=corrupt_preparation,
@@ -4284,12 +4482,14 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             "SET file_count = 1 WHERE snapshot_manifest_sha256 = %s",
             (first_handoff,),
         )
-        root_page_sha256 = connector.fetch_one(
+        root_page_sha256 = inspect_one(
+            connector,
             "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
             "WHERE value_sha256 = %s",
             (first_handoff,),
         )[0]
-        original_page_bytes = connector.fetch_one(
+        original_page_bytes = inspect_one(
+            connector,
             "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
             "WHERE page_sha256 = %s",
             (root_page_sha256,),
@@ -4308,7 +4508,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         )
         payload_preparation = AnalysisRepository.prepare_snapshot_manifest(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=payload_authority,
         )
         try:
@@ -4327,7 +4527,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 pytest.raises(AnalysisCorruptionError, match="canonical payload"),
             ):
                 AnalysisRepository.handoff_snapshot_manifest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation=payload_preparation,
@@ -4341,7 +4541,8 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 (original_page_bytes, root_page_sha256),
             )
         component = b"gid_winner"
-        original_component_time = connector.fetch_one(
+        original_component_time = inspect_one(
+            connector,
             "SELECT sealed_at FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s AND state_component = %s",
             (run.analysis_id, component),
@@ -4361,7 +4562,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         )
         time_preparation = AnalysisRepository.prepare_snapshot_manifest(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=time_authority,
         )
         try:
@@ -4383,7 +4584,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 ),
             ):
                 AnalysisRepository.handoff_snapshot_manifest(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation=time_preparation,
@@ -4397,18 +4598,21 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 state_component=component,
                 sealed_at=original_component_time,
             )
-        state_and_time = connector.fetch_one(
+        state_and_time = inspect_one(
+            connector,
             "SELECT state, completed_at FROM catalog_analysis_runs "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
         )
         assert state_and_time == ("COMPLETE", persisted_completed_at)
-        started_at = connector.fetch_one(
+        started_at = inspect_one(
+            connector,
             "SELECT started_at FROM catalog_analysis_run_descriptor "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
         )[0]
-        maximum_component_time = connector.fetch_one(
+        maximum_component_time = inspect_one(
+            connector,
             "SELECT MAX(sealed_at) FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
@@ -4416,12 +4620,14 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
         assert persisted_completed_at >= started_at
         assert persisted_completed_at >= maximum_component_time
         assert persisted_completed_at != 1_620
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_analysis_snapshot_manifest WHERE analysis_id = %s",
             (run.analysis_id,),
         ) == (first_handoff,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gallery_count, file_count, byte_count "
             "FROM catalog_source_snapshot_manifest_identity "
             "WHERE snapshot_manifest_sha256 = %s",
@@ -4434,9 +4640,12 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
 
 
 def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-depth-one-removed.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-depth-one-removed.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         file_sha256 = b"u" * 32
@@ -4517,13 +4726,13 @@ def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
                 analysis_id=baseline.analysis_id,
             )
             IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 first_turn,
                 now=1_711,
             )
         with connector.transaction():
             second_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 owner_token=b"k" * 16,
                 now=1_712,
                 lease_duration=1_000_000,
@@ -4675,28 +4884,33 @@ def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
             start_now=3_300,
         )
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gallery_id "
             "FROM catalog_analysis_content_owner_candidate_tombstones "
             "WHERE analysis_id = %s",
             (current.analysis_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT content_sha256 FROM catalog_analysis_content_owner_tombstones "
             "WHERE analysis_id = %s",
             (current.analysis_id,),
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gallery_id FROM catalog_analysis_gid_candidate_tombstones "
             "WHERE analysis_id = %s",
             (current.analysis_id,),
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid FROM catalog_analysis_gid_winner_tombstones "
             "WHERE analysis_id = %s",
             (current.analysis_id,),
         ) == (10_001,)
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT state_component, row_count "
             "FROM catalog_analysis_state_component_seals "
             "WHERE analysis_id = %s ORDER BY state_component",
@@ -4715,7 +4929,8 @@ def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
             current.analysis_id,
             now=3_500,
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gallery_count, file_count, byte_count "
             "FROM catalog_source_snapshot_manifest_identity "
             "WHERE snapshot_manifest_sha256 = %s",
@@ -4726,9 +4941,12 @@ def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
 
 
 def test_high_cardinality_spools_never_run_inside_mutation_transactions(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-preparation-split.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-preparation-split.sqlite3"))
+    )
     gallery_preparation = None
     snapshot_preparation = None
     try:
@@ -4798,7 +5016,7 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
         )
         with connector.transaction():
             gallery_authority = AnalysisRepository.issue_preparation_authority(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -4806,7 +5024,7 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
             )
         gallery_preparation = AnalysisRepository.prepare_gallery(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=gallery_authority,
             gallery_id=1,
         )
@@ -4841,7 +5059,7 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
             connector.transaction(),
         ):
             content_batch = AnalysisRepository.process_impacted_content_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -4853,7 +5071,8 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
         assert content_batch.row_count == 1 and not content_batch.terminal
 
         with connector.transaction():
-            started_at = connector.fetch_one(
+            started_at = inspect_one(
+                connector,
                 "SELECT started_at FROM catalog_analysis_run_descriptor "
                 "WHERE analysis_id = %s",
                 (run.analysis_id,),
@@ -4869,7 +5088,7 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
                     terminal_receipt=True,
                 )
             snapshot_authority = AnalysisRepository.issue_preparation_authority(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -4877,7 +5096,7 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
             )
         snapshot_preparation = AnalysisRepository.prepare_snapshot_manifest(
             connector,
-            backend="sqlite",
+            backend=connector_backend(connector),
             authority=snapshot_authority,
         )
         _put_canonical_plan(
@@ -4925,14 +5144,15 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
             connector.transaction(),
         ):
             snapshot_sha256 = AnalysisRepository.handoff_snapshot_manifest(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation=snapshot_preparation,
                 now=720,
             )
         assert snapshot_sha256 == snapshot_preparation.upload_plan.value_sha256
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state, snapshot.snapshot_manifest_sha256 "
             "FROM catalog_analysis_runs AS run "
             "JOIN catalog_analysis_snapshot_manifest AS snapshot "
@@ -4941,7 +5161,8 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
             (run.analysis_id,),
         ) == ("COMPLETE", snapshot_sha256)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT 1 FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
                 (turn.generation, snapshot_sha256),
@@ -4957,9 +5178,12 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
 
 
 def test_analysis_policy_loader_reads_one_atomic_policy_row(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-policy-shape.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-policy-shape.sqlite3"))
+    )
     try:
         with connector.transaction():
             _seed_root(connector)
@@ -4973,9 +5197,12 @@ def test_analysis_policy_loader_reads_one_atomic_policy_row(
             queries.append(query)
             return original_fetch_one(query, data)
 
-        with patch.object(connector, "fetch_one", side_effect=recording_fetch_one):
+        with (
+            connector.read_transaction(),
+            patch.object(connector, "fetch_one", side_effect=recording_fetch_one),
+        ):
             policy = analysis_module._load_policy(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 1,
             )
         assert policy == analysis_module._Policy(1, 1, 1, 3, 1, 1)
@@ -4995,24 +5222,29 @@ def test_analysis_policy_loader_reads_one_atomic_policy_row(
 
 
 def test_analysis_policy_loader_fails_closed_for_missing_atomic_row(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-policy-missing.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-policy-missing.sqlite3"))
+    )
     try:
         with connector.transaction():
             _seed_root(connector)
-        connector.execute("PRAGMA foreign_keys = OFF")
-        connector.execute(
-            "DELETE FROM catalog_analysis_policies WHERE policy_id = %s",
-            (1,),
-        )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=False)
+        with connector.transaction():
+            connector.execute(
+                "DELETE FROM catalog_analysis_policies WHERE policy_id = %s",
+                (1,),
+            )
+        set_foreign_key_checks(connector, enabled=True)
         with (
+            connector.read_transaction(),
             patch.object(connector, "execute", wraps=connector.execute) as execute,
             pytest.raises(AnalysisNotReadyError, match="missing or incomplete"),
         ):
             analysis_module._load_policy(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 1,
             )
         execute.assert_not_called()
@@ -5021,9 +5253,12 @@ def test_analysis_policy_loader_fails_closed_for_missing_atomic_row(
 
 
 def test_analysis_policy_loader_supports_a_distinct_atomic_policy_tuple(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-policy-distinct.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-policy-distinct.sqlite3"))
+    )
     try:
         with connector.transaction():
             _seed_root(connector)
@@ -5036,16 +5271,17 @@ def test_analysis_policy_loader_supports_a_distinct_atomic_policy_tuple(
                 content_owner_rule_version=2,
                 gid_winner_rule_version=2,
             )
-        assert analysis_module._load_policy(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            2,
-        ) == analysis_module._Policy(2, 2, 2, 4, 2, 2)
+        with connector.read_transaction():
+            assert analysis_module._load_policy(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                2,
+            ) == analysis_module._Policy(2, 2, 2, 4, 2, 2)
     finally:
         connector.close()
 
 
 def _counted_batch_call(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     callback: Any,
     *,
     zero_dml: bool = False,
@@ -5083,7 +5319,7 @@ def _counted_batch_call(
 
 
 def _seed_minimal_gid_metadata(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     gallery_id: int,
     observation_id: int,
@@ -5119,14 +5355,14 @@ def _seed_minimal_gid_metadata(
 
 
 def _impact_batch_select_profile(
-    path: Path,
+    config: CoreConfig,
     page_rows: int,
     *,
     verify_terminal_orphans: bool,
     restore_claim: bool = True,
     distinct_contents: bool = True,
 ) -> dict[str, tuple[int, list[str], list[str]]]:
-    connector = _generated_database(path)
+    connector = open_generated_database(config)
     plans: tuple[CanonicalValueUploadPlan, ...] = ()
     try:
         gate, turn = _authorities(connector)
@@ -5156,7 +5392,7 @@ def _impact_batch_select_profile(
             analysis_id=analysis_id,
             now=30,
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             for gallery_id in range(1, total + 1):
                 connector.execute(
@@ -5238,7 +5474,7 @@ def _impact_batch_select_profile(
         )
         with connector.transaction():
             first_content = AnalysisRepository.process_impacted_content_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -5258,7 +5494,7 @@ def _impact_batch_select_profile(
         def fresh_content() -> None:
             with connector.transaction():
                 result = AnalysisRepository.process_impacted_content_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -5271,7 +5507,8 @@ def _impact_batch_select_profile(
 
         profile: dict[str, tuple[int, list[str], list[str]]] = {}
         profile["content_fresh"] = _counted_batch_call(connector, fresh_content)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_canonical_value_uploads "
             "WHERE generation = %s",
             (receipt.generation,),
@@ -5280,7 +5517,7 @@ def _impact_batch_select_profile(
         def replay_content() -> None:
             with connector.transaction():
                 replay = AnalysisRepository.process_impacted_content_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -5301,7 +5538,9 @@ def _impact_batch_select_profile(
             def fresh_content_terminal() -> None:
                 with connector.transaction():
                     terminal = AnalysisRepository.process_impacted_content_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -5320,7 +5559,9 @@ def _impact_batch_select_profile(
             def replay_content_terminal() -> None:
                 with connector.transaction():
                     terminal = AnalysisRepository.process_impacted_content_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -5357,7 +5598,7 @@ def _impact_batch_select_profile(
                 pytest.raises(AnalysisCorruptionError, match="terminal keyspace"),
             ):
                 AnalysisRepository.process_impacted_content_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -5399,7 +5640,9 @@ def _impact_batch_select_profile(
                     ),
                 ):
                     analysis_module._consume_effective_content_claims(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         analysis_module._RunAuthority(
                             run.analysis_id,
                             build,
@@ -5438,7 +5681,7 @@ def _impact_batch_select_profile(
             )
         with connector.transaction():
             first_gid = AnalysisRepository.process_impacted_gid_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 analysis_id=run.analysis_id,
@@ -5451,7 +5694,7 @@ def _impact_batch_select_profile(
         def fresh_gid() -> None:
             with connector.transaction():
                 result = AnalysisRepository.process_impacted_gid_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -5466,7 +5709,7 @@ def _impact_batch_select_profile(
         def replay_gid() -> None:
             with connector.transaction():
                 replay = AnalysisRepository.process_impacted_gid_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -5486,7 +5729,9 @@ def _impact_batch_select_profile(
             def fresh_gid_terminal() -> None:
                 with connector.transaction():
                     terminal = AnalysisRepository.process_impacted_gid_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -5504,7 +5749,9 @@ def _impact_batch_select_profile(
             def replay_gid_terminal() -> None:
                 with connector.transaction():
                     terminal = AnalysisRepository.process_impacted_gid_batch(
-                        VNextUnitOfWork(connector, backend="sqlite"),
+                        VNextUnitOfWork(
+                            connector, backend=connector_backend(connector)
+                        ),
                         gate_lease=gate,
                         ingest_turn=turn,
                         analysis_id=run.analysis_id,
@@ -5539,7 +5786,7 @@ def _impact_batch_select_profile(
                 pytest.raises(AnalysisCorruptionError, match="terminal keyspace"),
             ):
                 AnalysisRepository.process_impacted_gid_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
@@ -5555,20 +5802,23 @@ def _impact_batch_select_profile(
 
 
 def test_impacted_stage_select_counts_are_constant_for_one_and_128_rows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     one = _impact_batch_select_profile(
-        tmp_path / "analysis-impact-count-1.sqlite3",
+        database_factory.config(str(tmp_path / "analysis-impact-count-1.sqlite3")),
         1,
         verify_terminal_orphans=True,
     )
     many = _impact_batch_select_profile(
-        tmp_path / "analysis-impact-count-128.sqlite3",
+        database_factory.config(str(tmp_path / "analysis-impact-count-128.sqlite3")),
         128,
         verify_terminal_orphans=False,
     )
     preexisting_without_claim = _impact_batch_select_profile(
-        tmp_path / "analysis-impact-preexisting-no-claim.sqlite3",
+        database_factory.config(
+            str(tmp_path / "analysis-impact-preexisting-no-claim.sqlite3")
+        ),
         1,
         verify_terminal_orphans=False,
         restore_claim=False,
@@ -5655,9 +5905,12 @@ def test_impacted_stage_select_counts_are_constant_for_one_and_128_rows(
 
 
 def test_depth_zero_impact_loaders_do_not_join_real_zero_identifier_rows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "analysis-zero-id-isolation.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "analysis-zero-id-isolation.sqlite3"))
+    )
     try:
         _gate, _turn = _authorities(connector)
         zero = bytes(16)
@@ -5687,7 +5940,7 @@ def test_depth_zero_impact_loaders_do_not_join_real_zero_identifier_rows(
                 input_manifest_sha256=b"z" * 32,
                 started_at=30,
             )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_source_build_galleries "
@@ -5721,16 +5974,17 @@ def test_depth_zero_impact_loaders_do_not_join_real_zero_identifier_rows(
             None,
             0,
         )
-        content_page = analysis_module._load_content_impact_page(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            authority,
-            (1,),
-        )
-        gid_page = analysis_module._load_gid_impact_page(
-            VNextUnitOfWork(connector, backend="sqlite"),
-            authority,
-            (1,),
-        )
+        with connector.read_transaction():
+            content_page = analysis_module._load_content_impact_page(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                authority,
+                (1,),
+            )
+            gid_page = analysis_module._load_gid_impact_page(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                authority,
+                (1,),
+            )
         assert content_page.current_observations == {1: None}
         assert content_page.old_candidates == {1: None}
         assert gid_page.old_gids == {1: None}

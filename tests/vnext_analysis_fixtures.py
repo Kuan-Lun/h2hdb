@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from vnext_test_database import atomic_fixture
+
 from h2hdb.vnext_analysis_family import (
     ensure_analysis_run_family,
     ensure_analysis_state_component_family,
@@ -26,6 +28,7 @@ _COMPONENT_STAGE = {
 }
 
 
+@atomic_fixture
 def seed_content_owner_candidate_shadow(
     connector: Any,
     *,
@@ -49,6 +52,7 @@ def seed_content_owner_candidate_shadow(
     )
 
 
+@atomic_fixture
 def seed_content_owner_shadow(
     connector: Any,
     *,
@@ -71,6 +75,7 @@ def _live_cursor(component: bytes, row_count: int) -> bytes:
     return b"\x01" + kind + b"\x00" + bytes(key_size) + row_count.to_bytes(8, "big")
 
 
+@atomic_fixture
 def seed_analysis_run(
     connector: Any,
     *,
@@ -120,6 +125,7 @@ def seed_analysis_run(
     )
 
 
+@atomic_fixture
 def seed_analysis_component(
     connector: Any,
     *,
@@ -190,6 +196,7 @@ def seed_analysis_component(
     )
 
 
+@atomic_fixture
 def set_analysis_component_live_count(
     connector: Any,
     *,
@@ -227,6 +234,7 @@ def set_analysis_component_live_count(
     )
 
 
+@atomic_fixture
 def set_analysis_component_sealed_at(
     connector: Any,
     *,
@@ -262,6 +270,7 @@ def set_analysis_component_sealed_at(
     )
 
 
+@atomic_fixture
 def complete_analysis_run(
     connector: Any,
     *,
@@ -280,6 +289,7 @@ def complete_analysis_run(
     )
 
 
+@atomic_fixture
 def seed_analysis_exclusion_delta(
     connector: Any,
     *,

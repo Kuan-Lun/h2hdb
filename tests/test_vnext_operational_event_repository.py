@@ -14,11 +14,20 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_sealed_source_build, seed_snapshot_manifest
 from vnext_publication_fixtures import seed_publication_commit
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+    trace_statements,
+)
 
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb import CoreConfig
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_identity import artifact_policy_digest
 from h2hdb.vnext_ingest_fence_repository import (
     IngestFenceRepository,
@@ -50,13 +59,14 @@ _ARTIFACT_ADAPTER_ID = b"test-artifact-adapter"
 _ARTIFACT_POLICY_FINGERPRINT = b"p" * 32
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    connector = open_generated_sqlite_database(path)
-    _seed_catalog_authority(connector)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    connector = open_generated_database(config)
+    with connector.transaction():
+        _seed_catalog_authority(connector)
     return connector
 
 
-def _seed_catalog_authority(connector: SQLiteConnector) -> None:
+def _seed_catalog_authority(connector: SQLConnector) -> None:
     value_sha256 = b"v" * 32
     page_sha256 = b"p" * 32
     connector.execute(
@@ -135,20 +145,20 @@ def _seed_catalog_authority(connector: SQLiteConnector) -> None:
     )
 
 
-def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
             return_value=b"g" * 16,
         ):
             gate = MaintenanceGateRepository.claim_shared(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 now=5,
                 lease_duration=1_000_000,
             )
     with connector.transaction():
         turn = IngestFenceRepository.claim(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             owner_token=b"i" * 16,
             now=6,
             lease_duration=1_000_000,
@@ -167,7 +177,7 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _begin(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -175,7 +185,7 @@ def _begin(
 ) -> OperationalPreparation:
     with connector.transaction():
         return OperationalEffectRepository.begin(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             build_id=b"b" * 16,
@@ -185,7 +195,7 @@ def _begin(
 
 
 def _terminal_and_seal(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     preparation_id: bytes,
@@ -194,7 +204,7 @@ def _terminal_and_seal(
 ) -> tuple[OperationalBatchReceipt, OperationalEffectSeal]:
     with connector.transaction():
         terminal = OperationalEffectRepository.append_batch(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             preparation_id=preparation_id,
@@ -203,7 +213,7 @@ def _terminal_and_seal(
         )
     with connector.transaction():
         seal = OperationalEffectRepository.seal(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             preparation_id=preparation_id,
@@ -213,7 +223,7 @@ def _terminal_and_seal(
 
 
 def _publish_preparation(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     preparation_id: bytes,
     *,
     now: int = 50,
@@ -262,7 +272,8 @@ def _publish_preparation(
             duplicate_losers=0,
             committed_at=now,
         )
-    row = connector.fetch_one(
+    row = inspect_one(
+        connector,
         "SELECT source_revision, preparation_id, operational_policy_id, committed_at "
         "FROM catalog_publication_commits WHERE source_revision = %s",
         (1,),
@@ -276,9 +287,12 @@ def test_operational_repository_has_no_independent_activation_writer() -> None:
 
 
 def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "operational.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "operational.sqlite3"))
+    )
     deletion_token = b"d" * 16
     effects = (
         RemovedGid(11, b"r" * 16),
@@ -288,7 +302,7 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         gate, turn = _authorities(connector)
         with connector.transaction():
             VNextQueueRepository.request_deletion(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gid=22,
                 request_token=deletion_token,
                 url=None,
@@ -299,16 +313,17 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         assert replayed_begin.preparation_id == preparation.preparation_id
         assert replayed_begin.prepared_at == preparation.prepared_at
         assert replayed_begin.replayed is True
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_event_streams"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_event_streams"
         ) == (1,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_preparation_checkpoints"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_operational_preparation_checkpoints",
         ) == (1,)
 
         with connector.transaction():
             receipt = OperationalEffectRepository.append_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation_id=preparation.preparation_id,
@@ -318,20 +333,24 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         assert (receipt.start_sequence_no, receipt.next_sequence_no) == (0, 2)
         assert receipt.row_count == 2
         before = (
-            connector.fetch_one("SELECT COUNT(*) FROM operational_operational_events"),
-            connector.fetch_one(
-                "SELECT COUNT(*) "
-                "FROM operational_operational_preparation_batch_receipts"
+            inspect_one(
+                connector, "SELECT COUNT(*) FROM operational_operational_events"
             ),
-            connector.fetch_all(
+            inspect_one(
+                connector,
+                "SELECT COUNT(*) "
+                "FROM operational_operational_preparation_batch_receipts",
+            ),
+            inspect_all(
+                connector,
                 "SELECT generation, cursor_bytes, processed_count, chain_sha256, "
                 "state, updated_at "
-                "FROM operational_operational_preparation_checkpoints"
+                "FROM operational_operational_preparation_checkpoints",
             ),
         )
         with connector.transaction():
             replay = OperationalEffectRepository.append_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation_id=preparation.preparation_id,
@@ -341,33 +360,40 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         assert replay.replayed is True
         assert replay.committed_at == 20
         assert before == (
-            connector.fetch_one("SELECT COUNT(*) FROM operational_operational_events"),
-            connector.fetch_one(
-                "SELECT COUNT(*) "
-                "FROM operational_operational_preparation_batch_receipts"
+            inspect_one(
+                connector, "SELECT COUNT(*) FROM operational_operational_events"
             ),
-            connector.fetch_all(
+            inspect_one(
+                connector,
+                "SELECT COUNT(*) "
+                "FROM operational_operational_preparation_batch_receipts",
+            ),
+            inspect_all(
+                connector,
                 "SELECT generation, cursor_bytes, processed_count, chain_sha256, "
                 "state, updated_at "
-                "FROM operational_operational_preparation_checkpoints"
+                "FROM operational_operational_preparation_checkpoints",
             ),
         )
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT sequence_no, event_type, length(event_id), length(event_sha256) "
-            "FROM operational_operational_events ORDER BY sequence_no"
+            "FROM operational_operational_events ORDER BY sequence_no",
         ) == [
             (0, "REMOVED_GID", 16, 32),
             (1, "DELETION_CONSUMPTION", 16, 32),
         ]
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_removed_gid_events"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_removed_gid_events"
         ) == (1,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_deletion_consumption_events"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_operational_deletion_consumption_events",
         ) == (1,)
 
-        removed_event_id = connector.fetch_one(
-            "SELECT event_id FROM operational_operational_events WHERE sequence_no = 0"
+        removed_event_id = inspect_one(
+            connector,
+            "SELECT event_id FROM operational_operational_events WHERE sequence_no = 0",
         )[0]
         connector.execute(
             "UPDATE operational_operational_removed_gid_events SET gid = %s "
@@ -379,7 +405,7 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         ):
             with connector.transaction():
                 OperationalEffectRepository.append_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation_id=preparation.preparation_id,
@@ -397,12 +423,13 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         )
         assert terminal.terminal is True
         assert seal.event_count == 2
-        seal_rows = connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_preparation_effect_seals"
+        seal_rows = inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_operational_preparation_effect_seals",
         )
         with connector.transaction():
             seal_replay = OperationalEffectRepository.seal(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation_id=preparation.preparation_id,
@@ -411,14 +438,15 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         assert seal_replay.replayed is True
         assert seal_replay.sealed_at == 31
         assert (
-            connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_operational_preparation_effect_seals"
+            inspect_one(
+                connector,
+                "SELECT COUNT(*) FROM operational_operational_preparation_effect_seals",
             )
             == seal_rows
         )
         with connector.transaction():
             post_seal_batch_replay = OperationalEffectRepository.append_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 ingest_turn=turn,
                 preparation_id=preparation.preparation_id,
@@ -429,9 +457,8 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
         assert post_seal_batch_replay.committed_at == 20
 
         statements: list[str] = []
-        connector.connection.set_trace_callback(statements.append)
-        activation = _publish_preparation(connector, preparation.preparation_id)
-        connector.connection.set_trace_callback(None)
+        with trace_statements(connector, statements):
+            activation = _publish_preparation(connector, preparation.preparation_id)
         assert activation == (1, preparation.preparation_id, 1, 50)
         assert not any(
             "operational_operational_events" in statement for statement in statements
@@ -443,9 +470,12 @@ def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
 
 
 def test_zero_event_seal_remains_invisible_without_publication_commit(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "zero-race.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "zero-race.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         preparation = _begin(connector, gate, turn)
@@ -453,20 +483,20 @@ def test_zero_event_seal_remains_invisible_without_publication_commit(
             connector, gate, turn, preparation.preparation_id, now=20
         )
         assert seal.event_count == 0
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_events"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_events"
         ) == (0,)
 
         with connector.transaction():
             VNextQueueRepository.request_deletion(
-                VNextUnitOfWork(connector, backend="sqlite"),
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gid=7,
                 request_token=b"q" * 16,
                 url=None,
                 requested_at=30,
             )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_publication_commits"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM catalog_publication_commits"
         ) == (0,)
 
         successor = _begin(connector, gate, turn, now=32)
@@ -477,9 +507,11 @@ def test_zero_event_seal_remains_invisible_without_publication_commit(
 
 
 def test_batch_checkpoint_stale_cas_rolls_back_every_effect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_factory: DatabaseFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connector = _generated_database(tmp_path / "stale-cas.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stale-cas.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         preparation = _begin(connector, gate, turn)
@@ -496,43 +528,49 @@ def test_batch_checkpoint_stale_cas_rolls_back_every_effect(
         with pytest.raises(StaleWriteError):
             with connector.transaction():
                 OperationalEffectRepository.append_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation_id=preparation.preparation_id,
                     effects=(RemovedGid(1, b"a" * 16),),
                     now=20,
                 )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_events"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_events"
         ) == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_preparation_batch_receipts"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_operational_preparation_batch_receipts",
         ) == (0,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT generation, cursor_bytes, processed_count, state "
-            "FROM operational_operational_preparation_checkpoints"
+            "FROM operational_operational_preparation_checkpoints",
         ) == (0, b"\x00" * 8, 0, "OPEN")
     finally:
         connector.close()
 
 
 def test_every_preparation_mutation_rechecks_the_live_ingest_fence(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "stale-ingest.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "stale-ingest.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         preparation = _begin(connector, gate, turn)
         stale = IngestTurn(turn.generation, turn.owner_token, 1)
-        before = connector.fetch_one(
+        before = inspect_one(
+            connector,
             "SELECT generation, cursor_bytes, processed_count, state "
-            "FROM operational_operational_preparation_checkpoints"
+            "FROM operational_operational_preparation_checkpoints",
         )
         with pytest.raises(IngestFenceUnavailableError):
             with connector.transaction():
                 OperationalEffectRepository.append_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=stale,
                     preparation_id=preparation.preparation_id,
@@ -540,33 +578,38 @@ def test_every_preparation_mutation_rechecks_the_live_ingest_fence(
                     now=20,
                 )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT generation, cursor_bytes, processed_count, state "
-                "FROM operational_operational_preparation_checkpoints"
+                "FROM operational_operational_preparation_checkpoints",
             )
             == before
         )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_events"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_events"
         ) == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_preparation_batch_receipts"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM operational_operational_preparation_batch_receipts",
         ) == (0,)
     finally:
         connector.close()
 
 
 def test_database_policy_caps_transient_event_batches(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "batch-bound.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "batch-bound.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         preparation = _begin(connector, gate, turn)
         with pytest.raises(OperationalBatchLimitError):
             with connector.transaction():
                 OperationalEffectRepository.append_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation_id=preparation.preparation_id,
@@ -576,14 +619,14 @@ def test_database_policy_caps_transient_event_batches(
                     ),
                     now=20,
                 )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_events"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_events"
         ) == (0,)
 
         for offset in (0, 2):
             with connector.transaction():
                 OperationalEffectRepository.append_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     preparation_id=preparation.preparation_id,
@@ -596,8 +639,8 @@ def test_database_policy_caps_transient_event_batches(
         _terminal_and_seal(connector, gate, turn, preparation.preparation_id, now=30)
         activation = _publish_preparation(connector, preparation.preparation_id)
         assert activation == (1, preparation.preparation_id, 1, 50)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_events"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_operational_events"
         ) == (4,)
     finally:
         connector.close()
@@ -611,11 +654,13 @@ _ZERO_UUID = b"\0" * 16
 
 
 def _seed_superseded_preparations(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     count: int,
     first_generation: int = 1,
     states: tuple[str, ...] = ("OPEN",),
+    build_id: bytes = _SUPERSEDED_BUILD,
+    id_prefix: str = "sup",
 ) -> list[bytes]:
     """Seed ``count`` unbound, uncommitted preparations of the build, each
     under a distinct deletion generation other than the current one, so every
@@ -625,7 +670,7 @@ def _seed_superseded_preparations(
     with connector.transaction():
         for offset in range(count):
             generation = first_generation + offset
-            preparation_id = f"sup{generation:013d}".encode()
+            preparation_id = f"{id_prefix}{generation:013d}".encode()
             assert len(preparation_id) == 16
             connector.execute(
                 "INSERT INTO operational_deletion_request_generations "
@@ -645,7 +690,7 @@ def _seed_superseded_preparations(
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     preparation_id,
-                    _SUPERSEDED_BUILD,
+                    build_id,
                     generation,
                     _CURRENT_POLICY,
                     state,
@@ -657,10 +702,10 @@ def _seed_superseded_preparations(
     return ids
 
 
-def _superseded_position(connector: SQLiteConnector) -> SupersededDrainPosition | None:
+def _superseded_position(connector: SQLConnector) -> SupersededDrainPosition | None:
     with connector.transaction():
         return OperationalEffectRepository.superseded_drain_position(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             build_id=_SUPERSEDED_BUILD,
             policy_id=_CURRENT_POLICY,
             deletion_generation=_CURRENT_GENERATION,
@@ -668,7 +713,7 @@ def _superseded_position(connector: SQLiteConnector) -> SupersededDrainPosition 
 
 
 def _abandon_one_page(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -680,7 +725,7 @@ def _abandon_one_page(
         assert position is not None
     with connector.transaction():
         return OperationalEffectRepository.abandon_superseded_preparations(
-            VNextUnitOfWork(connector, backend="sqlite"),
+            VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             ingest_turn=turn,
             build_id=_SUPERSEDED_BUILD,
@@ -692,7 +737,7 @@ def _abandon_one_page(
 
 
 def _drain_all(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -715,8 +760,9 @@ def _drain_all(
     return pages, positions
 
 
-def _non_abandoned_count(connector: SQLiteConnector) -> int:
-    row = connector.fetch_one(
+def _non_abandoned_count(connector: SQLConnector) -> int:
+    row = inspect_one(
+        connector,
         "SELECT COUNT(*) FROM operational_operational_preparations "
         "WHERE build_id = %s AND state IN ('OPEN', 'COMPLETE')",
         (_SUPERSEDED_BUILD,),
@@ -726,6 +772,7 @@ def _non_abandoned_count(connector: SQLiteConnector) -> int:
 
 @pytest.mark.parametrize("count", (129, 257))
 def test_superseded_drainage_is_bounded_seek_paged_and_converges(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     count: int,
 ) -> None:
@@ -733,7 +780,9 @@ def test_superseded_drainage_is_bounded_seek_paged_and_converges(
     the durable position, which strictly advances after every committed page,
     until none remain and every row is ABANDONED exactly once."""
 
-    connector = _generated_database(tmp_path / "drain.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "drain.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         ids = _seed_superseded_preparations(connector, count=count)
@@ -747,7 +796,8 @@ def test_superseded_drainage_is_bounded_seek_paged_and_converges(
         ]
         assert all(position.state == "OPEN" for position in positions)
         assert _non_abandoned_count(connector) == 0
-        abandoned = connector.fetch_one(
+        abandoned = inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_operational_preparations "
             "WHERE build_id = %s AND state = 'ABANDONED'",
             (_SUPERSEDED_BUILD,),
@@ -759,13 +809,16 @@ def test_superseded_drainage_is_bounded_seek_paged_and_converges(
 
 
 def test_superseded_drainage_drains_each_state_as_one_seek_range(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """Mixed states drain as single-state index ranges in drain order:
     every COMPLETE row before the first OPEN page, each page within one
     state, and the position's (state, preparation_id) key strictly ascending."""
 
-    connector = _generated_database(tmp_path / "states.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "states.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         _seed_superseded_preparations(connector, count=257, states=("OPEN", "COMPLETE"))
@@ -784,12 +837,15 @@ def test_superseded_drainage_drains_each_state_as_one_seek_range(
 
 
 def test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """A page interrupted before its transaction commits abandons nothing:
     the whole page is atomic and the durable position is unchanged."""
 
-    connector = _generated_database(tmp_path / "fault.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "fault.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         _seed_superseded_preparations(connector, count=200)
@@ -799,7 +855,7 @@ def test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit(
         with pytest.raises(RuntimeError, match="interrupted"):
             with connector.transaction():
                 OperationalEffectRepository.abandon_superseded_preparations(
-                    VNextUnitOfWork(connector, backend="sqlite"),
+                    VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     ingest_turn=turn,
                     build_id=_SUPERSEDED_BUILD,
@@ -819,6 +875,7 @@ def test_superseded_drainage_page_rolls_back_exactly_on_an_interrupted_commit(
 
 
 def test_superseded_drainage_rejects_a_stale_position_with_zero_writes(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """A page whose commit response was lost is durable; a delayed retry that
@@ -826,7 +883,9 @@ def test_superseded_drainage_rejects_a_stale_position_with_zero_writes(
     and the driver resumes from the re-read durable position, which is
     strictly past the committed page."""
 
-    connector = _generated_database(tmp_path / "replay.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "replay.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         _seed_superseded_preparations(connector, count=257)
@@ -849,6 +908,7 @@ def test_superseded_drainage_rejects_a_stale_position_with_zero_writes(
 
 
 def test_superseded_drainage_excludes_bound_and_current_attempts(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     """The live build's drainage never touches the current attempt (same
@@ -856,7 +916,9 @@ def test_superseded_drainage_excludes_bound_and_current_attempts(
     build's drainage abandons the bound attempt too, because its orphaned
     candidate can never publish."""
 
-    connector = _generated_database(tmp_path / "exclusion.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "exclusion.sqlite3"))
+    )
     try:
         gate, turn = _authorities(connector)
         ids = _seed_superseded_preparations(connector, count=3)
@@ -873,18 +935,19 @@ def test_superseded_drainage_excludes_bound_and_current_attempts(
             "VALUES (%s, %s, %s, %s, 'OPEN', 3, NULL)",
             (current, _SUPERSEDED_BUILD, _CURRENT_GENERATION, _CURRENT_POLICY),
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "INSERT INTO operational_publication_candidate_preparations "
             "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, %s)",
             (b"c" * 16, ids[1], 7),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         pages, positions = _drain_all(connector, gate, turn, now=100, page_budget=1)
         assert pages == [2]
         assert positions[0].preparation_id == ids[0]
         states = dict(
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT preparation_id, state FROM operational_operational_preparations "
                 "WHERE build_id = %s",
                 (_SUPERSEDED_BUILD,),
@@ -898,7 +961,7 @@ def test_superseded_drainage_excludes_bound_and_current_attempts(
         }
         # The retiring build drains the bound attempt as well; the current
         # attempt is not excluded either because the build is being retired.
-        work = VNextUnitOfWork(connector, backend="sqlite")
+        work = VNextUnitOfWork(connector, backend=connector_backend(connector))
         with connector.transaction():
             position = OperationalEffectRepository.retiring_build_drain_position(
                 work, build_id=_SUPERSEDED_BUILD
@@ -922,15 +985,45 @@ def test_superseded_drainage_excludes_bound_and_current_attempts(
         connector.close()
 
 
-def test_superseded_drainage_sql_seeks_the_drain_index(tmp_path: Path) -> None:
+def test_superseded_drainage_sql_seeks_the_drain_index(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
     """Query-plan evidence: both the position probe and the page of either
     drain mode are one range seek on the (build_id, state, preparation_id)
     index, never a table scan, so a page costs its rows regardless of how many
     rows earlier pages already abandoned."""
 
-    connector = _generated_database(tmp_path / "plan.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "plan.sqlite3"))
+    )
     try:
         _seed_superseded_preparations(connector, count=8, states=("OPEN", "COMPLETE"))
+        # A tiny table may legitimately use its primary index.  Put a fixed,
+        # larger unrelated build before the target in preparation-ID order so
+        # the plan must demonstrate the build/state seek this contract needs.
+        unrelated_build = b"u" * 16
+        with connector.transaction():
+            scope = seed_source_scope(connector, source_root_sha256=b"v" * 32)
+            seed_sealed_source_build(
+                connector,
+                build_id=unrelated_build,
+                scope_key=scope.scope_key,
+                manifest_sha256=b"m" * 32,
+                gallery_count=0,
+                file_count=0,
+                byte_count=0,
+                created_at=1,
+                sealed_at=2,
+            )
+        for offset in range(0, 4096, 128):
+            _seed_superseded_preparations(
+                connector,
+                count=128,
+                first_generation=9 + offset,
+                states=("OPEN", "COMPLETE"),
+                build_id=unrelated_build,
+                id_prefix="aux",
+            )
         probes: list[tuple[str, tuple[object, ...], bool]] = [
             (
                 drain_position_sql(exclusion=True),
@@ -950,8 +1043,16 @@ def test_superseded_drainage_sql_seeks_the_drain_index(tmp_path: Path) -> None:
             ),
         ]
         for sql, data, seeks_preparation in probes:
+            if connector_backend(connector) == "mariadb":
+                with connector.read_transaction():
+                    plan = inspect_all(connector, "EXPLAIN " + sql, data)
+                rows = [row for row in plan if row[2] == "p"]
+                assert len(rows) == 1, plan
+                assert rows[0][5] == _SEEK_INDEX, plan
+                assert rows[0][3] in {"range", "ref", "const"}, plan
+                continue
             with connector.read_transaction():
-                plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, data)
+                plan = inspect_all(connector, "EXPLAIN QUERY PLAN " + sql, data)
             details = [str(row[-1]) for row in plan]
             expected = re.compile(
                 rf"^SEARCH p USING (?:COVERING )?INDEX {_SEEK_INDEX} "

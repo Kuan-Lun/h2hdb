@@ -6,7 +6,8 @@ import importlib.util
 import json
 import logging
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import closing
 from copy import deepcopy
 from functools import partial
 from hashlib import sha256
@@ -15,8 +16,11 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from vnext_test_database import DatabaseFactory, open_database
 
 from h2hdb.ingest_performance import IngestPerformance
+from h2hdb.mariadb_connector import MariaDBConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import (
     instrument_connector,
     measure_sql,
@@ -56,6 +60,7 @@ def _load_script(name: str) -> Iterator[ModuleType]:
 @pytest.mark.parametrize("prefix_families", [63, 64, 65, 130])
 @pytest.mark.parametrize("cross_step", [False, True])
 def test_real_sqlite_late_cumulative_cost_survives_capacity_and_cycles(
+    database_factory: DatabaseFactory,
     attribution: ModuleType,
     probe: ModuleType,
     tmp_path: Path,
@@ -73,28 +78,32 @@ def test_real_sqlite_late_cumulative_cost_survives_capacity_and_cycles(
 
     now = [0.0]
     clock = lambda: now[0]  # noqa: E731 - shared injectable diagnostic clock.
-    fetch = SQLiteConnector.fetch_one
+    native = (
+        SQLiteConnector if database_factory.backend == "sqlite" else MariaDBConnector
+    )
+    fetch: Callable[..., tuple[Any, ...]] = native.fetch_one
 
     def delayed_fetch(
-        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, query: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         result = fetch(self, query, data)
         now[0] += 0.25 if query == _LATE_QUERY else 1.0
         return result
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed_fetch)
+    monkeypatch.setattr(native, "fetch_one", delayed_fetch)
     monkeypatch.setattr(probe, "measure_sql", partial(measure_sql, clock=clock))
     monkeypatch.setattr(probe.time, "perf_counter", clock)
     observer = probe.Observer()
     performance = IngestPerformance(
-        logging.getLogger("attribution.acceptance"), backend="sqlite", clock=clock
+        logging.getLogger("attribution.acceptance"),
+        backend=database_factory.backend,
+        clock=clock,
     )
     with (
+        closing(open_database(database_factory.config())) as raw,
         observer.installed(),
-        instrument_connector(
-            SQLiteConnector(str(tmp_path / "observed.db"))
-        ) as connector,
     ):
+        connector = instrument_connector(raw)
 
         def warmup() -> None:
             for index in range(prefix_families):
@@ -236,13 +245,17 @@ def test_invalid_groups_cannot_be_accepted_as_complete(
 
 
 def test_query_details_not_displayed_remain_usable_if_full_report_is_available(
-    attribution: ModuleType, probe: ModuleType, tmp_path: Path
+    database_factory: DatabaseFactory,
+    attribution: ModuleType,
+    probe: ModuleType,
+    tmp_path: Path,
 ) -> None:
     observer = probe.Observer()
     with (
+        closing(open_database(database_factory.config())) as raw,
         observer.installed(),
-        instrument_connector(SQLiteConnector(str(tmp_path / "full.db"))) as connector,
     ):
+        connector = instrument_connector(raw)
         assert connector.fetch_one("SELECT %s", ("private-value",)) == (
             "private-value",
         )
@@ -254,15 +267,17 @@ def test_query_details_not_displayed_remain_usable_if_full_report_is_available(
 
 
 def test_overflow_and_unfinished_scopes_fail_closed(
-    attribution: ModuleType, probe: ModuleType, tmp_path: Path
+    database_factory: DatabaseFactory,
+    attribution: ModuleType,
+    probe: ModuleType,
+    tmp_path: Path,
 ) -> None:
     observer = probe.Observer(query_budget=1)
     with (
+        closing(open_database(database_factory.config())) as raw,
         observer.installed(),
-        instrument_connector(
-            SQLiteConnector(str(tmp_path / "overflow.db"))
-        ) as connector,
     ):
+        connector = instrument_connector(raw)
         assert connector.fetch_one("SELECT 1") == (1,)
         assert connector.fetch_one("SELECT 2") == (2,)
     assert observer.failure is not None

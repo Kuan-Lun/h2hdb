@@ -41,6 +41,7 @@ from vnext_pipeline import (
     initialize_database,
     populate_catalog,
     run_ingest_turn,
+    run_publication_recovery,
     takeover_clock,
 )
 from vnext_source_build_fixtures import SOURCE_BUILD_POLICY_AUTHORITY
@@ -72,13 +73,22 @@ from h2hdb.vnext_download_ingest_repository import (
     DownloadIngestUnavailableError,
     HandoffKind,
 )
+from h2hdb.vnext_gallery_staging_repository import GalleryStagingNotReadyError
 from h2hdb.vnext_hash_cache_repository import (
     FileHashCacheConflictError,
     FileHashObservationPlan,
     VNextHashCacheRepository,
 )
-from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
-from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
+from h2hdb.vnext_ingest_fence_repository import (
+    IngestFenceRepository,
+    IngestFenceUnavailableError,
+    IngestTurn,
+)
+from h2hdb.vnext_maintenance_gate_repository import (
+    GateLease,
+    MaintenanceGateRepository,
+    MaintenanceGateUnavailableError,
+)
 from h2hdb.vnext_queue_repository import DeletionGenerationExhaustedError
 from h2hdb.vnext_source_build_repository import (
     SourceBuildManifestSummary,
@@ -293,6 +303,28 @@ def test_identity_allocator_exhaustion_fails_closed_and_recovers(
             "UPDATE operational_identity_allocators SET next_id = %s WHERE stream = %s",
             (saved[0], stream.value),
         )
+        if stream is IdentityStream.TAG:
+            # The failed turn closed its prepared source after persisting an
+            # OPEN staging prefix. Reopening must not abandon that same live
+            # generation; only an expired-owner takeover can retire its slot.
+            before = snapshot_database(config)
+            with pytest.raises(
+                GalleryStagingNotReadyError,
+                match="OPEN staging is not an interrupted generation",
+            ):
+                run_ingest_turn(facade, source=source, library=library, session=session)
+            assert snapshot_database(config) == before
+            abandoned = session
+            facade.close()
+            facade = VNextIngestFacade(config, clock=takeover_clock())
+            session = claim_session(facade)
+            assert session.ingest_generation > abandoned.ingest_generation
+            before = snapshot_database(config)
+            with pytest.raises(
+                (MaintenanceGateUnavailableError, IngestFenceUnavailableError)
+            ):
+                facade.ensure_policy(abandoned, ingest_policy())
+            assert snapshot_database(config) == before
         run_ingest_turn(facade, source=source, library=library, session=session)
         drain_maintenance(facade)
     finally:
@@ -309,7 +341,7 @@ def test_cleanup_cycle_exhaustion_fails_closed_with_zero_writes(
     the next drain that must reuse one of them fails closed with zero writes."""
 
     initialize_database(db_config)
-    populate_catalog(db_config)
+    source, library = populate_catalog(db_config)
     connector = open_connector(db_config)
     try:
         with connector.transaction():
@@ -344,7 +376,9 @@ def test_cleanup_cycle_exhaustion_fails_closed_with_zero_writes(
     finally:
         connector.close()
     # Give the same strategies work again so an exhausted cycle must be reused.
-    source, library = _corpus()
+    # Retain the published adapter authority alongside the durable catalog.
+    # A fresh in-memory library would lose its activation receipt before the
+    # intended cleanup exhaustion path can be reached.
     source.put(gallery(1001, pages=[b"p0-a", b"p1-a-again"], artists=["alice"]))
     facade = VNextIngestFacade(db_config, clock=Clock())
     try:
@@ -463,9 +497,8 @@ def test_policy_replacement_between_preparation_and_commit_supersedes_the_attemp
                 )
         finally:
             connector.close()
-        # The replaced policy is a new attempt; the stale one is abandoned and
-        # reclaimed by generic cleanup, while the first revision's committed
-        # attempt under the old policy stays as publication lineage.
+        # The replaced policy is a new attempt. Before cleanup, both the
+        # abandoned attempt and the superseded publication's attempt remain.
         assert sorted(attempts) == [
             ("ABANDONED", 128),
             ("COMPLETE", 64),
@@ -476,12 +509,25 @@ def test_policy_replacement_between_preparation_and_commit_supersedes_the_attemp
         try:
             with connector.read_transaction():
                 remaining = connector.fetch_all(
-                    "SELECT state FROM operational_operational_preparations "
-                    "ORDER BY state"
+                    "SELECT preparation.preparation_id, preparation.state, "
+                    "policy.max_batch_rows "
+                    "FROM operational_operational_preparations AS preparation "
+                    "JOIN operational_operational_policys AS policy "
+                    "ON policy.operational_policy_id = "
+                    "preparation.operational_policy_id"
+                )
+                current = connector.fetch_all(
+                    "SELECT committed.preparation_id "
+                    "FROM catalog_publication_commit_head_receipts AS head "
+                    "JOIN catalog_publication_commits AS committed "
+                    "ON committed.receipt_id = head.receipt_id"
                 )
         finally:
             connector.close()
-        assert remaining == [("COMPLETE",), ("COMPLETE",)]
+        # Cleanup retains the current publication's exact preparation and
+        # retires both unreachable attempts, including the older COMPLETE one.
+        assert len(current) == 1
+        assert remaining == [(current[0][0], "COMPLETE", 64)]
     finally:
         second.close()
     assert full_check(config).state == "READY"
@@ -514,7 +560,12 @@ def test_lost_publication_commit_response_allocates_each_revision_once(
                 )
             assert injector.fired == "after_commit"
             injector.fired = None
-            run_ingest_turn(facade, source=source, library=library, session=session)
+            # The source handoff was consumed by the durable commit. Resume
+            # that publication without submitting a second source handoff
+            # under the already-used generation.
+            recovered = run_publication_recovery(facade, session, library)
+            assert recovered is not None and recovered.terminal
+            facade.complete_ingest(session)
             drain_maintenance(facade)
         finally:
             facade.close()
@@ -535,6 +586,7 @@ def test_lost_publication_commit_response_allocates_each_revision_once(
         connector.close()
     sources = [int(row[0]) for row in revisions]
     catalogs = [int(row[1]) for row in revisions]
+    assert sources[-1] == catalogs[-1] == 2
     assert sources == list(range(sources[0], sources[0] + len(sources)))
     assert catalogs == list(range(catalogs[0], catalogs[0] + len(catalogs)))
     next_by_stream = {str(key): int(value) for key, value in allocators.items()}

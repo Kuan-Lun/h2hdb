@@ -20,7 +20,6 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_manifest_fixtures import seed_sealed_source_build, seed_snapshot_manifest
 from vnext_publication_fixtures import (
     clone_catalog_publication_families,
@@ -30,6 +29,18 @@ from vnext_publication_fixtures import (
     seed_publication_commit,
     seed_publication_finalization,
     seed_publication_identity,
+)
+from vnext_test_database import (
+    DatabaseFactory,
+    assert_foreign_key_integrity,
+    atomic_fixture,
+    connector_backend,
+    database_connector,
+    foreign_key_checks_enabled,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
 )
 
 import h2hdb.vnext_catalog_reader_repository as catalog_reader_repository
@@ -46,7 +57,6 @@ from h2hdb import (
     CatalogTagFilter,
     CatalogTimestampRange,
     CoreConfig,
-    DatabaseConfig,
     StorageObjectKey,
     VNextCatalogFacade,
     VNextCurrentOnlyMaintenanceOutcome,
@@ -55,7 +65,7 @@ from h2hdb import (
 )
 from h2hdb.catalog_errors import CatalogCursorError, CatalogRevisionNotFoundError
 from h2hdb.catalog_search import iter_search_lexemes
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_artifact_family import (
     ArtifactSemanticInputFamily,
     CatalogArtifactFamily,
@@ -108,11 +118,13 @@ _CATALOG_PUBLICATION_PAYLOAD_TABLES = (
 )
 
 
+@atomic_fixture
 def _canonical_root_page(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     value_sha256: bytes,
 ) -> bytes:
-    row = connector.fetch_one(
+    row = inspect_one(
+        connector,
         "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
         (value_sha256,),
@@ -124,7 +136,7 @@ def _canonical_root_page(
 
 
 def _assert_canonical_value_storage(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     value_sha256: bytes,
     root_page_sha256: bytes,
@@ -142,14 +154,16 @@ def _assert_canonical_value_storage(
         "catalog_canonical_value_identities",
     ):
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {table} WHERE value_sha256 = %s",
                 (value_sha256,),
             )
             == expected
         )
     assert (
-        connector.fetch_one(
+        inspect_one(
+            connector,
             "SELECT COUNT(*) FROM catalog_canonical_value_page_coordinates "
             "WHERE value_sha256 = %s AND page_sha256 = %s",
             (value_sha256, root_page_sha256),
@@ -163,7 +177,8 @@ def _assert_canonical_value_storage(
         "catalog_canonical_value_page_seals",
     ):
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 f"SELECT COUNT(*) FROM {table} WHERE page_sha256 = %s",
                 (root_page_sha256,),
             )
@@ -171,8 +186,8 @@ def _assert_canonical_value_storage(
         )
 
 
-def _database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
 def test_selected_key_cte_uses_backend_binary_types() -> None:
@@ -189,8 +204,9 @@ def test_selected_key_cte_uses_backend_binary_types() -> None:
         _selected_keys_cte(1, backend="postgresql")
 
 
+@atomic_fixture
 def _canonical(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     domain: str,
     payload: bytes,
     *,
@@ -220,8 +236,9 @@ def _canonical(
     return value
 
 
+@atomic_fixture
 def _publication_commit(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     snapshot_manifest_sha256: bytes,
     revision: int = 1,
@@ -241,7 +258,8 @@ def _publication_commit(
         ("SOURCE", source_revision),
         ("CATALOG", revision),
     ):
-        allocator = connector.fetch_one(
+        allocator = inspect_one(
+            connector,
             "SELECT next_revision FROM operational_revision_allocators "
             "WHERE stream = %s",
             (stream,),
@@ -306,15 +324,33 @@ def _publication_commit(
         committed_at=committed_at,
         channel=None,
     )
-    connector.execute(
-        "INSERT OR REPLACE INTO catalog_publication_commit_head_receipts "
-        "(channel, receipt_id) VALUES (%s, %s)",
-        (b"default", receipt_id),
+    prior_head = inspect_one(
+        connector,
+        "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
+        "WHERE channel = %s",
+        (b"default",),
     )
+    if prior_head:
+        if prior_head != (receipt_id,):
+            assert (
+                connector.execute_affected(
+                    "UPDATE catalog_publication_commit_head_receipts "
+                    "SET receipt_id = %s WHERE channel = %s AND receipt_id = %s",
+                    (receipt_id, b"default", prior_head[0]),
+                )
+                == 1
+            )
+    else:
+        connector.execute(
+            "INSERT INTO catalog_publication_commit_head_receipts "
+            "(channel, receipt_id) VALUES (%s, %s)",
+            (b"default", receipt_id),
+        )
 
 
+@atomic_fixture
 def _seed_commit_authorities(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     preparation_id: bytes,
     snapshot_manifest_sha256: bytes,
@@ -336,7 +372,8 @@ def _seed_commit_authorities(
         _READER_ADAPTER_ID,
         _READER_POLICY_FINGERPRINT,
     )
-    if not connector.fetch_one(
+    if not inspect_one(
+        connector,
         "SELECT 1 FROM catalog_canonical_value_identities WHERE value_sha256 = %s",
         (policy_component,),
     ):
@@ -355,22 +392,40 @@ def _seed_commit_authorities(
         policy_fingerprint_sha256=_READER_POLICY_FINGERPRINT,
     )
     assert semantics.policy_component_sha256 == policy_component
-    connector.execute(
-        "INSERT OR IGNORE INTO catalog_artifact_policies "
-        "(artifact_policy_id, policy_component_sha256) VALUES (1, %s)",
-        (semantics.policy_component_sha256,),
+    artifact_policy = inspect_one(
+        connector,
+        "SELECT policy_component_sha256 FROM catalog_artifact_policies "
+        "WHERE artifact_policy_id = 1",
     )
-    connector.execute(
-        "INSERT OR IGNORE INTO operational_operational_policys "
-        "(operational_policy_id, operational_schema_version, "
-        "algorithm_version, max_batch_rows) VALUES (1, 1, 1, 128)"
+    if artifact_policy:
+        assert artifact_policy == (semantics.policy_component_sha256,)
+    else:
+        connector.execute(
+            "INSERT INTO catalog_artifact_policies "
+            "(artifact_policy_id, policy_component_sha256) VALUES (1, %s)",
+            (semantics.policy_component_sha256,),
+        )
+    operational_policy = inspect_one(
+        connector,
+        "SELECT operational_schema_version, algorithm_version, max_batch_rows "
+        "FROM operational_operational_policys WHERE operational_policy_id = 1",
     )
-    if connector.fetch_one(
+    if operational_policy:
+        assert operational_policy == (1, 1, 128)
+    else:
+        connector.execute(
+            "INSERT INTO operational_operational_policys "
+            "(operational_policy_id, operational_schema_version, "
+            "algorithm_version, max_batch_rows) VALUES (1, 1, 1, 128)"
+        )
+    if inspect_one(
+        connector,
         "SELECT 1 FROM operational_operational_preparation_effect_seals "
         "WHERE preparation_id = %s",
         (preparation_id,),
     ):
-        row = connector.fetch_one(
+        row = inspect_one(
+            connector,
             "SELECT run.analysis_id "
             "FROM operational_operational_preparations AS preparation "
             "JOIN catalog_analysis_run_descriptor AS run "
@@ -382,8 +437,9 @@ def _seed_commit_authorities(
         analysis_id = row[0]
         assert isinstance(analysis_id, bytes)
         return analysis_id
-    scope = connector.fetch_one(
-        "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 1"
+    scope = inspect_one(
+        connector,
+        "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 1",
     )
     assert len(scope) == 1
     build_id = sha256(b"reader-commit-build\0" + preparation_id).digest()[:16]
@@ -404,7 +460,8 @@ def _seed_commit_authorities(
         (build_id, b"default"),
     )
     if generation > 1:
-        base = connector.fetch_one(
+        base = inspect_one(
+            connector,
             "SELECT receipt_id FROM catalog_publication_commits WHERE generation = %s",
             (generation - 1,),
         )
@@ -481,8 +538,9 @@ def _seed_commit_authorities(
     return analysis_id
 
 
+@atomic_fixture
 def _published_fixture(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     artifact_count: int | None = None,
 ) -> dict[str, bytes]:
@@ -650,7 +708,7 @@ def _published_fixture(
 
 
 def _add_recent_artifact_publication(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     values: dict[str, bytes],
     semantics_sha256: bytes,
@@ -739,8 +797,9 @@ def _add_recent_artifact_publication(
     return key
 
 
+@atomic_fixture
 def _seed_catalog_acquisition(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     publication_key_value: bytes,
     gid: int,
@@ -781,8 +840,9 @@ def _seed_catalog_acquisition(
     return storage_key
 
 
+@atomic_fixture
 def _artifact_fixture(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     publication_key_value: bytes,
     gid: int = 123,
@@ -792,7 +852,8 @@ def _artifact_fixture(
         _READER_ADAPTER_ID,
         _READER_POLICY_FINGERPRINT,
     )
-    assert connector.fetch_one(
+    assert inspect_one(
+        connector,
         "SELECT value_sha256 FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
         (policy,),
@@ -904,9 +965,10 @@ def _artifact_fixture(
 
 
 def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader.sqlite3")
+    connector = _database(database_factory.config(str(tmp_path / "reader.sqlite3")))
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
@@ -914,7 +976,7 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
             publication_key_value=values["publication_key"],
         )
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             revision = reader.get_catalog_revision(connector)
             page = reader.discover_publications(
@@ -964,8 +1026,9 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
         connector.close()
 
 
+@atomic_fixture
 def _seed_discovery_authority(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     values: dict[str, bytes],
 ) -> None:
@@ -1051,7 +1114,8 @@ def _seed_discovery_authority(
     )
 
 
-def _seed_tag_browse_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
+@atomic_fixture
+def _seed_tag_browse_fixture(connector: SQLConnector) -> dict[str, bytes]:
     """Seed an independently sorted oracle with shared and exact-namespace tags."""
 
     values = _published_fixture(connector, artifact_count=0)
@@ -1218,17 +1282,14 @@ def _seed_tag_browse_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
 
 
 def test_tag_directories_and_publications_page_by_latest_upload_and_name(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "tag-browse.sqlite3"
-    connector = _database(database_path)
+    connector = _database(database_factory.config(str(database_path)))
     try:
         _seed_tag_browse_fixture(connector)
-        facade = VNextCatalogFacade(
-            CoreConfig(
-                database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
-            )
-        )
+        facade = VNextCatalogFacade(database_factory.config(str(database_path)))
         for namespace, expected in (
             (
                 "artist",
@@ -1284,18 +1345,21 @@ def test_tag_directories_and_publications_page_by_latest_upload_and_name(
                     break
             assert actual_gids == expected_gids
         assert facade.list_tag_values(namespace="missing").values == ()
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert_foreign_key_integrity(connector)
     finally:
         connector.close()
 
 
 def test_tag_cursors_reject_forged_positions_values_and_membership(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "tag-cursors.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "tag-cursors.sqlite3"))
+    )
     try:
         _seed_tag_browse_fixture(connector)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         directory = reader.list_tag_values(connector, namespace="artist", limit=1)
         after = directory.next_cursor
         assert after is not None
@@ -1351,11 +1415,11 @@ def test_tag_cursors_reject_forged_positions_values_and_membership(
 
 @pytest.mark.parametrize("limit", (0, -1, 129, True))
 def test_tag_browse_rejects_invalid_limits_before_sql(
-    tmp_path: Path, limit: int
+    database_factory: DatabaseFactory, tmp_path: Path, limit: int
 ) -> None:
-    connector = _database(tmp_path / "tag-limits.sqlite3")
+    connector = _database(database_factory.config(str(tmp_path / "tag-limits.sqlite3")))
     try:
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with patch.object(connector, "fetch_one") as query:
             with pytest.raises((ValueError, TypeError)):
                 reader.list_tag_values(connector, namespace="artist", limit=limit)
@@ -1376,9 +1440,11 @@ def test_tag_browse_rejects_invalid_limits_before_sql(
 
 @pytest.mark.parametrize("tag_value", ("", "長" * 400))
 def test_tag_browse_round_trips_empty_and_long_source_values(
-    tmp_path: Path, tag_value: str
+    database_factory: DatabaseFactory, tmp_path: Path, tag_value: str
 ) -> None:
-    connector = _database(tmp_path / "tag-source-domain.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "tag-source-domain.sqlite3"))
+    )
     try:
         _published_fixture(connector, artifact_count=0)
         digest = _canonical(connector, "tag_value_utf8_v1", tag_value.encode())
@@ -1395,7 +1461,7 @@ def test_tag_browse_round_trips_empty_and_long_source_values(
         connector.execute(
             "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         directory = reader.list_tag_values(connector, namespace="artist")
         assert [value.value for value in directory.values] == [tag_value]
         bundle = reader.list_tag_values_with_publications(connector, namespace="artist")
@@ -1410,11 +1476,15 @@ def test_tag_browse_round_trips_empty_and_long_source_values(
 
 
 @pytest.mark.parametrize("family", ("directory", "publications"))
-def test_tag_browse_rejects_position_gaps(tmp_path: Path, family: str) -> None:
-    connector = _database(tmp_path / f"tag-gap-{family}.sqlite3")
+def test_tag_browse_rejects_position_gaps(
+    database_factory: DatabaseFactory, tmp_path: Path, family: str
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / f"tag-gap-{family}.sqlite3"))
+    )
     try:
         _seed_tag_browse_fixture(connector)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         if family == "directory":
             connector.execute(
                 "DELETE FROM catalog_tag_directory_order "
@@ -1437,20 +1507,24 @@ def test_tag_browse_rejects_position_gaps(tmp_path: Path, family: str) -> None:
         connector.close()
 
 
-def test_tag_browse_rejects_missing_ranked_subject_membership(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "tag-membership-missing.sqlite3")
+def test_tag_browse_rejects_missing_ranked_subject_membership(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "tag-membership-missing.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         connector.execute(
             "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (1, 1)"
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "DELETE FROM catalog_subjects WHERE revision = 1 AND publication_key = %s",
             (values["publication_key"],),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        set_foreign_key_checks(connector, enabled=True)
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with pytest.raises(VNextCatalogReadError, match="authority"):
             reader.list_tag_values(connector, namespace="artist")
         with pytest.raises(VNextCatalogReadError, match="authority"):
@@ -1463,8 +1537,9 @@ def test_tag_browse_rejects_missing_ranked_subject_membership(tmp_path: Path) ->
         connector.close()
 
 
+@atomic_fixture
 def _seed_publication_child_cardinality(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     *,
     publication_key_value: bytes,
     total: int,
@@ -1512,10 +1587,13 @@ def _seed_publication_child_cardinality(
 
 @pytest.mark.deep
 def test_publication_children_stream_in_hard_capped_keyset_pages(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _database(tmp_path / "reader-child-keyset-pages.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-child-keyset-pages.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         total = catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT + 1
@@ -1524,7 +1602,7 @@ def test_publication_children_stream_in_hard_capped_keyset_pages(
             publication_key_value=values["publication_key"],
             total=total,
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             monkeypatch.context() as reference_patch,
             connector.read_transaction(),
@@ -1600,9 +1678,12 @@ def test_publication_children_stream_in_hard_capped_keyset_pages(
 
 @pytest.mark.deep
 def test_publication_child_keyset_pages_reject_cross_page_position_gaps(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-child-keyset-gap.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-child-keyset-gap.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         boundary = catalog_reader_repository._CHILD_HYDRATION_PAGE_LIMIT
@@ -1611,7 +1692,7 @@ def test_publication_child_keyset_pages_reject_cross_page_position_gaps(
             publication_key_value=values["publication_key"],
             total=boundary + 1,
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
 
         connector.execute(
             "UPDATE catalog_contributors SET position = %s "
@@ -1651,13 +1732,16 @@ def test_publication_child_keyset_pages_reject_cross_page_position_gaps(
 
 
 def test_discovery_uses_sealed_sql_postings_and_exact_cross_filters(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-reader.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-reader.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         marker = object()
         query = CatalogDiscoveryQuery(
             search="顯示",
@@ -1714,13 +1798,16 @@ def test_discovery_uses_sealed_sql_postings_and_exact_cross_filters(
 
 
 def test_discovery_and_facets_include_a_zero_acquisition_catalog(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-metadata-only.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-metadata-only.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             page = reader.discover_publications(
                 connector,
@@ -1774,14 +1861,17 @@ def _bounded_discovery_query() -> CatalogDiscoveryQuery:
 
 
 def test_discovery_combines_gid_times_pages_and_all_subjects_with_and(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-combined-filters.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-combined-filters.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(connector, publication_key_value=values["publication_key"])
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         query = _bounded_discovery_query()
         misses = (
             replace(query, gid=124),
@@ -1821,14 +1911,17 @@ def test_discovery_combines_gid_times_pages_and_all_subjects_with_and(
 
 
 def test_discovery_title_scope_uses_only_display_and_source_title_postings(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-title-scope.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-title-scope.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(connector, publication_key_value=values["publication_key"])
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         cases: tuple[tuple[CatalogDiscoveryQuery, list[int]], ...] = (
             (CatalogDiscoveryQuery(title="顯示"), [123]),
             (CatalogDiscoveryQuery(title="原始"), [123]),
@@ -1880,13 +1973,16 @@ def test_discovery_title_scope_uses_only_display_and_source_title_postings(
 
 
 def test_discovery_time_bounds_use_microsecond_authority_and_exclude_end(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-time-boundaries.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-time-boundaries.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         for field, instant in (("uploaded", 2_000_000), ("downloaded", 2_500_000)):
             for bounds, expected in (
                 (CatalogTimestampRange(start=_discovery_time(instant)), [123]),
@@ -1916,10 +2012,13 @@ def test_discovery_time_bounds_use_microsecond_authority_and_exclude_end(
 
 @pytest.mark.parametrize("has_artifact", (False, True))
 def test_discovery_zero_pages_requires_an_explicit_artifact_count(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     has_artifact: bool,
 ) -> None:
-    connector = _database(tmp_path / "discovery-zero-pages.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-zero-pages.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=int(has_artifact))
         if has_artifact:
@@ -1927,7 +2026,7 @@ def test_discovery_zero_pages_requires_an_explicit_artifact_count(
                 connector, publication_key_value=values["publication_key"]
             )
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             unfiltered = reader.discover_publications(connector)
             filtered = reader.discover_publications(
@@ -1945,14 +2044,17 @@ def test_discovery_zero_pages_requires_an_explicit_artifact_count(
 
 
 def test_discovery_cursor_binds_every_filter_and_rechecks_membership(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-filter-cursor.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-filter-cursor.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(connector, publication_key_value=values["publication_key"])
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         query = _bounded_discovery_query()
         cursor = CatalogDiscoveryCursor(
             revision=1,
@@ -2018,9 +2120,14 @@ def test_discovery_cursor_binds_every_filter_and_rechecks_membership(
 
 
 def test_subject_facets_ignore_all_subjects_and_preserve_other_filters(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-multiple-subject-facets.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "discovery-multiple-subject-facets.sqlite3")
+        )
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(connector, publication_key_value=values["publication_key"])
@@ -2040,7 +2147,7 @@ def test_subject_facets_ignore_all_subjects_and_preserve_other_filters(
             "INSERT INTO catalog_subject_facet_order "
             "(revision, position, tag_id, occurrence_count) VALUES (1, 1, 3, 1)"
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         query = replace(
             _bounded_discovery_query(),
             subjects=(
@@ -2105,11 +2212,14 @@ def test_subject_facets_ignore_all_subjects_and_preserve_other_filters(
 
 @pytest.mark.parametrize("facet_read", (False, True))
 def test_discovery_rejects_forged_nested_filters_before_any_sql(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     facet_read: bool,
 ) -> None:
-    connector = SQLiteConnector(str(tmp_path / "must-remain-unopened.sqlite3"))
-    reader = VNextCatalogReaderRepository(backend="sqlite")
+    connector = database_connector(
+        database_factory.config(str(tmp_path / "must-remain-unopened.sqlite3"))
+    )
+    reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
     mutations: tuple[tuple[str, str, object], ...] = (
         ("query", "gid", True),
         ("query", "title_lexemes", (b"forged",)),
@@ -2159,14 +2269,17 @@ def test_discovery_rejects_forged_nested_filters_before_any_sql(
 
 @pytest.mark.parametrize("resume_cursor", (False, True))
 def test_discovery_snapshots_subjects_before_pinning_the_catalog(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     resume_cursor: bool,
 ) -> None:
-    connector = _database(tmp_path / "discovery-subject-snapshot.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-subject-snapshot.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         query = CatalogDiscoveryQuery(
             search="顯示",
             subjects=(CatalogSubjectFilter(namespace="genre", value="科幻"),),
@@ -2217,13 +2330,16 @@ def test_discovery_snapshots_subjects_before_pinning_the_catalog(
 
 
 def test_batched_hydration_matches_streaming_reference_with_fewer_queries(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-hydration-differential.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-hydration-differential.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
 
         with (
             patch(
@@ -2253,12 +2369,17 @@ def test_batched_hydration_matches_streaming_reference_with_fewer_queries(
 
 
 def test_metadata_only_publication_rejects_every_stray_presentation_family(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "metadata-only-orphan-presentation.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "metadata-only-orphan-presentation.sqlite3")
+        )
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         insertions = (
             (
                 "catalog_artifacts",
@@ -2315,9 +2436,9 @@ def test_metadata_only_publication_rejects_every_stray_presentation_family(
             ),
         )
         for table, statement, parameters in insertions:
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             connector.execute(statement, parameters)
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
             with (
                 connector.read_transaction(),
                 pytest.raises(
@@ -2330,23 +2451,28 @@ def test_metadata_only_publication_rejects_every_stray_presentation_family(
                     "urn:h2h:gallery:123",
                     revision=1,
                 )
-            connector.execute("PRAGMA foreign_keys = OFF")
+            set_foreign_key_checks(connector, enabled=False)
             connector.execute(
                 f"DELETE FROM {table} WHERE revision = 1 AND publication_key = %s",
                 (values["publication_key"],),
             )
-            connector.execute("PRAGMA foreign_keys = ON")
+            set_foreign_key_checks(connector, enabled=True)
     finally:
         connector.close()
 
 
 def test_artifact_bearing_revision_rejects_a_missing_publication_artifact(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "artifact-bearing-missing-artifact.sqlite3")
+    connector = _database(
+        database_factory.config(
+            str(tmp_path / "artifact-bearing-missing-artifact.sqlite3")
+        )
+    )
     try:
         _published_fixture(connector, artifact_count=1)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(
@@ -2376,14 +2502,19 @@ def test_artifact_bearing_revision_rejects_a_missing_publication_artifact(
 
 
 def test_search_discovery_plan_starts_from_the_lexeme_index(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-search-plan.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-search-plan.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
         query = CatalogDiscoveryQuery(search="顯示 原始")
-        sql_filter = _discovery_filter_sql(query, revision=1, backend="sqlite")
+        sql_filter = _discovery_filter_sql(
+            query, revision=1, backend=connector_backend(connector)
+        )
         sql = _discovery_page_sql(sql_filter)
         parameters = (
             *sql_filter.cte_parameters,
@@ -2394,26 +2525,33 @@ def test_search_discovery_plan_starts_from_the_lexeme_index(
             *sql_filter.parameters,
             2,
         )
-        plan_rows = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
-        plan = " ".join(str(row[3]) for row in plan_rows)
-
         assert sql.startswith("WITH matched_search(publication_key) AS (")
         assert "FROM catalog_search_postings AS posting" in sql
         assert "SELECT COUNT(*) FROM catalog_search_postings" not in sql
-        assert "posting USING COVERING INDEX" in plan
-        assert "revision=? AND value_sha256=?" in plan
+        if connector_backend(connector) == "sqlite":
+            plan_rows = inspect_all(connector, "EXPLAIN QUERY PLAN " + sql, parameters)
+            plan = " ".join(str(row[3]) for row in plan_rows)
+            assert "posting USING COVERING INDEX" in plan
+            assert "revision=? AND value_sha256=?" in plan
+        else:
+            plan_rows = inspect_all(connector, "EXPLAIN " + sql, parameters)
+            postings = [row for row in plan_rows if row[2] == "posting"]
+            assert postings and all(row[5] is not None for row in postings), plan_rows
     finally:
         connector.close()
 
 
 def test_reader_revalidates_forged_query_cursor_and_revision_domains(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "discovery-forged-domains.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "discovery-forged-domains.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         query = CatalogDiscoveryQuery(search="顯示")
         valid_discovery_cursor = CatalogDiscoveryCursor(
             revision=1,
@@ -2520,13 +2658,16 @@ def test_reader_revalidates_forged_query_cursor_and_revision_domains(
 
 
 def test_facets_exclude_the_active_family_and_specialized_subject_namespaces(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "facet-reader.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "facet-reader.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             languages = reader.list_publication_facets(
                 connector,
@@ -2595,9 +2736,12 @@ def test_facets_exclude_the_active_family_and_specialized_subject_namespaces(
 
 
 def test_facet_counts_and_pages_are_exact_and_seekable(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "facet-distinct-reader.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "facet-distinct-reader.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
@@ -2616,7 +2760,7 @@ def test_facet_counts_and_pages_are_exact_and_seekable(
             "INSERT INTO catalog_subject_facet_order "
             "(revision, position, tag_id, occurrence_count) VALUES (1, 1, 3, 1)"
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             first = reader.list_publication_facets(
                 connector,
@@ -2649,16 +2793,19 @@ def test_facet_counts_and_pages_are_exact_and_seekable(
 
 
 def test_recent_artifact_windows_sort_by_authoritative_times_and_gid_ties(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-order.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-order.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
             connector,
             publication_key_value=values["publication_key"],
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         _add_recent_artifact_publication(
             connector,
             values=values,
@@ -2681,8 +2828,8 @@ def test_recent_artifact_windows_sort_by_authoritative_times_and_gid_ties(
             "UPDATE catalog_revision_descriptors "
             "SET publication_count = 3, artifact_count = 3 WHERE revision = 1"
         )
-        connector.execute("PRAGMA foreign_keys = ON")
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        set_foreign_key_checks(connector, enabled=True)
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             uploaded = reader.list_recent_publications(
                 connector,
@@ -2715,16 +2862,19 @@ def test_recent_artifact_windows_sort_by_authoritative_times_and_gid_ties(
 
 @pytest.mark.deep
 def test_recent_artifact_window_is_fixed_to_top_128(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-128.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-128.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
             connector,
             publication_key_value=values["publication_key"],
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         for position, gid in enumerate(range(1000, 1128), start=1):
             _add_recent_artifact_publication(
                 connector,
@@ -2739,8 +2889,8 @@ def test_recent_artifact_window_is_fixed_to_top_128(
             "UPDATE catalog_revision_descriptors "
             "SET publication_count = 129, artifact_count = 129 WHERE revision = 1"
         )
-        connector.execute("PRAGMA foreign_keys = ON")
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        set_foreign_key_checks(connector, enabled=True)
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             window = reader.list_recent_publications(
                 connector,
@@ -2751,7 +2901,7 @@ def test_recent_artifact_window_is_fixed_to_top_128(
         assert [publication.gid for publication in window.publications] == list(
             range(1127, 999, -1)
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         excluded_key = values["publication_key"]
         connector.execute(
             "DELETE FROM catalog_publication_download_times WHERE "
@@ -2761,7 +2911,7 @@ def test_recent_artifact_window_is_fixed_to_top_128(
             "WHERE revision = 1 AND publication_key = %s)",
             (excluded_key,),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
         with (
             connector.read_transaction(),
             pytest.raises(VNextCatalogReadError, match="authority is incomplete"),
@@ -2776,12 +2926,15 @@ def test_recent_artifact_window_is_fixed_to_top_128(
 
 
 def test_recent_artifact_window_handles_artifactless_revision(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-empty.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-empty.sqlite3"))
+    )
     try:
         _published_fixture(connector, artifact_count=0)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             window = reader.list_recent_publications(
                 connector,
@@ -2794,9 +2947,12 @@ def test_recent_artifact_window_handles_artifactless_revision(
 
 
 def test_recent_artifact_window_rejects_artifact_count_mismatch(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-count.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-count.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(
@@ -2807,7 +2963,7 @@ def test_recent_artifact_window_rejects_artifact_count_mismatch(
             "UPDATE catalog_revision_descriptors "
             "SET publication_count = 2, artifact_count = 2 WHERE revision = 1"
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(VNextCatalogReadError, match="artifact_count disagrees"),
@@ -2822,11 +2978,14 @@ def test_recent_artifact_window_rejects_artifact_count_mismatch(
 
 
 def test_recent_artifact_window_rejects_untyped_order_before_sql(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-invalid-order.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-invalid-order.sqlite3"))
+    )
     try:
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with pytest.raises(TypeError, match="must be CatalogRecentOrder"):
             reader.list_recent_publications(
                 connector,
@@ -2837,16 +2996,19 @@ def test_recent_artifact_window_rejects_untyped_order_before_sql(
 
 
 def test_recent_artifact_window_rejects_missing_download_authority(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-corrupt.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-corrupt.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(
             connector,
             publication_key_value=values["publication_key"],
         )
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "DELETE FROM catalog_publication_download_times WHERE "
             "catalog_occurrence_sha256 = ("
@@ -2855,8 +3017,8 @@ def test_recent_artifact_window_rejects_missing_download_authority(
             "WHERE revision = 1 AND publication_key = %s)",
             (values["publication_key"],),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        set_foreign_key_checks(connector, enabled=True)
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(VNextCatalogReadError, match="authority is incomplete"),
@@ -2871,10 +3033,13 @@ def test_recent_artifact_window_rejects_missing_download_authority(
 
 
 def test_recent_artifact_window_rechecks_head_after_hydration(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _database(tmp_path / "reader-recent-head-race.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-recent-head-race.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(
@@ -2899,7 +3064,7 @@ def test_recent_artifact_window_rechecks_head_after_hydration(
             "SET receipt_id = %s WHERE channel = %s",
             (b"r" * 16, b"default"),
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         hydrate = reader._hydrate_publications
 
         def hydrate_then_advance(*args: Any, **kwargs: Any) -> Any:
@@ -2922,16 +3087,19 @@ def test_recent_artifact_window_rechecks_head_after_hydration(
 
 
 def test_artifact_lookup_uses_only_the_strict_codec_and_exact_digest(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-artifact-codec.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-artifact-codec.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
             connector,
             publication_key_value=values["publication_key"],
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         identifier = artifact_values["artifact_id"].decode("ascii")
         malformed = (
             identifier[:-64] + identifier[-64:].upper(),
@@ -2956,10 +3124,13 @@ def test_artifact_lookup_uses_only_the_strict_codec_and_exact_digest(
 
 
 def test_strict_lookup_rejects_publication_key_collisions(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _database(tmp_path / "reader-public-collision.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-public-collision.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
@@ -2981,7 +3152,7 @@ def test_strict_lookup_rejects_publication_key_collisions(
             )
 
         monkeypatch.setattr(identity, "publication_key", colliding_publication_key)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         colliding_artifact_id = artifact_id(
             999,
             artifact_values["artifact_sha256"],
@@ -3004,17 +3175,20 @@ def test_strict_lookup_rejects_publication_key_collisions(
 
 
 def test_publication_and_artifact_name_lookups_reject_noncanonical_inputs_before_sql(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _database(tmp_path / "reader-public-codecs.sqlite3")
-    reader = VNextCatalogReaderRepository(backend="sqlite")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-public-codecs.sqlite3"))
+    )
+    reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
     queries: list[str] = []
-    original_fetch_one = SQLiteConnector.fetch_one
-    original_fetch_all = SQLiteConnector.fetch_all
+    original_fetch_one = type(connector).fetch_one
+    original_fetch_all = type(connector).fetch_all
 
     def counted_fetch_one(
-        current: SQLiteConnector,
+        current: SQLConnector,
         query: str,
         data: tuple[Any, ...] = (),
     ) -> tuple[Any, ...]:
@@ -3022,15 +3196,15 @@ def test_publication_and_artifact_name_lookups_reject_noncanonical_inputs_before
         return original_fetch_one(current, query, data)
 
     def counted_fetch_all(
-        current: SQLiteConnector,
+        current: SQLConnector,
         query: str,
         data: tuple[Any, ...] = (),
     ) -> list[tuple[Any, ...]]:
         queries.append(query)
         return original_fetch_all(current, query, data)
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", counted_fetch_one)
-    monkeypatch.setattr(SQLiteConnector, "fetch_all", counted_fetch_all)
+    monkeypatch.setattr(type(connector), "fetch_one", counted_fetch_one)
+    monkeypatch.setattr(type(connector), "fetch_all", counted_fetch_all)
     try:
         for value in (
             "urn:h2h:gallery:0",
@@ -3064,10 +3238,13 @@ def test_publication_and_artifact_name_lookups_reject_noncanonical_inputs_before
 
 
 def test_artifact_name_lookup_uses_bounded_set_queries_per_publication_family(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _database(tmp_path / "reader-name-page.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-name-page.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(
@@ -3075,18 +3252,18 @@ def test_artifact_name_lookup_uses_bounded_set_queries_per_publication_family(
             publication_key_value=values["publication_key"],
         )
         queries: list[str] = []
-        original_fetch_all = SQLiteConnector.fetch_all
+        original_fetch_all = type(connector).fetch_all
 
         def counted_fetch_all(
-            current: SQLiteConnector,
+            current: SQLConnector,
             query: str,
             data: tuple[Any, ...] = (),
         ) -> list[tuple[Any, ...]]:
             queries.append(query)
             return original_fetch_all(current, query, data)
 
-        monkeypatch.setattr(SQLiteConnector, "fetch_all", counted_fetch_all)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        monkeypatch.setattr(type(connector), "fetch_all", counted_fetch_all)
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         names = [f"download-{gid}.bin" for gid in range(1, 129)]
         with connector.read_transaction():
             publications = reader.get_publications_by_artifact_names(
@@ -3117,12 +3294,15 @@ def test_artifact_name_lookup_uses_bounded_set_queries_per_publication_family(
 
 
 def test_single_publication_lookup_rejects_missing_atomic_title_row(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-partial-publication.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-partial-publication.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "DELETE FROM catalog_publication_storage WHERE "
             "catalog_occurrence_sha256 = ("
@@ -3131,8 +3311,8 @@ def test_single_publication_lookup_rejects_missing_atomic_title_row(
             "WHERE revision = 1 AND publication_key = %s)",
             (values["publication_key"],),
         )
-        connector.execute("PRAGMA foreign_keys = ON")
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        set_foreign_key_checks(connector, enabled=True)
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(VNextCatalogReadError, match="missing or noncongruent"),
@@ -3143,16 +3323,19 @@ def test_single_publication_lookup_rejects_missing_atomic_title_row(
 
 
 def test_artifact_reader_hydrates_the_exact_opaque_storage_key(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-artifact-storage-key.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-artifact-storage-key.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         artifact_values = _artifact_fixture(
             connector,
             publication_key_value=values["publication_key"],
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             artifact = reader.get_artifact(
                 connector,
@@ -3167,9 +3350,12 @@ def test_artifact_reader_hydrates_the_exact_opaque_storage_key(
 
 
 def test_recent_feed_rejects_a_missing_tail_row_without_counting(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-artifact-missing-tail.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-artifact-missing-tail.sqlite3"))
+    )
     try:
         values = _published_fixture(connector)
         _artifact_fixture(
@@ -3180,7 +3366,7 @@ def test_recent_feed_rejects_a_missing_tail_row_without_counting(
             "DELETE FROM catalog_artifacts WHERE revision = 1 AND publication_key = %s",
             (values["publication_key"],),
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(VNextCatalogReadError, match="artifact_count"),
@@ -3194,13 +3380,16 @@ def test_recent_feed_rejects_a_missing_tail_row_without_counting(
 
 
 def test_reader_rejects_missing_order_row_and_wrong_canonical_domain(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-corrupt.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-corrupt.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         _seed_discovery_authority(connector, values=values)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         connector.execute("DELETE FROM catalog_publication_order")
         with (
             connector.read_transaction(),
@@ -3227,10 +3416,14 @@ def test_reader_rejects_missing_order_row_and_wrong_canonical_domain(
         connector.close()
 
 
-def test_reader_uses_public_revision_not_found_error(tmp_path: Path) -> None:
-    connector = _database(tmp_path / "reader-missing-revision.sqlite3")
+def test_reader_uses_public_revision_not_found_error(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-missing-revision.sqlite3"))
+    )
     try:
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(CatalogRevisionNotFoundError) as missing_current,
@@ -3260,12 +3453,15 @@ def test_reader_uses_public_revision_not_found_error(tmp_path: Path) -> None:
 
 
 def test_reader_requires_a_discovery_seal_and_query_constructor_fails_early(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "reader-search.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-search.sqlite3"))
+    )
     try:
         _published_fixture(connector, artifact_count=0)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with (
             connector.read_transaction(),
             pytest.raises(
@@ -3287,13 +3483,14 @@ def test_reader_requires_a_discovery_seal_and_query_constructor_fails_early(
 
 
 def test_reader_rejects_explicit_and_pinned_revision_after_head_advances(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "reader-history.sqlite3"
-    connector = _database(database_path)
+    connector = _database(database_factory.config(str(database_path)))
     try:
         values = _published_fixture(connector, artifact_count=0)
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with connector.read_transaction():
             prior_head = reader.get_catalog_revision(connector)
         _publication_commit(
@@ -3309,36 +3506,37 @@ def test_reader_rejects_explicit_and_pinned_revision_after_head_advances(
             candidate_id=b"d" * 16,
             preparation_id=b"q" * 16,
         )
-        clone_catalog_publication_families(
-            connector,
-            source_revision=1,
-            target_revision=2,
-        )
-        for table, columns in (
-            (
-                "catalog_publication_order",
-                "position, publication_key",
-            ),
-            (
-                "catalog_publication_contents",
-                "publication_key, content_sha256",
-            ),
-            (
-                "catalog_subjects",
-                "publication_key, position, tag_id",
-            ),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (revision, {columns}) "
-                f"SELECT 2, {columns} FROM {table} WHERE revision = 1"
+        with connector.transaction():
+            clone_catalog_publication_families(
+                connector,
+                source_revision=1,
+                target_revision=2,
             )
+            for table, columns in (
+                (
+                    "catalog_publication_order",
+                    "position, publication_key",
+                ),
+                (
+                    "catalog_publication_contents",
+                    "publication_key, content_sha256",
+                ),
+                (
+                    "catalog_subjects",
+                    "publication_key, position, tag_id",
+                ),
+            ):
+                connector.execute(
+                    f"INSERT INTO {table} (revision, {columns}) "
+                    f"SELECT 2, {columns} FROM {table} WHERE revision = 1"
+                )
     finally:
         connector.close()
 
-    read_only = SQLiteConnector(str(database_path), read_only=True)
+    read_only = database_connector(database_factory.config(str(database_path)))
     read_only.connect()
     try:
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         with read_only.read_transaction():
             current = reader.get_catalog_revision(read_only)
             current_publication = reader.get_publication(
@@ -3378,11 +3576,14 @@ def test_reader_rejects_explicit_and_pinned_revision_after_head_advances(
 
 @pytest.mark.parametrize("family", ("publication", "tag_bundle"))
 def test_reader_rechecks_head_after_hydration(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     family: str,
 ) -> None:
-    connector = _database(tmp_path / "reader-head-race.sqlite3")
+    connector = _database(
+        database_factory.config(str(tmp_path / "reader-head-race.sqlite3"))
+    )
     try:
         values = _published_fixture(connector, artifact_count=0)
         connector.execute(
@@ -3406,7 +3607,7 @@ def test_reader_rechecks_head_after_hydration(
             "SET receipt_id = %s WHERE channel = %s",
             (b"r" * 16, b"default"),
         )
-        reader = VNextCatalogReaderRepository(backend="sqlite")
+        reader = VNextCatalogReaderRepository(backend=connector_backend(connector))
         hydrate = reader._hydrate_publications
 
         def hydrate_then_advance(*args: Any, **kwargs: Any) -> Any:
@@ -3429,15 +3630,14 @@ def test_reader_rechecks_head_after_hydration(
 
 
 def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "current-only-facade.sqlite3"
-    config = CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
-    )
+    config = database_factory.config(str(database_path))
     admin = VNextDatabaseAdminFacade(config)
     assert admin.initialize().state == "READY"
-    connector = SQLiteConnector(str(database_path))
+    connector = database_connector(database_factory.config(str(database_path)))
     connector.connect()
     try:
         values = _published_fixture(connector)
@@ -3507,7 +3707,8 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             "INSERT INTO catalog_discovery_seals (revision, policy_id) VALUES (2, 1)"
         )
 
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT state, finalized_at FROM catalog_publication_receipts "
             "WHERE receipt_id = %s",
             (b"s" * 16,),
@@ -3517,8 +3718,8 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             before_finalization = blocked_facade.drain_current_only_maintenance(
                 30_000_000
             )
-            assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
-            assert connector.fetch_all("PRAGMA foreign_key_check") == []
+            assert foreign_key_checks_enabled(connector)
+            assert_foreign_key_integrity(connector)
             if before_finalization is VNextCurrentOnlyMaintenanceOutcome.BLOCKED:
                 break
             assert before_finalization is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
@@ -3539,19 +3740,20 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             root_page_sha256=current_source_root_page,
             present=True,
         )
-        generation_count = connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+        generation_count = inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
         )
         for _attempt in range(3):
             assert (
                 blocked_facade.drain_current_only_maintenance(30_000_000)
                 is VNextCurrentOnlyMaintenanceOutcome.BLOCKED
             )
-            assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
-            assert connector.fetch_all("PRAGMA foreign_key_check") == []
+            assert foreign_key_checks_enabled(connector)
+            assert_foreign_key_integrity(connector)
         assert (
-            connector.fetch_one(
-                "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+            inspect_one(
+                connector,
+                "SELECT COUNT(*) FROM operational_maintenance_gate_generations",
             )
             == generation_count
         )
@@ -3563,19 +3765,19 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             processed_count=0,
             finalized_at=6_000_000,
         )
-        assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert foreign_key_checks_enabled(connector)
+        assert_foreign_key_integrity(connector)
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
             assert (
-                connector.fetch_one(f"SELECT COUNT(*) FROM {table} WHERE revision = 1")[
-                    0
-                ]
+                inspect_one(
+                    connector, f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
+                )[0]
                 > 0
             )
             assert (
-                connector.fetch_one(f"SELECT COUNT(*) FROM {table} WHERE revision = 2")[
-                    0
-                ]
+                inspect_one(
+                    connector, f"SELECT COUNT(*) FROM {table} WHERE revision = 2"
+                )[0]
                 == 0
             )
     finally:
@@ -3583,21 +3785,22 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
 
     assert admin.check().state == "READY"
     facade = VNextIngestFacade(config, clock=lambda: 7_000_000)
-    with SQLiteConnector(str(database_path)) as inspection:
-        assert inspection.fetch_one(
-            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+    with database_connector(database_factory.config(str(database_path))) as inspection:
+        assert inspect_one(
+            inspection,
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'",
         ) == (0,)
     # Actionable old payload fences a new ingest even before the first shard
     # job opens; otherwise a bounded attempt that just completed one shard
     # could recreate a predecessor pin to a partially reclaimed revision.
     assert facade.try_claim_ingest(True, 30_000_000) is None
-    with SQLiteConnector(str(database_path)) as inspection:
+    with database_connector(database_factory.config(str(database_path))) as inspection:
         for table in (
             "operational_maintenance_gate_holders",
             "operational_maintenance_gate_owners",
             "operational_ingest_generation_owners",
         ):
-            assert inspection.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+            assert inspect_one(inspection, f"SELECT COUNT(*) FROM {table}") == (0,)
 
     attempts = [facade.drain_current_only_maintenance(30_000_000)]
     assert attempts == [VNextCurrentOnlyMaintenanceOutcome.PROGRESSED]
@@ -3606,19 +3809,21 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
     # checkpoint or completing an empty phase. A tentative SHARED ingest claim
     # must atomically roll back while any actionable predecessor payload remains.
     assert facade.try_claim_ingest(True, 30_000_000) is None
-    with SQLiteConnector(str(database_path)) as inspection:
+    with database_connector(database_factory.config(str(database_path))) as inspection:
         for table in (
             "operational_maintenance_gate_holders",
             "operational_maintenance_gate_owners",
             "operational_ingest_generation_owners",
         ):
-            assert inspection.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+            assert inspect_one(inspection, f"SELECT COUNT(*) FROM {table}") == (0,)
 
     for _attempt in range(64):
         attempts.append(facade.drain_current_only_maintenance(30_000_000))
-        with SQLiteConnector(str(database_path)) as inspection:
-            assert inspection.fetch_one("PRAGMA foreign_keys") == (1,)
-            assert inspection.fetch_all("PRAGMA foreign_key_check") == []
+        with database_connector(
+            database_factory.config(str(database_path))
+        ) as inspection:
+            assert foreign_key_checks_enabled(inspection)
+            assert_foreign_key_integrity(inspection)
         if attempts[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE:
             break
     assert attempts[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE
@@ -3634,13 +3839,14 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
         catalog.discover_publications(revision=1)
     assert admin.check().state == "READY"
 
-    connector = SQLiteConnector(str(database_path))
+    connector = database_connector(database_factory.config(str(database_path)))
     connector.connect()
     try:
-        assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert foreign_key_checks_enabled(connector)
+        assert_foreign_key_integrity(connector)
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT candidate_id FROM catalog_publication_candidates "
                 "WHERE candidate_id = %s",
                 (b"d" * 16,),
@@ -3648,24 +3854,26 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             == ()
         )
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
-            assert connector.fetch_one(
-                f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
+            assert inspect_one(
+                connector, f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
             ) == (0,)
             assert (
-                connector.fetch_one(f"SELECT COUNT(*) FROM {table} WHERE revision = 2")[
-                    0
-                ]
+                inspect_one(
+                    connector, f"SELECT COUNT(*) FROM {table} WHERE revision = 2"
+                )[0]
                 == 0
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_source_revision_descriptors "
-            "WHERE source_revision = 1"
+            "WHERE source_revision = 1",
         ) == (values["snapshot_manifest"],)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_source_revision_descriptors "
-            "WHERE source_revision = 2"
+            "WHERE source_revision = 2",
         ) == (current_snapshot,)
         for value in old_only_canonical_values:
             _assert_canonical_value_storage(
@@ -3681,7 +3889,8 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             present=True,
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT snapshot_manifest_sha256 "
                 "FROM catalog_source_snapshot_manifest_identity "
                 "WHERE snapshot_manifest_sha256 = %s",
@@ -3689,16 +3898,20 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             )
             == ()
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_source_snapshot_manifest_identity "
             "WHERE snapshot_manifest_sha256 = %s",
             (current_snapshot,),
         ) == (current_snapshot,)
-        assert connector.fetch_all("SELECT * FROM catalog_display_title_choices") == []
-        assert connector.fetch_all("SELECT * FROM catalog_title_sorts") == []
         assert (
-            connector.fetch_one(
+            inspect_all(connector, "SELECT * FROM catalog_display_title_choices") == []
+        )
+        assert inspect_all(connector, "SELECT * FROM catalog_title_sorts") == []
+        assert (
+            inspect_one(
+                connector,
                 "SELECT artifact_sha256 FROM catalog_artifact_blobs "
                 "WHERE artifact_sha256 = %s",
                 (artifact_values["artifact_sha256"],),
@@ -3706,7 +3919,8 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             == ()
         )
         assert (
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT artifact_semantics_sha256 "
                 "FROM catalog_artifact_semantic_inputs "
                 "WHERE artifact_semantics_sha256 = %s",
@@ -3722,29 +3936,36 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             "catalog_gallery_gid_identities",
             "catalog_source_locator_identity",
         ):
-            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
-        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (0,)
-        assert connector.fetch_one(
+            assert inspect_one(connector, f"SELECT COUNT(*) FROM {table}") == (0,)
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_source_scopes") == (
+            1,
+        )
+        assert inspect_one(connector, "SELECT COUNT(*) FROM catalog_tag_terms") == (0,)
+        assert inspect_one(
+            connector,
             "SELECT publication_count FROM catalog_revision_descriptors "
-            "WHERE revision = 1"
+            "WHERE revision = 1",
         ) == (1,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_source_revision_descriptors "
-            "WHERE source_revision = 1"
+            "WHERE source_revision = 1",
         ) == (values["snapshot_manifest"],)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_source_revision_descriptors "
-            "WHERE source_revision = 2"
+            "WHERE source_revision = 2",
         ) == (current_snapshot,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
             "WHERE channel = %s",
             (b"default",),
         ) == (b"s" * 16,)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT revision FROM catalog_publication_commits WHERE receipt_id = %s",
             (b"r" * 16,),
         ) == (1,)

@@ -10,8 +10,17 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 
 ROOT = Path(__file__).resolve().parents[1]
 PHYSICAL_MANIFESTS = (
@@ -107,45 +116,172 @@ def test_every_generated_base_column_has_a_closed_sqlite_storage_domain() -> Non
     assert SCHEMA_ONLY_TABLES < manifest_tables
 
 
-def test_schema_only_relations_enforce_domains_without_a_production_writer() -> None:
+_VALID_SCHEMA_ONLY_ROWS: tuple[tuple[str, tuple[object, ...]], ...] = (
+    ("catalog_gallery_observation_discovery_fingerprints", (1, 1, b"f" * 40)),
+    ("catalog_gallery_observation_raw_content", (1, 1, b"r" * 32)),
+    ("operational_gallery_redownload_states", (1, 2, 3, 4)),
+)
+
+
+def _insert_row(connection: SQLConnector, table: str, row: tuple[object, ...]) -> None:
+    placeholders = ", ".join("%s" for _value in row)
+    connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", row)
+
+
+def _assert_schema_only_tables_empty(connection: SQLConnector) -> None:
+    for table in sorted(SCHEMA_ONLY_TABLES):
+        assert inspect_one(connection, f"SELECT COUNT(*) FROM {table}") == (0,), (
+            f"schema-only fixture is not empty: {table}"
+        )
+
+
+def _verify_valid_rows_then_rollback(connection: SQLConnector) -> None:
+    # Native execute autocommits without this explicit transaction. Verify the
+    # rows were genuinely accepted, then independently prove rollback removed all
+    # of them before any invalid INSERT can encounter an unrelated primary key.
+    connection.begin()
+    try:
+        for table, row in _VALID_SCHEMA_ONLY_ROWS:
+            _insert_row(connection, table, row)
+            assert inspect_all(connection, f"SELECT * FROM {table}") == [row]
+    finally:
+        connection.rollback()
+    _assert_schema_only_tables_empty(connection)
+
+
+def _assert_domain_rejection(
+    connection: SQLConnector,
+    table: str,
+    row: tuple[object, ...],
+    *,
+    mariadb_errno: int,
+    column: str,
+) -> None:
+    with pytest.raises(Exception) as failure:
+        _insert_row(connection, table, row)
+    error = failure.value
+    native = (
+        (error.__cause__ or error.__context__ or error)
+        if isinstance(error, DatabaseDuplicateKeyError)
+        else error
+    )
+    message = f"not a target domain rejection for {table}.{column}: {native}"
+    if connector_backend(connection) == "sqlite":
+        assert isinstance(native, sqlite3.IntegrityError), message
+        assert native.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_CHECK, message
+    else:
+        assert type(native).__module__.startswith("mysql."), message
+        assert getattr(native, "errno", None) == mariadb_errno, message
+        assert f"'{column}'" in str(native), message
+
+
+def test_schema_only_relations_enforce_domains_without_a_production_writer(
+    database_factory: DatabaseFactory,
+) -> None:
     """The three intentionally unpopulated relations still reject bad rows."""
 
-    connection = _sqlite_connection()
+    connection = open_generated_database(database_factory.config())
+    set_foreign_key_checks(connection, enabled=False)
     try:
-        valid_rows: tuple[tuple[str, tuple[object, ...]], ...] = (
+        _verify_valid_rows_then_rollback(connection)
+        invalid_rows: tuple[tuple[str, tuple[object, ...], int, str], ...] = (
             (
                 "catalog_gallery_observation_discovery_fingerprints",
-                (1, 1, b"f" * 40),
+                (2, 2, b"f" * 41),
+                1406,
+                "metadata_fingerprint",
             ),
-            ("catalog_gallery_observation_raw_content", (1, 1, b"r" * 32)),
-            ("operational_gallery_redownload_states", (1, 2, 3, 4)),
-        )
-        for table, row in valid_rows:
-            placeholders = ", ".join("?" for _value in row)
-            connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", row)
-        connection.rollback()
-
-        invalid_rows: tuple[tuple[str, tuple[object, ...]], ...] = (
             (
-                "catalog_gallery_observation_discovery_fingerprints",
-                (1, 1, "f" * 40),
+                "catalog_gallery_observation_raw_content",
+                (3, 3, b"r" * 33),
+                1406,
+                "raw_content_sha256",
             ),
-            ("catalog_gallery_observation_raw_content", (1, 1, "r" * 32)),
-            ("operational_gallery_redownload_states", (-1, 2, 3, 4)),
-            ("operational_gallery_redownload_states", (1, 2, 3, b"4")),
+            (
+                "operational_gallery_redownload_states",
+                (-1, 2, 3, 4),
+                1264,
+                "gallery_id",
+            ),
+            (
+                "operational_gallery_redownload_states",
+                (4, 2, 3, -1),
+                1264,
+                "updated_at",
+            ),
         )
-        for table, row in invalid_rows:
-            placeholders = ", ".join("?" for _value in row)
-            with pytest.raises(sqlite3.IntegrityError):
-                connection.execute(
-                    f"INSERT INTO {table} VALUES ({placeholders})",
-                    row,
+        for table, row, errno, column in invalid_rows:
+            _assert_schema_only_tables_empty(connection)
+            connection.begin()
+            try:
+                _assert_domain_rejection(
+                    connection, table, row, mariadb_errno=errno, column=column
                 )
+            finally:
+                connection.rollback()
+            _assert_schema_only_tables_empty(connection)
+    finally:
+        connection.close()
+
+
+def test_schema_only_domain_oracle_rejects_committed_fixture_and_duplicate_key(
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = open_generated_database(database_factory.config())
+    set_foreign_key_checks(connection, enabled=False)
+    try:
+        with monkeypatch.context() as mutation:
+            mutation.setattr(connection, "rollback", connection.commit)
+            with pytest.raises(
+                AssertionError, match="schema-only fixture is not empty"
+            ):
+                _verify_valid_rows_then_rollback(connection)
+        # The faulty rollback genuinely left committed rows. Their duplicate key
+        # errors must not masquerade as a domain refusal, even if the empty-table
+        # assertion is later removed. This disposable database owns these rows.
+        table, row = _VALID_SCHEMA_ONLY_ROWS[0]
+        assert inspect_all(connection, f"SELECT * FROM {table}") == [row]
+        connection.begin()
+        try:
+            with pytest.raises(AssertionError, match="not a target domain rejection"):
+                _assert_domain_rejection(
+                    connection,
+                    table,
+                    row,
+                    mariadb_errno=1406,
+                    column="metadata_fingerprint",
+                )
+        finally:
             connection.rollback()
     finally:
         connection.close()
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite storage-class CHECKs reject non-BLOB values; MariaDB typed columns normalize binding types and portable stored-domain violations are tested separately",
+)
+def test_schema_only_relations_enforce_sqlite_binding_storage_classes() -> None:
+    connection = _sqlite_connection()
+    try:
+        for table, row in (
+            ("catalog_gallery_observation_discovery_fingerprints", (1, 1, "f" * 40)),
+            ("catalog_gallery_observation_raw_content", (1, 1, "r" * 32)),
+            ("operational_gallery_redownload_states", (1, 2, 3, b"4")),
+        ):
+            placeholders = ", ".join("?" for _ in row)
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", row)
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite dynamic TEXT affinity losslessly normalizes integer bindings; native MariaDB typed-column domain cases are paired separately",
+)
 def test_sqlite_text_affinity_preserves_the_declared_storage_domain() -> None:
     """Lossless SQLite affinity conversion stores TEXT, never a foreign class."""
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -20,7 +21,6 @@ import h2hdb.mariadb_connector as mariadb_connector_module
 import h2hdb.sqlite_connector as sqlite_connector_module
 from h2hdb import CoreConfig
 from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.repository import RepositoryContext
 from h2hdb.schema_epoch import SchemaObjectKind
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -28,6 +28,7 @@ from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
 
 EPOCH_CONTROL_TABLE = "h2hdb_schema_epoch"
 _MUTATION_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "REPLACE")
+_SNAPSHOT_OBSERVER = ContextVar("fault_snapshot_observer", default=False)
 
 
 class InjectedFault(RuntimeError):
@@ -79,8 +80,13 @@ class FaultInjector:
     _current_first: int = 0
     on_first_mutation: Callable[[int], None] | None = None
     on_before_mutation: Callable[[str], None] | None = None
+    fired_transactions: tuple[TransactionRecord, ...] = ()
+    fired_statements: tuple[str, ...] = ()
+    fired_first_mutation: int | None = None
 
     def before_mutation(self, sql: str) -> None:
+        if _SNAPSHOT_OBSERVER.get():
+            return
         if self.on_before_mutation is not None:
             self.on_before_mutation(sql)
         if self.transaction_mutations == 0:
@@ -99,12 +105,24 @@ class FaultInjector:
         ):
             self.fired = "before_mutation"
             self.fired_sql = sql
+            self.fired_transactions = tuple(self.transactions)
+            self.fired_statements = tuple(_normalize(sql) for sql in self._current)
+            self.fired_first_mutation = self._current_first
             raise InjectedFault(
                 f"injected fault before mutation {self.mutations}: {_head(sql)}"
             )
 
     def after_commit(self) -> None:
+        if _SNAPSHOT_OBSERVER.get():
+            return
         self.commits += 1
+        will_fire = (
+            self.fired is None
+            and self.fail_after_commit is not None
+            and self.commits == self.fail_after_commit
+        )
+        prior = tuple(self.transactions) if will_fire else ()
+        committed = tuple(_normalize(sql) for sql in self._current) if will_fire else ()
         if self.transaction_mutations:
             self.transactions.append(
                 TransactionRecord(
@@ -115,15 +133,16 @@ class FaultInjector:
             )
         self.transaction_mutations = 0
         self._current = []
-        if (
-            self.fired is None
-            and self.fail_after_commit is not None
-            and self.commits == self.fail_after_commit
-        ):
+        if will_fire:
             self.fired = "after_commit"
+            self.fired_transactions = prior
+            self.fired_statements = committed
+            self.fired_first_mutation = self._current_first
             raise InjectedFault(f"injected response loss after commit {self.commits}")
 
     def on_rollback(self) -> None:
+        if _SNAPSHOT_OBSERVER.get():
+            return
         self.transaction_mutations = 0
         self._current = []
 
@@ -137,6 +156,8 @@ class FaultPoint:
     shape_index: int
     statement_index: int
     statement: str
+    transaction_index: int
+    recorded_transactions: tuple[TransactionRecord, ...] = field(repr=False)
 
 
 def fault_points(
@@ -149,7 +170,8 @@ def fault_points(
 
     seen: dict[tuple[str, ...], int] = {}
     points: list[FaultPoint] = []
-    for record in injector.transactions:
+    recorded = tuple(injector.transactions)
+    for transaction_index, record in enumerate(recorded):
         shape = record.shape
         if shape in seen:
             continue
@@ -164,6 +186,8 @@ def fault_points(
                         shape_index,
                         offset,
                         _head(statement),
+                        transaction_index,
+                        recorded,
                     )
                 )
         if "after_commit" in kinds:
@@ -174,6 +198,8 @@ def fault_points(
                     shape_index,
                     len(record.statements),
                     _head(record.statements[-1]),
+                    transaction_index,
+                    recorded,
                 )
             )
     return tuple(points)
@@ -260,11 +286,12 @@ def fault_injection(
     monkeypatch: pytest.MonkeyPatch,
     injector: FaultInjector,
 ) -> Iterator[FaultInjector]:
-    """Route every production connector opened by facades through ``injector``.
+    """Route connectors captured by contexts constructed inside this scope.
 
-    ``RepositoryContext.from_config`` imports the connector classes lazily from
-    their modules, so patching the module attributes is sufficient and leaves
-    the production classes untouched.
+    ``RepositoryContext.from_config`` captures its connector class when the
+    context is constructed. Facades/contexts must therefore be created inside
+    this scope; opening a previously constructed facade here does not retrofit
+    injection. The production connector classes themselves remain unchanged.
     """
 
     sqlite_type = type(
@@ -306,9 +333,9 @@ def backend_of(config: CoreConfig) -> Backend:
 
 
 def open_connector(config: CoreConfig) -> SQLConnector:
-    connector = RepositoryContext.from_config(config).SQLConnector()
-    connector.connect()
-    return connector
+    from vnext_test_database import open_database
+
+    return open_database(config)
 
 
 def _row_key(row: tuple[Any, ...]) -> tuple[tuple[str, str], ...]:
@@ -323,17 +350,26 @@ def snapshot_database(
     """Exact sorted contents of every physical table in one read snapshot."""
 
     names = tuple(tables) if tables is not None else physical_tables(backend_of(config))
-    connector = open_connector(config)
+    # The independent oracle still performs native SQL and owns its read
+    # transaction. Its commit/rollback must not become part of the observed
+    # workflow or reset another connection's current writer transaction.
+    observer = _SNAPSHOT_OBSERVER.set(True)
     try:
-        with connector.read_transaction():
-            return {
-                name: tuple(
-                    sorted(connector.fetch_all(f"SELECT * FROM {name}"), key=_row_key)
-                )
-                for name in names
-            }
+        connector = open_connector(config)
+        try:
+            with connector.read_transaction():
+                return {
+                    name: tuple(
+                        sorted(
+                            connector.fetch_all(f"SELECT * FROM {name}"), key=_row_key
+                        )
+                    )
+                    for name in names
+                }
+        finally:
+            connector.close()
     finally:
-        connector.close()
+        _SNAPSHOT_OBSERVER.reset(observer)
 
 
 def snapshot_difference(
@@ -375,6 +411,9 @@ def run_fault_point(
     workflow: Callable[[], object],
     snapshot_tables: Sequence[str] | None = None,
     capture_every_transaction: bool = False,
+    targeting: Literal[
+        "exact_transaction_shape", "ordinal_only"
+    ] = "exact_transaction_shape",
 ) -> tuple[FaultInjector, dict[str, tuple[tuple[Any, ...], ...]] | None]:
     """Run ``workflow`` with exactly one fault and return the pre-state of the
     interrupted transaction (for ``before_mutation`` points).
@@ -388,6 +427,8 @@ def run_fault_point(
     transaction's committed pre-state.
     """
 
+    if targeting not in {"exact_transaction_shape", "ordinal_only"}:
+        raise ValueError(f"unknown fault targeting mode: {targeting!r}")
     injector = FaultInjector(
         fail_before_mutation=point.ordinal if point.kind == "before_mutation" else None,
         fail_after_commit=point.ordinal if point.kind == "after_commit" else None,
@@ -398,7 +439,9 @@ def run_fault_point(
 
         def capture(next_ordinal: int) -> None:
             nonlocal pre_transaction
-            if capture_every_transaction or next_ordinal == interrupted_first:
+            if injector.fired is None and (
+                capture_every_transaction or next_ordinal == interrupted_first
+            ):
                 pre_transaction = snapshot_database(config, tables=snapshot_tables)
 
         injector.on_first_mutation = capture
@@ -407,7 +450,72 @@ def run_fault_point(
             workflow()
     if injector.fired is None:
         raise AssertionError("the configured fault point never fired")
+    if targeting == "exact_transaction_shape":
+        _assert_exact_target(injector, point)
     return injector, pre_transaction
+
+
+def _assert_exact_target(injector: FaultInjector, point: FaultPoint) -> None:
+    """Verify the full committed prefix and the actual interrupted boundary.
+
+    Before a mutation only the target transaction's executed prefix exists;
+    after a commit its complete shape exists. Every earlier write transaction
+    must also match, preventing a shared first SQL statement from identifying
+    an unrelated transaction at the same global ordinal.
+    """
+
+    expected_prior = point.recorded_transactions[: point.transaction_index]
+    actual_prior = injector.fired_transactions
+    expected = tuple((t.first_mutation, t.commit, t.shape) for t in expected_prior)
+    actual = tuple((t.first_mutation, t.commit, t.shape) for t in actual_prior)
+    if actual != expected:
+        detail = _trace_difference(expected, actual)
+        raise AssertionError(
+            "fault target prior transaction trace drift: "
+            f"{detail}; expected {len(expected)} writes, observed {len(actual)}"
+        )
+    target = point.recorded_transactions[point.transaction_index]
+    expected_statements = (
+        target.shape[: point.statement_index + 1]
+        if point.kind == "before_mutation"
+        else target.shape
+    )
+    if (
+        injector.fired_first_mutation != target.first_mutation
+        or injector.fired_statements != expected_statements
+    ):
+        raise AssertionError(
+            "fault target transaction shape drift: "
+            f"expected start {target.first_mutation}, observed "
+            f"{injector.fired_first_mutation}; "
+            f"{_statement_difference(expected_statements, injector.fired_statements)}"
+        )
+
+
+def _trace_difference(
+    expected: Sequence[tuple[int, int, tuple[str, ...]]],
+    actual: Sequence[tuple[int, int, tuple[str, ...]]],
+) -> str:
+    for index in range(max(len(expected), len(actual))):
+        if index >= len(expected) or index >= len(actual):
+            return f"transaction {index} is missing from {'expected' if index >= len(expected) else 'observed'} trace"
+        wanted, observed = expected[index], actual[index]
+        if wanted != observed:
+            return (
+                f"transaction {index}: start {wanted[0]} != {observed[0]}, "
+                f"commit {wanted[1]} != {observed[1]}; "
+                f"{_statement_difference(wanted[2], observed[2])}"
+            )
+    return "transaction trace matches"
+
+
+def _statement_difference(expected: Sequence[str], actual: Sequence[str]) -> str:
+    for index in range(max(len(expected), len(actual))):
+        wanted = expected[index] if index < len(expected) else None
+        observed = actual[index] if index < len(actual) else None
+        if wanted != observed:
+            return f"SQL {index}: expected {wanted!r}, observed {observed!r}"
+    return "normalized SQL statements match"
 
 
 MAINTENANCE_GATE_TABLES = frozenset(

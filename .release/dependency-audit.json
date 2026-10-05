@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-01T07:16:02+00:00",
+  "checked_at": "2026-10-04T08:11:50+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.2",
+  "project_version": "0.45.3",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -68,7 +68,7 @@
     {
       "declared": "mypy>=2.3.1",
       "group": "optional:dev",
-      "latest": "2.3.1",
+      "latest": "2.4.0",
       "latest_satisfies": true,
       "name": "mypy",
       "python_3_14": true,
@@ -104,7 +104,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.9",
+      "latest": "0.16.10",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, optional development and Node registry candidate against the 0.45.1 receipt; all candidate versions are unchanged and satisfy existing bounds. Inspected mysql-connector-python 26.7.0 C-extension and pure-Python cursor admission implementations. Verified both drivers with local MariaDB 10.11.11 killed-idle-session recovery, public heartbeat clean restart, and non-replayed durable COMMIT response-loss regressions (9 live cases), plus 62 offline pool/connector cases. No dependency range changes are needed; Core 0.45.2 is covered by all four deployment consumer ranges >=0.43.0,<0.46.0.",
+    "note": "Compared every build, runtime, optional development and Node candidate with the 0.45.2 receipt. Only mypy 2.4.0 and Ruff 0.16.10 are newly released; reviewed their official changelogs (https://mypy.readthedocs.io/en/stable/changelog.html#mypy-2-4 and https://github.com/astral-sh/ruff/releases/tag/0.16.10), including native parser defaults, Python 3.15 support and preview-only UP052. Installed both in the local Python 3.14 environment; full strict mypy (379 files) and Ruff lint pass with existing settings. All candidates satisfy existing ranges; runtime and Node candidates unchanged. Core 0.45.3 retains public signatures and schema, and all four consumer ranges h2hdb>=0.43.0,<0.46.0 accept it. Candidate wheel integration and release gates are reported separately, not implied by this receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

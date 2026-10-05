@@ -7,12 +7,18 @@ they do not claim to exercise the complete READY/source lifecycle.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspection_snapshot,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sql_connector import SQLConnector
@@ -43,13 +49,40 @@ type _LayerKey = tuple[bytes, bytes]
 
 
 @pytest.fixture
-def connector(tmp_path: Path) -> Iterator[SQLConnector]:
-    database = open_generated_sqlite_database(tmp_path / "layers.sqlite3")
+def connector(database_factory: DatabaseFactory) -> Iterator[SQLConnector]:
+    database = open_generated_database(database_factory.config("layers"))
     try:
-        database.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(database, enabled=False)
         yield database
     finally:
         database.close()
+
+
+def _assert_point_plan(
+    connector: SQLConnector,
+    sql: str,
+    parameters: tuple[Any, ...],
+    tables: tuple[str, ...],
+) -> None:
+    if connector_backend(connector) == "sqlite":
+        plan = inspect_all(connector, "EXPLAIN QUERY PLAN " + sql, parameters)
+        descriptions = [str(row[3]) for row in plan]
+        for table in tables:
+            assert any(
+                f"SEARCH {table} USING" in description
+                and "analysis_id=? AND file_sha256=?" in description
+                for description in descriptions
+            ), descriptions
+    else:
+        plan = inspect_all(connector, "EXPLAIN " + sql, parameters)
+        physical = [row for row in plan if row[2] in tables]
+        assert {row[2] for row in physical} == set(tables), plan
+        assert len(physical) == len(tables), plan
+        # One constant (analysis, digest) pair is folded to a const PK lookup;
+        # larger parameter products use eq_ref. Both consume the complete key.
+        assert all(
+            row[3] in {"const", "eq_ref"} and str(row[6]) == "48" for row in physical
+        ), plan
 
 
 def _read(
@@ -59,13 +92,14 @@ def _read(
     analysis_ids: Sequence[bytes] = _ANALYSES,
     digests: Sequence[bytes] = _KEYS,
 ) -> dict[_LayerKey, AnalysisFileHashDecisionShadowFamily] | frozenset[_LayerKey]:
-    if kind == "shadow":
-        return load_file_decision_shadow_layers(
+    with inspection_snapshot(connector):
+        if kind == "shadow":
+            return load_file_decision_shadow_layers(
+                connector, analysis_ids=analysis_ids, digests=digests
+            )
+        return load_file_decision_tombstone_layers(
             connector, analysis_ids=analysis_ids, digests=digests
         )
-    return load_file_decision_tombstone_layers(
-        connector, analysis_ids=analysis_ids, digests=digests
-    )
 
 
 def _seed_shadows(
@@ -125,15 +159,8 @@ def test_maximum_layer_product_uses_one_query_and_exact_index_keys(
     sql, parameters = fetched.call_args.args
     assert parameters[-1] == 2177
     assert "CROSS JOIN requested_hashes" in sql and " WHERE " not in sql
-    plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
-    descriptions = [str(row[3]) for row in plan]
     tables = _SHADOW_TABLES if kind == "shadow" else (_TOMBSTONE,)
-    for table in tables:
-        assert any(
-            f"SEARCH {table} USING" in description
-            and "analysis_id=? AND file_sha256=?" in description
-            for description in descriptions
-        ), descriptions
+    _assert_point_plan(connector, sql, parameters, tables)
 
 
 def test_single_readers_share_layer_validation_and_preserve_family_values(

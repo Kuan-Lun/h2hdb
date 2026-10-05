@@ -13,9 +13,15 @@ from test_vnext_analysis_repository import (
     _seed_root,
 )
 from vnext_analysis_validation_fixtures import analysis_source_pages
+from vnext_test_database import (
+    connector_backend,
+    database_connector,
+    inspect_all,
+    inspect_one,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
-from h2hdb.mariadb_connector import MariaDBConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_analysis_hash_keys import AnalysisHashKeyPage
 from h2hdb.vnext_analysis_repository import AnalysisRepository
 from h2hdb.vnext_domains import INT63_MAX, DomainValidationError
@@ -32,28 +38,22 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
-def _connector(config: CoreConfig) -> MariaDBConnector:
-    database = config.database
-    return MariaDBConnector(
-        host=database.host,
-        port=database.port,
-        user=database.user,
-        password=database.password,
-        database=database.database,
-    )
+def _connector(config: CoreConfig) -> SQLConnector:
+    return database_connector(config)
 
 
-def _work(connector: MariaDBConnector) -> VNextUnitOfWork:
-    return VNextUnitOfWork(connector, backend="mariadb")
+def _work(connector: SQLConnector) -> VNextUnitOfWork:
+    return VNextUnitOfWork(connector, backend=connector_backend(connector))
 
 
 def _snapshot_build_id(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     *,
     scope: bytes,
     summary: SourceBuildManifestSummary,
 ) -> bytes:
-    source_root = connector.fetch_one(
+    source_root = inspect_one(
+        connector,
         "SELECT source_root_sha256 FROM catalog_source_scopes WHERE scope_key = %s",
         (scope,),
     )
@@ -68,7 +68,7 @@ def _snapshot_build_id(
     )
 
 
-def _authorities(connector: MariaDBConnector) -> tuple[GateLease, IngestTurn]:
+def _authorities(connector: SQLConnector) -> tuple[GateLease, IngestTurn]:
     with connector.transaction():
         with patch(
             "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
@@ -90,7 +90,7 @@ def _authorities(connector: MariaDBConnector) -> tuple[GateLease, IngestTurn]:
 
 
 def _begin(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -110,7 +110,7 @@ def _begin(
 
 
 def _run_stage_to_completion(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     *,
@@ -121,7 +121,11 @@ def _run_stage_to_completion(
 ) -> tuple[Any, ...]:
     results = []
     with analysis_source_pages(
-        connector, backend="mariadb", gate=gate, turn=turn, analysis_id=analysis_id
+        connector,
+        backend=connector_backend(connector),
+        gate=gate,
+        turn=turn,
+        analysis_id=analysis_id,
     ) as prepare:
         for index in range(10):
             preparation = (
@@ -156,7 +160,7 @@ def _run_stage_to_completion(
 
 
 def _prepare_file_decision_stage(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     gate: GateLease,
     turn: IngestTurn,
     analysis_id: bytes,
@@ -184,38 +188,44 @@ def _prepare_file_decision_stage(
 
 
 def _file_decision_snapshot(
-    connector: MariaDBConnector,
+    connector: SQLConnector,
     analysis_id: bytes,
 ) -> tuple[object, ...]:
     with connector.read_transaction():
         return (
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 "SELECT generation, processed_count, state, updated_at "
                 "FROM catalog_analysis_checkpoints "
                 "WHERE analysis_id = %s AND stage = %s",
                 (analysis_id, b"file_hash_decision"),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                 "WHERE analysis_id = %s AND stage = %s",
                 (analysis_id, b"file_hash_decision"),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_analysis_exclusion_delta_anchors "
                 "WHERE analysis_id = %s",
                 (analysis_id,),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_a_file_decision_shadow_anchors "
                 "WHERE analysis_id = %s",
                 (analysis_id,),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_analysis_file_hash_decision_tombstone "
                 "WHERE analysis_id = %s",
                 (analysis_id,),
             ),
-            connector.fetch_one(
+            inspect_one(
+                connector,
                 "SELECT COUNT(*) FROM catalog_analysis_state_component_seals "
                 "WHERE analysis_id = %s AND state_component = %s",
                 (analysis_id, b"file_hash_decision"),
@@ -223,12 +233,12 @@ def _file_decision_snapshot(
         )
 
 
-def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
-    mariadb_config: CoreConfig,
+def test_file_decision_handles_native_aggregate_and_replay(
+    db_config: CoreConfig,
 ) -> None:
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    with _connector(mariadb_config) as entered_connector:
-        connector = cast(MariaDBConnector, entered_connector)
+    VNextDatabaseAdminFacade(db_config).initialize()
+    with _connector(db_config) as entered_connector:
+        connector = entered_connector
         gate, turn = _authorities(connector)
         with connector.transaction():
             _scope, build_id, first, second = _seed_initial_snapshot(
@@ -244,7 +254,8 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
         _prepare_file_decision_stage(connector, gate, turn, run.analysis_id)
 
         with connector.read_transaction():
-            raw_sum = connector.fetch_one(
+            raw_sum = inspect_one(
+                connector,
                 "SELECT SUM(occurrence.occurrence_count) "
                 "FROM catalog_source_build_galleries AS member "
                 "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
@@ -253,11 +264,14 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
                 "WHERE member.build_id = %s AND occurrence.file_sha256 = %s",
                 (build_id, first),
             )[0]
-        assert type(raw_sum) is Decimal and raw_sum == Decimal(3)
+        assert type(raw_sum) is (
+            Decimal if connector_backend(connector) == "mariadb" else int
+        )
+        assert raw_sum == 3
 
         with analysis_source_pages(
             connector,
-            backend="mariadb",
+            backend=connector_backend(connector),
             gate=gate,
             turn=turn,
             analysis_id=run.analysis_id,
@@ -278,7 +292,8 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
             assert committed.next_state == "OPEN" and committed.row_count == 2
 
             with connector.read_transaction():
-                receipt_count = connector.fetch_one(
+                receipt_count = inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                     "WHERE analysis_id = %s AND stage = %s",
                     (run.analysis_id, b"file_hash_decision"),
@@ -297,7 +312,8 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
             assert replay.replayed and replay.row_count == committed.row_count
             assert replay.next_cursor == committed.next_cursor
             with connector.read_transaction():
-                post_replay_receipt_count = connector.fetch_one(
+                post_replay_receipt_count = inspect_one(
+                    connector,
                     "SELECT COUNT(*) FROM catalog_analysis_batch_receipts "
                     "WHERE analysis_id = %s AND stage = %s",
                     (run.analysis_id, b"file_hash_decision"),
@@ -325,7 +341,8 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
         assert decision_results[-1].terminal
         assert validation_results[-1].component_sealed
         with connector.read_transaction():
-            resolved_rows = connector.fetch_all(
+            resolved_rows = inspect_all(
+                connector,
                 "SELECT file_sha256, occurrence_count, artist_count, "
                 "maximum_gallery_artist_count "
                 "FROM catalog_analysis_file_hash_decision_resolved "
@@ -335,12 +352,16 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
         assert resolved_rows == [(first, 3, 3, 2), (second, 1, 2, 2)]
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB SUM returns Decimal beyond signed-64 range; SQLite raises integer overflow during the aggregate itself.",
+)
 def test_live_mariadb_file_decision_overflow_is_zero_write(
     mariadb_config: CoreConfig,
 ) -> None:
     VNextDatabaseAdminFacade(mariadb_config).initialize()
     with _connector(mariadb_config) as entered_connector:
-        connector = cast(MariaDBConnector, entered_connector)
+        connector = entered_connector
         gate, turn = _authorities(connector)
         digest = b"overflow-file-digest".ljust(32, b"!")
         with connector.transaction():
@@ -395,7 +416,8 @@ def test_live_mariadb_file_decision_overflow_is_zero_write(
         _prepare_file_decision_stage(connector, gate, turn, run.analysis_id)
 
         with connector.read_transaction():
-            raw_sum = connector.fetch_one(
+            raw_sum = inspect_one(
+                connector,
                 "SELECT SUM(occurrence.occurrence_count) "
                 "FROM catalog_source_build_galleries AS member "
                 "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
@@ -410,7 +432,7 @@ def test_live_mariadb_file_decision_overflow_is_zero_write(
         before = _file_decision_snapshot(connector, run.analysis_id)
         with analysis_source_pages(
             connector,
-            backend="mariadb",
+            backend=connector_backend(connector),
             gate=gate,
             turn=turn,
             analysis_id=run.analysis_id,

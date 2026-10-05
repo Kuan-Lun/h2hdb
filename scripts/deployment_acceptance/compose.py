@@ -18,10 +18,13 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 OWNER_LABEL = "io.h2hdb.deployment-acceptance"
 DATABASE_NAME = "h2hdb_acceptance"
+SQLITE_DIRECTORY = "/h2hdb-database"
+SQLITE_DATABASE = SQLITE_DIRECTORY + "/catalog.sqlite3"
+DatabaseBackend = Literal["sqlite", "mariadb"]
 WRITER_USER = "acceptance_writer"
 READER_USER = "acceptance_reader"
 SERVICES = {"ingest": "h2hdb-ingest", "opds": "h2hdb-opds"}
@@ -280,6 +283,7 @@ def derive_compose(
     uid: int = 65534,
     gid: int = 65534,
     instrumented: bool = False,
+    backend: DatabaseBackend = "mariadb",
 ) -> dict[str, Any]:
     """Copy the real role contract and replace every external resource boundary."""
     root = _fixture_root(fixture_root)
@@ -293,11 +297,16 @@ def derive_compose(
         or not 1 <= gid < 2**31
     ):
         raise ValueError("Acceptance role UID/GID must be non-root positive integers")
-    if set(images) != {"ingest", "opds", "mariadb"} or any(
+    if backend not in {"sqlite", "mariadb"}:
+        raise ValueError("Unknown acceptance backend")
+    expected_images = {"ingest", "opds"} | (
+        {"mariadb"} if backend == "mariadb" else set()
+    )
+    if set(images) != expected_images or any(
         re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None for image in images.values()
     ):
         raise ValueError(
-            "Pin exactly ingest, opds and mariadb to local immutable image IDs"
+            "Pin exactly the selected backend roles to local immutable image IDs"
         )
     chosen = _validate_original(model)
     labels = {OWNER_LABEL: project}
@@ -374,42 +383,61 @@ def derive_compose(
                 ],
             }
         )
+        if backend == "sqlite":
+            service["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "database-data",
+                    "target": SQLITE_DIRECTORY,
+                }
+            )
         services[name] = service
-    services["database"] = {
-        "image": images["mariadb"],
-        "pull_policy": "never",
-        "labels": labels.copy(),
-        "environment": {
-            "MARIADB_ROOT_PASSWORD": credentials.root_password,
-            "MARIADB_DATABASE": DATABASE_NAME,
-            "MARIADB_USER": WRITER_USER,
-            "MARIADB_PASSWORD": credentials.writer_password,
-        },
-        "networks": {"isolated": None},
-        "volumes": [
-            {"type": "volume", "source": "database-data", "target": "/var/lib/mysql"},
-            _bind(_inside(root, root / "database-init"), "/docker-entrypoint-initdb.d"),
-        ],
-        "healthcheck": {
-            "test": ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"],
-            "interval": "2s",
-            "timeout": "3s",
-            "retries": 40,
-        },
-        "restart": "no",
-    }
+    if backend == "mariadb":
+        services["database"] = {
+            "image": images["mariadb"],
+            "pull_policy": "never",
+            "labels": labels.copy(),
+            "environment": {
+                "MARIADB_ROOT_PASSWORD": credentials.root_password,
+                "MARIADB_DATABASE": DATABASE_NAME,
+                "MARIADB_USER": WRITER_USER,
+                "MARIADB_PASSWORD": credentials.writer_password,
+            },
+            "networks": {"isolated": None},
+            "volumes": [
+                {
+                    "type": "volume",
+                    "source": "database-data",
+                    "target": "/var/lib/mysql",
+                },
+                _bind(
+                    _inside(root, root / "database-init"), "/docker-entrypoint-initdb.d"
+                ),
+            ],
+            "healthcheck": {
+                "test": ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"],
+                "interval": "2s",
+                "timeout": "3s",
+                "retries": 40,
+            },
+            "restart": "no",
+        }
     result = {
         "name": project,
         "services": services,
         "networks": {"isolated": {"internal": True, "labels": labels.copy()}},
         "volumes": {"database-data": {"labels": labels.copy()}},
     }
-    validate_isolation(result, root, project=project)
+    validate_isolation(result, root, project=project, backend=backend)
     return result
 
 
 def validate_isolation(
-    model: Mapping[str, Any], fixture_root: Path, *, project: str
+    model: Mapping[str, Any],
+    fixture_root: Path,
+    *,
+    project: str,
+    backend: DatabaseBackend = "mariadb",
 ) -> None:
     """Fail closed before any executor receives the derived model."""
     root = _fixture_root(fixture_root)
@@ -426,10 +454,14 @@ def validate_isolation(
     } or model.get("volumes") != {"database-data": {"labels": labels}}:
         raise ValueError("Acceptance network/volume escaped its project")
     services = model.get("services")
-    if not isinstance(services, dict) or set(services) != {
-        *SERVICES.values(),
-        "database",
-    }:
+    expected_services = set(SERVICES.values()) | (
+        {"database"} if backend == "mariadb" else set()
+    )
+    if (
+        backend not in {"sqlite", "mariadb"}
+        or not isinstance(services, dict)
+        or set(services) != expected_services
+    ):
         raise ValueError("Unexpected isolated service set")
     for name, service in services.items():
         if not isinstance(service, dict) or set(service) - (
@@ -528,10 +560,13 @@ def validate_isolation(
             seen.add(target)
             match volume.get("type"):
                 case "volume":
-                    if name != "database" or volume != {
+                    expected_volume_target = (
+                        "/var/lib/mysql" if name == "database" else SQLITE_DIRECTORY
+                    )
+                    if (name != "database" and backend != "sqlite") or volume != {
                         "type": "volume",
                         "source": "database-data",
-                        "target": "/var/lib/mysql",
+                        "target": expected_volume_target,
                     }:
                         raise ValueError("Unknown acceptance volume")
                 case "bind":
@@ -548,14 +583,20 @@ def validate_isolation(
                 case _:
                     raise ValueError("Unknown acceptance mount type")
         expected_targets = set(expected_binds) | (
-            {"/var/lib/mysql"} if name == "database" else set()
+            {"/var/lib/mysql"}
+            if name == "database"
+            else {SQLITE_DIRECTORY}
+            if backend == "sqlite"
+            else set()
         )
         if seen != expected_targets:
             raise ValueError("An isolated mount is missing")
 
 
 def _configurations(
-    log_level: str, resident: Mapping[str, object] | None
+    log_level: str,
+    resident: Mapping[str, object] | None,
+    backend: DatabaseBackend = "mariadb",
 ) -> dict[str, Any]:
     if log_level not in {"info", "debug"}:
         raise ValueError("Acceptance logging must be info or explicit debug")
@@ -584,6 +625,18 @@ def _configurations(
         "logger": {"level": log_level},
         "maintenance": {"optimize_enabled": False},
     }
+    if backend == "sqlite":
+        # Keep the deployment wrapper environment unchanged; only the resolved
+        # Core configuration owns connection selection. RW mounts permit WAL
+        # shared-memory locking, while the OPDS SQL connection remains mode=ro.
+        writer["database"] = {"sql_type": "sqlite", "database": SQLITE_DATABASE}
+        reader["database"] = {
+            "sql_type": "sqlite",
+            "database": SQLITE_DATABASE,
+            "access_mode": "read-only",
+        }
+    elif backend != "mariadb":
+        raise ValueError("Unknown acceptance backend")
     settings: dict[str, object] = {
         "source_quiet_seconds": 0.05,
         "source_probe_interval_seconds": 0.05,
@@ -633,6 +686,7 @@ def prepare_deployment(
     log_level: str = "info",
     resident: Mapping[str, object] | None = None,
     instrumented: bool = False,
+    backend: DatabaseBackend = "mariadb",
 ) -> PreparedDeployment:
     """Write new synthetic inputs and a derived model; never execute containers."""
     root = _fixture_root(fixture_root)
@@ -646,8 +700,9 @@ def prepare_deployment(
         uid=uid,
         gid=gid,
         instrumented=instrumented,
+        backend=backend,
     )
-    configurations = _configurations(log_level, resident)
+    configurations = _configurations(log_level, resident, backend)
     wrapper_bytes = {}
     for name in WRAPPERS:
         source = deployment_root / "runtime" / name
@@ -683,10 +738,13 @@ def prepare_deployment(
         with (root / "config" / name).open("x", encoding="utf-8") as stream:
             json.dump(content, stream, indent=2)
             stream.write("\n")
-    with (root / "database-init" / "reader.sql").open("x", encoding="utf-8") as stream:
-        stream.write(
-            f"CREATE USER '{READER_USER}'@'%' IDENTIFIED BY '{credentials.reader_password}';\nGRANT SELECT, SHOW VIEW ON `{DATABASE_NAME}`.* TO '{READER_USER}'@'%';\n"
-        )
+    if backend == "mariadb":
+        with (root / "database-init" / "reader.sql").open(
+            "x", encoding="utf-8"
+        ) as stream:
+            stream.write(
+                f"CREATE USER '{READER_USER}'@'%' IDENTIFIED BY '{credentials.reader_password}';\nGRANT SELECT, SHOW VIEW ON `{DATABASE_NAME}`.* TO '{READER_USER}'@'%';\n"
+            )
     compose_path = root / "compose.json"
     with compose_path.open("x", encoding="utf-8") as stream:
         json.dump(derived, stream, indent=2)
@@ -716,12 +774,19 @@ def prepare_deployment(
             {"name", "networks", "volumes"}
             | {key for key in model if key.startswith("x-")}
         ),
-        "added_services": ["database"],
+        "backend": backend,
+        "added_services": ["database"] if backend == "mariadb" else [],
         "log_level": log_level,
         "instrumented": instrumented,
         "configuration": {
             "synthetic": True,
-            "reader_database_grant": "SELECT, SHOW VIEW",
+            "reader_database_grant": (
+                "SELECT, SHOW VIEW"
+                if backend == "mariadb"
+                else "mode=ro; query_only=ON"
+            ),
+            "sqlite_shared_volume": backend == "sqlite",
+            "sqlite_journal_mode": "wal" if backend == "sqlite" else None,
             "resident": configurations["h2hdb-ingest.json"]["resident"],
             "maintenance_optimize_enabled": False,
         },

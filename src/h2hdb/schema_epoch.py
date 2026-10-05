@@ -47,7 +47,7 @@ __all__ = [
 
 import re
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1025,6 +1025,22 @@ class SchemaEpochRunner:
         self._catalog = catalog
         self._clock = clock or (lambda: datetime.now(UTC))
 
+    def _construction_read(
+        self, connector: SQLConnector
+    ) -> AbstractContextManager[None]:
+        # SQLite's construction gate already owns BEGIN IMMEDIATE. Its reads
+        # participate in that transaction, including the final READY comparison.
+        return nullcontext()
+
+    def _construction_scope(
+        self, connector: SQLConnector
+    ) -> AbstractContextManager[None]:
+        if self._gate is None:
+            raise SchemaEpochGateError(
+                "Schema construction requires an exclusive backend gate"
+            )
+        return self._gate.acquire(connector)
+
     def run(
         self, connector: SQLConnector, provider: SchemaEpochProvider
     ) -> SchemaProvisioningReport:
@@ -1053,8 +1069,9 @@ class SchemaEpochRunner:
                 "Schema construction requires an exclusive backend gate"
             )
 
-        with self._gate.acquire(connector):
-            existing_objects = self._catalog.list_objects(connector)
+        with self._construction_scope(connector):
+            with self._construction_read(connector):
+                existing_objects = self._catalog.list_objects(connector)
             has_control = self._catalog.control_object in existing_objects
             if not has_control:
                 if existing_objects:
@@ -1063,15 +1080,17 @@ class SchemaEpochRunner:
                         f"{_format_objects(existing_objects)}"
                     )
                 self._catalog.create_control_table(connector)
-                self._catalog.validate_control_table(connector)
+                with self._construction_read(connector):
+                    self._catalog.validate_control_table(connector)
                 self._insert_building_control(connector, definition, manifest_sha256)
                 resumed_build = False
             else:
-                self._catalog.validate_control_table(connector)
+                with self._construction_read(connector):
+                    self._catalog.validate_control_table(connector)
+                    control_count = connector.fetch_one(
+                        "SELECT COUNT(*) FROM h2hdb_schema_epoch"
+                    )
                 resumed_build = True
-                control_count = connector.fetch_one(
-                    "SELECT COUNT(*) FROM h2hdb_schema_epoch"
-                )
                 if control_count == (0,):
                     # MariaDB commits CREATE TABLE independently of the seed
                     # INSERT.  Only the exact, otherwise-empty control-table
@@ -1085,9 +1104,10 @@ class SchemaEpochRunner:
                         connector, definition, manifest_sha256
                     )
 
-            state = self._read_and_validate_control(
-                connector, definition, manifest_sha256
-            )
+            with self._construction_read(connector):
+                state = self._read_and_validate_control(
+                    connector, definition, manifest_sha256
+                )
             if state == "READY":
                 # Another provisioner may have completed after the initial
                 # read transaction. Re-admit its marker under the construction gate.
@@ -1102,18 +1122,20 @@ class SchemaEpochRunner:
                         connector.execute(statement.sql)
                     # The provider checks every declared object and exact shape in
                     # this slice. Do not rescan the whole database after each DDL.
-                    provider.validate_slice(connector, schema_slice)
+                    with self._construction_read(connector):
+                        provider.validate_slice(connector, schema_slice)
 
             with database_phase("bootstrap_install"):
                 _execute_bootstrap_seeds(connector, definition.bootstrap_seeds)
 
-            obligation_ids = self._validate_ready_schema(
-                connector,
-                provider,
-                definition,
-                validate_genesis=True,
-                semantic_phase=SchemaSemanticValidationPhase.ACTIVATION,
-            )
+            with self._construction_read(connector):
+                obligation_ids = self._validate_ready_schema(
+                    connector,
+                    provider,
+                    definition,
+                    validate_genesis=True,
+                    semantic_phase=SchemaSemanticValidationPhase.ACTIVATION,
+                )
             connector.execute(
                 """
                 UPDATE h2hdb_schema_epoch
@@ -1131,9 +1153,10 @@ class SchemaEpochRunner:
                     bytes.fromhex(manifest_sha256),
                 ),
             )
-            final_state = self._read_and_validate_control(
-                connector, definition, manifest_sha256
-            )
+            with self._construction_read(connector):
+                final_state = self._read_and_validate_control(
+                    connector, definition, manifest_sha256
+                )
             if final_state != "READY":
                 raise SchemaEpochValidationError(
                     "The compare-and-set transition to READY did not succeed"
@@ -1437,6 +1460,37 @@ def _execute_bootstrap_seeds(
     flush()
 
 
+class _MariaDBSchemaEpochRunner(SchemaEpochRunner):
+    """Named-lock construction with explicit, independently closed read snapshots.
+
+    DDL and bounded bootstrap writes retain their native commit semantics. A
+    read snapshot must not span DDL, and releasing GET_LOCK cannot finish an
+    InnoDB transaction. Keep those ownership boundaries separate.
+    """
+
+    def _construction_read(
+        self, connector: SQLConnector
+    ) -> AbstractContextManager[None]:
+        return connector.read_transaction()
+
+    @contextmanager
+    def _construction_scope(self, connector: SQLConnector) -> Iterator[None]:
+        with super()._construction_scope(connector):
+            try:
+                yield
+            except BaseException as error:
+                # A native failed DML statement can start a transaction before
+                # execute() reaches its normal commit. The construction scope
+                # owns this residue; durable earlier DDL/seeds remain untouched.
+                try:
+                    connector.rollback()
+                except BaseException as rollback_error:
+                    error.add_note(
+                        f"Schema construction rollback failed: {rollback_error}"
+                    )
+                raise
+
+
 def run_sqlite_schema_epoch(
     connector: SQLConnector,
     provider: SchemaEpochProvider,
@@ -1475,14 +1529,15 @@ def run_mariadb_schema_epoch(
     """Provision vNext, acquiring a connection-scoped lock only for construction."""
 
     if gate_name is None:
-        database_row = connector.fetch_one("SELECT DATABASE()")
+        with connector.read_transaction():
+            database_row = connector.fetch_one("SELECT DATABASE()")
         if len(database_row) != 1 or not isinstance(database_row[0], str):
             raise SchemaEpochGateError(
                 "MariaDB did not report one current database for schema locking"
             )
         gate_name = mariadb_schema_epoch_gate_name(database_row[0])
     named_gate = MariaDBAdvisorySchemaEpochGate(lock_timeout_seconds)
-    runner = SchemaEpochRunner(
+    runner = _MariaDBSchemaEpochRunner(
         gate=MariaDBSchemaEpochGateAdapter(named_gate, gate_name),
         catalog=MariaDBSchemaEpochCatalog(),
         clock=clock,

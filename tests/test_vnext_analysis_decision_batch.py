@@ -7,6 +7,13 @@ from unittest.mock import patch
 import pytest
 from vnext_analysis_validation_fixtures import analysis_source_pages
 from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.sql_connector import SQLConnector
@@ -86,7 +93,8 @@ def _snapshot(
 ) -> tuple[tuple[tuple[Any, ...], ...], ...]:
     return tuple(
         tuple(
-            connector.fetch_all(
+            inspect_all(
+                connector,
                 f"SELECT * FROM {table} WHERE analysis_id = %s ORDER BY file_sha256",
                 (analysis,),
             )
@@ -146,11 +154,14 @@ def _assert_batch_matches_scalar_reference(connector: SQLConnector) -> None:
 
 
 def test_batch_matches_independent_scalar_storage_and_exact_replay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "scalar-batch.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "scalar-batch.sqlite3"))
+    )
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         _assert_batch_matches_scalar_reference(connector)
     finally:
         connector.close()
@@ -158,13 +169,15 @@ def test_batch_matches_independent_scalar_storage_and_exact_replay(
 
 @pytest.mark.parametrize("table", (*_SHADOWS, *_DELTAS))
 def test_partial_family_orphan_and_collision_fail_before_any_batch_dml(
-    tmp_path: Path, table: str
+    database_factory: DatabaseFactory, tmp_path: Path, table: str
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "partial.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "partial.sqlite3"))
+    )
     analysis = b"p" * 16
     key = (0).to_bytes(32, "big")
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             _apply(connector, analysis, 3)
             # Missing any required child is partial; the optional change marker
@@ -205,13 +218,15 @@ def test_partial_family_orphan_and_collision_fail_before_any_batch_dml(
 
 @pytest.mark.parametrize("failed_table", (*_DELTAS, *_SHADOWS, _TOMBSTONE))
 def test_each_table_failure_rolls_back_the_complete_page(
-    tmp_path: Path, failed_table: str
+    database_factory: DatabaseFactory, tmp_path: Path, failed_table: str
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "rollback.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "rollback.sqlite3"))
+    )
     analysis = b"f" * 16
     original = connector.execute
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         before = _snapshot(connector, analysis)
 
         def fail_after_write(statement: str, parameters: Any = None) -> None:
@@ -242,12 +257,15 @@ def test_each_table_failure_rolls_back_the_complete_page(
 
 
 def test_complete_collision_and_unexpected_overlay_are_zero_write(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "collision.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "collision.sqlite3"))
+    )
     analysis = b"c" * 16
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             _apply(connector, analysis, 3)
         deltas, shadows, tombstones = _proposals(analysis, 4)
@@ -303,10 +321,14 @@ def test_page_input_bounds_reject_before_sql(digests: tuple[bytes, ...]) -> None
         require_file_decision_page_keys(digests)
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite EXPLAIN QUERY PLAN textual index seek contract; MariaDB has native Handler/EXPLAIN coverage in the adjacent test.",
+)
 def test_shadow_page_uses_bounded_index_searches(tmp_path: Path) -> None:
     connector = open_generated_sqlite_database(tmp_path / "query-plan.sqlite3")
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             _apply(connector, b"a" * 16, 128)
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
@@ -320,7 +342,7 @@ def test_shadow_page_uses_bounded_index_searches(tmp_path: Path) -> None:
         assert sql.count("LEFT JOIN ") == 5
         assert len(parameters) == 4
         assert parameters[-1] == 3
-        plan = connector.fetch_all("EXPLAIN QUERY PLAN " + sql, parameters)
+        plan = inspect_all(connector, "EXPLAIN QUERY PLAN " + sql, parameters)
         descriptions = [str(row[3]) for row in plan]
         for table in _SHADOWS:
             assert any(
@@ -332,6 +354,10 @@ def test_shadow_page_uses_bounded_index_searches(tmp_path: Path) -> None:
         connector.close()
 
 
+@pytest.mark.backend_specific(
+    backend="mariadb",
+    reason="MariaDB Handler_read counters and EXPLAIN key_len are native engine evidence; SQLite has the adjacent physical query-plan contract.",
+)
 def test_live_mariadb_scalar_batch_matches_reference_and_query_plan(
     mariadb_config: CoreConfig,
 ) -> None:
@@ -347,8 +373,8 @@ def test_live_mariadb_scalar_batch_matches_reference_and_query_plan(
         def handler_counts() -> dict[str, int]:
             return {
                 str(name): int(value)
-                for name, value in connector.fetch_all(
-                    "SHOW SESSION STATUS LIKE 'Handler_read_%'"
+                for name, value in inspect_all(
+                    connector, "SHOW SESSION STATUS LIKE 'Handler_read_%'"
                 )
             }
 
@@ -368,7 +394,7 @@ def test_live_mariadb_scalar_batch_matches_reference_and_query_plan(
         assert after["Handler_read_prev"] == before["Handler_read_prev"]
         sql, parameters = fetched.call_args.args
         with connector.read_transaction():
-            plan = connector.fetch_all("EXPLAIN " + sql, parameters)
+            plan = inspect_all(connector, "EXPLAIN " + sql, parameters)
         # Physical families use their complete PK. MariaDB may report eq_ref
         # for these exact grid point joins; actual handler counts above reject
         # a range/prefix scan. Only the bounded requested-key grid may scan.
@@ -607,29 +633,34 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
         if backend == "mariadb":
             for query, values in point_queries:
                 assert "FORCE INDEX (PRIMARY)" in query
-                assert connector.fetch_all("EXPLAIN " + query, values)
+                assert inspect_all(connector, "EXPLAIN " + query, values)
 
 
-def test_sqlite_production_page_rolls_back_and_replays_receipt(tmp_path: Path) -> None:
-    connector = open_generated_sqlite_database(tmp_path / "production-batch.sqlite3")
+def test_sqlite_production_page_rolls_back_and_replays_receipt(
+    database_factory: DatabaseFactory, tmp_path: Path
+) -> None:
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "production-batch.sqlite3"))
+    )
     try:
-        _exercise_production_page(connector, "sqlite")
+        _exercise_production_page(connector, connector_backend(connector))
     finally:
         connector.close()
 
 
 @pytest.mark.mariadb_smoke
 def test_live_mariadb_production_page_rolls_back_and_replays_receipt(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
     from test_vnext_live_mariadb_analysis_repository import _connector
 
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    with _connector(mariadb_config) as connector:
-        _exercise_production_page(connector, "mariadb")
+    VNextDatabaseAdminFacade(db_config).initialize()
+    with _connector(db_config) as connector:
+        _exercise_production_page(connector, connector_backend(connector))
 
 
 def test_incremental_page_loads_parent_policy_once_and_preserves_overlay(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     from test_vnext_analysis_repository import (
@@ -642,7 +673,9 @@ def test_incremental_page_loads_parent_policy_once_and_preserves_overlay(
 
     import h2hdb.vnext_analysis_repository as analysis_module
 
-    connector = open_generated_sqlite_database(tmp_path / "incremental-batch.sqlite3")
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "incremental-batch.sqlite3"))
+    )
     try:
         gate, first_turn = _authorities(connector)
         turn, build, unchanged, removed, added = _prepare_incremental(
@@ -666,19 +699,23 @@ def test_incremental_page_loads_parent_policy_once_and_preserves_overlay(
         # Three different keys share the same parent policy; materialization and
         # its independent replay each reload it once, validation does not use it.
         assert policy_loads.call_count == 2
-        assert load_file_decision_tombstone_page(
-            connector, analysis_id=run.analysis_id, digests=(unchanged, removed, added)
-        ) == {removed}
-        assert set(
-            load_file_decision_shadow_page(
+        with connector.read_transaction():
+            assert load_file_decision_tombstone_page(
                 connector,
                 analysis_id=run.analysis_id,
                 digests=(unchanged, removed, added),
-            )
-        ) == {added}
+            ) == {removed}
+            assert set(
+                load_file_decision_shadow_page(
+                    connector,
+                    analysis_id=run.analysis_id,
+                    digests=(unchanged, removed, added),
+                )
+            ) == {added}
         actual = {
             row[0]: row[1:]
-            for row in connector.fetch_all(
+            for row in inspect_all(
+                connector,
                 "SELECT file_sha256, occurrence_count, artist_count, maximum_gallery_artist_count FROM catalog_analysis_file_hash_decision_resolved WHERE analysis_id = %s",
                 (run.analysis_id,),
             )

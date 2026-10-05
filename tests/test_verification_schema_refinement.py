@@ -7,17 +7,31 @@ import sqlite3
 import subprocess
 import sys
 import tomllib
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
+from vnext_manifest_database import (
+    constraint_violation,
+    introspect_fixture,
+    render_fixture,
+    view_write_rejection,
+)
+from vnext_test_database import (
+    DatabaseFactory,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_database,
+    set_foreign_key_checks,
+    table_columns,
+)
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade, catalog_refinement
 from h2hdb._generated_vnext_schema import ARTIFACT
-from h2hdb.mariadb_connector import MariaDBConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "verification" / "schema" / "catalog.toml"
@@ -102,25 +116,26 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
     )
 
 
-def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload() -> None:
+def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = ON")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=True)
 
+        native = introspect_fixture(connection, refinement)
         source_fks = {
-            (row[3], row[2], row[4])
-            for row in connection.execute(
-                "PRAGMA foreign_key_list(catalog_source_revision_descriptors)"
-            )
+            (child, key.referenced_table, parent)
+            for key in native.table("catalog_source_revision_descriptors").foreign_keys
+            for child, parent in zip(key.columns, key.referenced_columns, strict=True)
         }
         analysis_fks = {
-            (row[3], row[2], row[4])
-            for row in connection.execute(
-                "PRAGMA foreign_key_list(catalog_analysis_snapshot_manifest)"
-            )
+            (child, key.referenced_table, parent)
+            for key in native.table("catalog_analysis_snapshot_manifest").foreign_keys
+            for child, parent in zip(key.columns, key.referenced_columns, strict=True)
         }
         assert source_fks == {
             (
@@ -139,22 +154,22 @@ def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload() -> None:
 
         missing_payload_digest = b"x" * 32
         connection.execute(
-            "INSERT INTO catalog_channel_registry (channel) VALUES (?)",
+            "INSERT INTO catalog_channel_registry (channel) VALUES (%s)",
             (b"default",),
         )
         connection.execute(
-            "INSERT INTO catalog_source_revision_descriptors "
-            "(source_revision, channel, snapshot_manifest_sha256) VALUES (1, ?, ?)",
+            "INSERT INTO catalog_source_revision_descriptors (source_revision, channel, snapshot_manifest_sha256) VALUES (1, %s, %s)",
             (b"default", missing_payload_digest),
         )
-        assert connection.execute(
-            "SELECT snapshot_manifest_sha256 FROM catalog_source_revision_descriptors"
-        ).fetchone() == (missing_payload_digest,)
+        assert inspect_one(
+            connection,
+            "SELECT snapshot_manifest_sha256 FROM catalog_source_revision_descriptors",
+        ) == (missing_payload_digest,)
         assert (
-            connection.execute(
-                "SELECT 1 FROM catalog_source_snapshot_manifest_identity"
-            ).fetchone()
-            is None
+            inspect_one(
+                connection, "SELECT 1 FROM catalog_source_snapshot_manifest_identity"
+            )
+            == ()
         )
     finally:
         connection.close()
@@ -264,6 +279,10 @@ def _book_logical_schema() -> Any:
     )
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite PRAGMA introspection normalizes rowid-table keys; Maria INFORMATION_SCHEMA normalization has its own native fixture",
+)
 def test_sqlite_introspection_and_refinement_accept_matching_schema() -> None:
     connection = sqlite3.connect(":memory:")
     try:
@@ -686,98 +705,113 @@ def test_canonical_value_physical_protocol_is_owner_scoped_and_chunked() -> None
     )
 
 
-def test_sqlite_raw_u64_signed_i64_and_int63_boundaries_are_exact() -> None:
+def test_native_raw_u64_signed_i64_and_int63_boundaries_are_exact(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
         high_u64 = ((1 << 64) - 1).to_bytes(8, "big")
         negative_i64 = ((1 << 64) - 1).to_bytes(8, "big")
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
-            "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, device) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), high_u64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_inodes "
-            "(gallery_id, observation_id, file_key, inode) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, inode) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), high_u64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_modified_nses "
-            "(gallery_id, observation_id, file_key, modified_ns) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, modified_ns) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), negative_i64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
-            "(gallery_id, observation_id, file_key, changed_ns) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, changed_ns) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), negative_i64),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_filesystem_seals "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_anchors "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_file_nos "
-            "(gallery_id, observation_id, file_key, file_no) VALUES (?, ?, ?, ?)",
+            "(gallery_id, observation_id, file_key, file_no) VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), (1 << 63) - 1),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_file_sha256s "
             "(gallery_id, observation_id, file_key, file_sha256) "
-            "VALUES (?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s)",
             (1, 1, bytes(32), bytes(32)),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_file_seals "
-            "(gallery_id, observation_id, file_key) VALUES (?, ?, ?)",
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
             (1, 1, bytes(32)),
         )
         connection.execute(
-            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES (?, ?)",
+            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES (%s, %s)",
             (bytes.fromhex("01" * 32), (1 << 63) - 1),
         )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
-                "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
-                (3, 1, bytes(32), bytes(7)),
-            )
+        assert inspect_one(
+            connection,
+            "SELECT device, inode, modified_ns, changed_ns FROM "
+            "catalog_gallery_observation_file_filesystem_anchors AS a "
+            "JOIN catalog_gallery_observation_file_filesystem_devices AS d "
+            "USING (gallery_id, observation_id, file_key) "
+            "JOIN catalog_gallery_observation_file_filesystem_inodes AS i "
+            "USING (gallery_id, observation_id, file_key) "
+            "JOIN catalog_gallery_observation_file_filesystem_modified_nses AS m "
+            "USING (gallery_id, observation_id, file_key) "
+            "JOIN catalog_gallery_observation_file_filesystem_changed_nses AS c "
+            "USING (gallery_id, observation_id, file_key)",
+        ) == (high_u64, high_u64, negative_i64, negative_i64)
+        assert inspect_one(
+            connection,
+            "SELECT file_no FROM catalog_gallery_observation_file_file_nos",
+        ) == ((1 << 63) - 1,)
+        assert inspect_one(
+            connection, "SELECT size_bytes FROM catalog_content_blobs"
+        ) == ((1 << 63) - 1,)
     finally:
         connection.close()
 
 
-def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
+def test_sqlite_canonical_page_positions_match_runtime_domains(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
-        with pytest.raises(sqlite3.IntegrityError):
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_canonical_value_page_coordinates "
-                "(value_sha256, level, page_position, page_sha256) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO catalog_canonical_value_page_coordinates (value_sha256, level, page_position, page_sha256) VALUES (%s, %s, %s, %s)",
                 (bytes.fromhex("01" * 32), 0, -1, bytes(32)),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_canonical_value_page_parents "
-                "(child_sha256, parent_sha256, position) VALUES (?, ?, ?)",
+                "INSERT INTO catalog_canonical_value_page_parents (child_sha256, parent_sha256, position) VALUES (%s, %s, %s)",
                 (bytes(32), bytes.fromhex("01" * 32), 256),
             )
     finally:
@@ -1179,58 +1213,56 @@ def test_publication_candidate_projection_uses_fixed_terminal_receipt_joins(
         ) in expected
 
 
-def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
+def test_fresh_complete_native_ddl_refines_physical_spec(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.executescript(
-            refinement.render_sqlite_ddl(physical_spec, idempotent=True)
-        )
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        render_fixture(connection, refinement, physical_spec, idempotent=True)
+        set_foreign_key_checks(connection, enabled=False)
         connection.execute(
-            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (1,)
+            "INSERT INTO catalog_gallery_gid_identities VALUES (%s)", (1,)
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+            "INSERT INTO catalog_gallery_observation_upload_times VALUES (%s, %s, %s)",
             (1, 1, 1_767_225_600_000_000),
         )
         connection.execute(
-            "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)",
-            (sqlite3.Binary(b"gallery-1"), 1),
+            "INSERT INTO catalog_source_gallery_name_gids VALUES (%s, %s)",
+            (b"gallery-1", 1),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_source_name_accesses VALUES (?, ?)",
-            (1, sqlite3.Binary(b"gallery-1")),
+            "INSERT INTO catalog_gallery_source_name_accesses VALUES (%s, %s)",
+            (1, b"gallery-1"),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_metadata_locals "
-                "(gallery_id, observation_id, download_time) VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_metadata_locals (gallery_id, observation_id, download_time) VALUES (%s, %s, %s)",
                 (1, 1, 1_767_225_600_000_000),
             )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_metadata_locals "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (%s, %s, %s, %s)",
             (1, 1, 1_767_225_600_000_000, 1_767_225_600_000_000),
         )
-        assert connection.execute(
+        assert inspect_one(
+            connection,
             "SELECT gid, upload_time, download_time, modified_time "
-            "FROM catalog_gallery_observation_metadata"
-        ).fetchone() == (
+            "FROM catalog_gallery_observation_metadata",
+        ) == (
             1,
             1_767_225_600_000_000,
             1_767_225_600_000_000,
             1_767_225_600_000_000,
         )
-        with pytest.raises(sqlite3.OperationalError, match="view"):
+        with view_write_rejection(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_metadata "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_metadata (gallery_id, observation_id, gid, upload_time, download_time, modified_time) VALUES (%s, %s, %s, %s, %s, %s)",
                 (1, 2, 1, 1, 1, 1),
             )
-        database = refinement.introspect_sqlite(_SQLiteConnectionReader(connection))
+        database = introspect_fixture(connection, refinement)
     finally:
         connection.close()
 
@@ -1249,7 +1281,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.render().splitlines()[0] == (
         "physical schema refinement PASS: "
         "specification='h2hdb-vnext-physical' "
-        "contract='h2hdb-vnext-catalog' backend='sqlite' "
+        f"contract='h2hdb-vnext-catalog' backend='{database_factory.backend}' "
         f"implemented={len(physical_spec.implemented_relations)} pending=0 "
         f"runtime_obligations={len(physical_spec.runtime_obligations)} mismatches=0"
     )
@@ -1257,7 +1289,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert source_file_digest is not None
     assert source_file_digest.column("file_sha256") == refinement.ColumnShape(
         "file_sha256",
-        "BLOB",
+        "BLOB" if database_factory.backend == "sqlite" else "BINARY(32)",
         False,
         None,
     )
@@ -1276,61 +1308,61 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     refinement.assert_physical_refines(report, require_complete=True)
 
 
-def test_metadata_projection_requires_one_complete_local_row() -> None:
+def test_metadata_projection_requires_one_complete_local_row(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
-        digest = sqlite3.Binary(bytes(32))
-        scope_key = sqlite3.Binary(bytes([1]) * 32)
-        locator_sha256 = sqlite3.Binary(bytes([2]) * 32)
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
+        digest = bytes(bytes(32))
+        scope_key = bytes(bytes([1]) * 32)
+        locator_sha256 = bytes(bytes([2]) * 32)
         connection.execute(
-            "INSERT INTO catalog_gallery_identities VALUES (?, ?, ?, ?)",
+            "INSERT INTO catalog_gallery_identities VALUES (%s, %s, %s, %s)",
             (1, digest, scope_key, locator_sha256),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_allocations VALUES (?, ?, ?)",
+            "INSERT INTO catalog_gallery_observation_allocations VALUES (%s, %s, %s)",
             (1, 1, 1),
         )
         connection.commit()
-        connection.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connection, enabled=True)
         connection.execute(
-            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (7,)
+            "INSERT INTO catalog_gallery_gid_identities VALUES (%s)", (7,)
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+            "INSERT INTO catalog_gallery_observation_upload_times VALUES (%s, %s, %s)",
             (1, 1, 11),
         )
         connection.execute(
-            "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)",
-            (sqlite3.Binary(b"gallery-7"), 7),
+            "INSERT INTO catalog_source_gallery_name_gids VALUES (%s, %s)",
+            (b"gallery-7", 7),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_source_name_accesses VALUES (?, ?)",
-            (1, sqlite3.Binary(b"gallery-7")),
+            "INSERT INTO catalog_gallery_source_name_accesses VALUES (%s, %s)",
+            (1, b"gallery-7"),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_metadata_locals "
-                "(gallery_id, observation_id, download_time) VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_metadata_locals (gallery_id, observation_id, download_time) VALUES (%s, %s, %s)",
                 (1, 1, 13),
             )
         assert (
-            connection.execute(
-                "SELECT * FROM catalog_gallery_observation_metadata"
-            ).fetchall()
+            inspect_all(
+                connection, "SELECT * FROM catalog_gallery_observation_metadata"
+            )
             == []
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_metadata_locals "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (%s, %s, %s, %s)",
             (1, 1, 13, 17),
         )
-        assert connection.execute(
-            "SELECT * FROM catalog_gallery_observation_metadata"
-        ).fetchone() == (1, 1, 7, 11, 13, 17)
+        assert inspect_one(
+            connection, "SELECT * FROM catalog_gallery_observation_metadata"
+        ) == (1, 1, 7, 11, 13, 17)
     finally:
         connection.close()
 
@@ -1365,7 +1397,8 @@ def test_metadata_projection_requires_one_complete_local_row() -> None:
         ),
     ],
 )
-def test_new_vertical_views_require_every_member_and_are_read_only(
+def test_new_vertical_views_require_every_member_and_have_native_write_guards(
+    database_factory: DatabaseFactory,
     anchor: str,
     key: tuple[object, ...],
     members: tuple[tuple[str, tuple[object, ...]], ...],
@@ -1375,51 +1408,66 @@ def test_new_vertical_views_require_every_member_and_are_read_only(
 ) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
         connection.execute(
-            f"INSERT INTO {anchor} VALUES ({', '.join('?' for _ in key)})",
+            f"INSERT INTO {anchor} VALUES ({', '.join('%s' for _ in key)})",
             key,
         )
         for member_table, values in members[:-1]:
             connection.execute(
-                f"INSERT INTO {member_table} VALUES ({', '.join('?' for _ in values)})",
+                f"INSERT INTO {member_table} VALUES ({', '.join('%s' for _ in values)})",
                 values,
             )
         connection.commit()
-        connection.execute("PRAGMA foreign_keys = ON")
-        assert connection.execute(f"SELECT * FROM {view}").fetchall() == []
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        set_foreign_key_checks(connection, enabled=True)
+        assert inspect_all(connection, f"SELECT * FROM {view}") == []
+        with constraint_violation(connection):
             connection.execute(
-                f"INSERT INTO {seal} VALUES ({', '.join('?' for _ in key)})",
+                f"INSERT INTO {seal} VALUES ({', '.join('%s' for _ in key)})",
                 key,
             )
         connection.rollback()
-        connection.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connection, enabled=False)
         final_member, final_values = members[-1]
         connection.execute(
             f"INSERT INTO {final_member} VALUES "
-            f"({', '.join('?' for _ in final_values)})",
+            f"({', '.join('%s' for _ in final_values)})",
             final_values,
         )
         connection.commit()
-        connection.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connection, enabled=True)
         connection.execute(
-            f"INSERT INTO {seal} VALUES ({', '.join('?' for _ in key)})",
+            f"INSERT INTO {seal} VALUES ({', '.join('%s' for _ in key)})",
             key,
         )
-        assert connection.execute(f"SELECT * FROM {view}").fetchone() == expected
-        with pytest.raises(sqlite3.OperationalError, match="view"):
+        assert inspect_one(connection, f"SELECT * FROM {view}") == expected
+        with view_write_rejection(connection):
             connection.execute(
-                f"INSERT INTO {view} VALUES ({', '.join('?' for _ in expected)})",
+                f"INSERT INTO {view} ({', '.join(table_columns(connection, view))}) VALUES ({', '.join('%s' for _ in expected)})",
                 expected,
             )
-        first_column = connection.execute(f"PRAGMA table_info({view})").fetchone()[1]
-        with pytest.raises(sqlite3.OperationalError, match="view"):
-            connection.execute(f"UPDATE {view} SET {first_column} = {first_column}")
-        with pytest.raises(sqlite3.OperationalError, match="view"):
+        value_column = table_columns(connection, view)[len(key)]
+        statement = f"UPDATE {view} SET {value_column} = %s"
+        if database_factory.backend == "sqlite":
+            with view_write_rejection(connection):
+                connection.execute(statement, (b"x" * 8,))
+        else:
+            # MariaDB can update one underlying member through a join view.
+            # The application forbids ALL manifest-view mutation targets in
+            # verify-schema-surface.py; native view immutability is not assumed.
+            connection.execute(statement, (b"x" * 8,))
+            updated = (*expected[: len(key)], b"x" * 8, *expected[len(key) + 1 :])
+            assert inspect_one(connection, f"SELECT * FROM {view}") == updated
+            assert inspect_one(connection, f"SELECT * FROM {members[0][0]}") == (
+                *key,
+                b"x" * 8,
+            )
+            connection.execute(statement, (expected[len(key)],))
+        assert inspect_one(connection, f"SELECT * FROM {view}") == expected
+        with view_write_rejection(connection):
             connection.execute(f"DELETE FROM {view}")
     finally:
         connection.close()
@@ -1446,6 +1494,7 @@ def test_new_vertical_views_require_every_member_and_are_read_only(
     ),
 )
 def test_recomposed_gallery_observation_facts_are_atomic_tables(
+    database_factory: DatabaseFactory,
     relation_name: str,
     table: str,
     values: tuple[object, ...],
@@ -1458,101 +1507,99 @@ def test_recomposed_gallery_observation_facts_are_atomic_tables(
     assert relation.vertical_view is None
     assert relation.derived_view is None
 
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
-        placeholders = ", ".join("?" for _ in values)
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
+        placeholders = ", ".join("%s" for _ in values)
         connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", values)
-        assert connection.execute(f"SELECT * FROM {table}").fetchone() == values
-        with pytest.raises(sqlite3.IntegrityError):
+        assert inspect_one(connection, f"SELECT * FROM {table}") == values
+        with constraint_violation(connection):
             connection.execute(f"INSERT INTO {table} VALUES ({placeholders})", values)
     finally:
         connection.close()
 
 
-def test_batch2_page_families_are_total_and_inline_projections_are_not_objects() -> (
-    None
-):
+def test_batch2_page_families_are_total_and_inline_projections_are_not_objects(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     value_sha256 = b"v" * 32
     canonical_page_sha256 = b"c" * 32
     gallery_page_sha256 = b"g" * 32
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = ON")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=True)
         connection.execute(
-            "INSERT INTO catalog_canonical_digest_policies VALUES (?)",
+            "INSERT INTO catalog_canonical_digest_policies VALUES (%s)",
             (b"source_root_v1",),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_anchors VALUES (?)",
+            "INSERT INTO catalog_canonical_value_allocation_anchors VALUES (%s)",
             (value_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_digest_domains "
-            "VALUES (?, ?)",
+            "INSERT INTO catalog_canonical_value_allocation_digest_domains VALUES (%s, %s)",
             (value_sha256, b"source_root_v1"),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_byte_counts VALUES (?, 3)",
+            "INSERT INTO catalog_canonical_value_allocation_byte_counts VALUES (%s, 3)",
             (value_sha256,),
         )
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_canonical_value_allocation_seals VALUES (?)",
+                "INSERT INTO catalog_canonical_value_allocation_seals VALUES (%s)",
                 (value_sha256,),
             )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_allocated_ats "
-            "VALUES (?, 1)",
+            "INSERT INTO catalog_canonical_value_allocation_allocated_ats VALUES (%s, 1)",
             (value_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_seals VALUES (?)",
+            "INSERT INTO catalog_canonical_value_allocation_seals VALUES (%s)",
             (value_sha256,),
         )
-        assert connection.execute(
-            "SELECT * FROM catalog_canonical_value_allocations"
-        ).fetchone() == (value_sha256, b"source_root_v1", 3, 1)
+        assert inspect_one(
+            connection, "SELECT * FROM catalog_canonical_value_allocations"
+        ) == (value_sha256, b"source_root_v1", 3, 1)
 
         connection.execute(
-            "INSERT INTO catalog_canonical_value_page_anchors VALUES (?)",
+            "INSERT INTO catalog_canonical_value_page_anchors VALUES (%s)",
             (canonical_page_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_page_payloads VALUES (?, ?)",
+            "INSERT INTO catalog_canonical_value_page_payloads VALUES (%s, %s)",
             (canonical_page_sha256, b"canonical-page"),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_page_coordinates VALUES (?, 0, 0, ?)",
+            "INSERT INTO catalog_canonical_value_page_coordinates VALUES (%s, 0, 0, %s)",
             (value_sha256, canonical_page_sha256),
         )
-        assert (
+        assert [
+            (name,)
+            for name in (
+                "catalog_canonical_value_pages",
+                "catalog_canonical_value_page_descriptors",
+            )
+            if introspect_fixture(connection, refinement).table(name) is not None
+        ] == []
+        with constraint_violation(connection):
             connection.execute(
-                "SELECT name FROM sqlite_master WHERE name IN "
-                "('catalog_canonical_value_pages', "
-                "'catalog_canonical_value_page_descriptors')"
-            ).fetchall()
-            == []
-        )
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-            connection.execute(
-                "INSERT INTO catalog_canonical_value_page_seals VALUES (?)",
+                "INSERT INTO catalog_canonical_value_page_seals VALUES (%s)",
                 (canonical_page_sha256,),
             )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_page_subtree_item_counts "
-            "VALUES (?, 3)",
+            "INSERT INTO catalog_canonical_value_page_subtree_item_counts VALUES (%s, 3)",
             (canonical_page_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_page_seals VALUES (?)",
+            "INSERT INTO catalog_canonical_value_page_seals VALUES (%s)",
             (canonical_page_sha256,),
         )
-        assert connection.execute(
+        assert inspect_one(
+            connection,
             "SELECT seal.page_sha256, coordinate.value_sha256, payload.page_bytes, "
             "coordinate.level, coordinate.page_position, counts.subtree_item_count "
             "FROM catalog_canonical_value_page_seals AS seal "
@@ -1561,8 +1608,8 @@ def test_batch2_page_families_are_total_and_inline_projections_are_not_objects()
             "JOIN catalog_canonical_value_page_coordinates AS coordinate "
             "ON coordinate.page_sha256 = seal.page_sha256 "
             "JOIN catalog_canonical_value_page_subtree_item_counts AS counts "
-            "ON counts.page_sha256 = seal.page_sha256"
-        ).fetchone() == (
+            "ON counts.page_sha256 = seal.page_sha256",
+        ) == (
             canonical_page_sha256,
             value_sha256,
             b"canonical-page",
@@ -1572,41 +1619,36 @@ def test_batch2_page_families_are_total_and_inline_projections_are_not_objects()
         )
 
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_descriptor_anchors "
-            "VALUES (?)",
+            "INSERT INTO catalog_gallery_observation_page_descriptor_anchors VALUES (%s)",
             (gallery_page_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_pages VALUES (?, ?)",
+            "INSERT INTO catalog_gallery_observation_pages VALUES (%s, %s)",
             (gallery_page_sha256, b"gallery-page"),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_descriptor_components "
-            "VALUES (?, ?)",
+            "INSERT INTO catalog_gallery_observation_page_descriptor_components VALUES (%s, %s)",
             (gallery_page_sha256, b"FILE"),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_descriptor_levels "
-            "VALUES (?, 0)",
+            "INSERT INTO catalog_gallery_observation_page_descriptor_levels VALUES (%s, 0)",
             (gallery_page_sha256,),
         )
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_page_descriptor_seals "
-                "VALUES (?)",
+                "INSERT INTO catalog_gallery_observation_page_descriptor_seals VALUES (%s)",
                 (gallery_page_sha256,),
             )
         connection.execute(
-            "INSERT INTO "
-            "catalog_gallery_observation_page_descriptor_subtree_item_counts "
-            "VALUES (?, 0)",
+            "INSERT INTO catalog_gallery_observation_page_descriptor_subtree_item_counts VALUES (%s, 0)",
             (gallery_page_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_descriptor_seals VALUES (?)",
+            "INSERT INTO catalog_gallery_observation_page_descriptor_seals VALUES (%s)",
             (gallery_page_sha256,),
         )
-        assert connection.execute(
+        assert inspect_one(
+            connection,
             "SELECT seal.page_sha256, component.component, level.level, "
             "counts.subtree_item_count "
             "FROM catalog_gallery_observation_page_descriptor_seals AS seal "
@@ -1615,37 +1657,33 @@ def test_batch2_page_families_are_total_and_inline_projections_are_not_objects()
             "JOIN catalog_gallery_observation_page_descriptor_levels AS level "
             "ON level.page_sha256 = seal.page_sha256 "
             "JOIN catalog_gallery_observation_page_descriptor_subtree_item_counts "
-            "AS counts ON counts.page_sha256 = seal.page_sha256"
-        ).fetchone() == (gallery_page_sha256, b"FILE", 0, 0)
+            "AS counts ON counts.page_sha256 = seal.page_sha256",
+        ) == (gallery_page_sha256, b"FILE", 0, 0)
 
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_key_bounds_anchors "
-            "VALUES (?)",
+            "INSERT INTO catalog_gallery_observation_page_key_bounds_anchors VALUES (%s)",
             (gallery_page_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_key_bounds_first_keys "
-            "VALUES (?, ?)",
+            "INSERT INTO catalog_gallery_observation_page_key_bounds_first_keys VALUES (%s, %s)",
             (gallery_page_sha256, b"a"),
         )
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_page_key_bounds_seals "
-                "VALUES (?)",
+                "INSERT INTO catalog_gallery_observation_page_key_bounds_seals VALUES (%s)",
                 (gallery_page_sha256,),
             )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_key_bounds_last_keys "
-            "VALUES (?, ?)",
+            "INSERT INTO catalog_gallery_observation_page_key_bounds_last_keys VALUES (%s, %s)",
             (gallery_page_sha256, b"z"),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_observation_page_key_bounds_seals VALUES (?)",
+            "INSERT INTO catalog_gallery_observation_page_key_bounds_seals VALUES (%s)",
             (gallery_page_sha256,),
         )
-        assert connection.execute(
-            "SELECT * FROM catalog_gallery_observation_page_key_bounds"
-        ).fetchone() == (gallery_page_sha256, b"a", b"z")
+        assert inspect_one(
+            connection, "SELECT * FROM catalog_gallery_observation_page_key_bounds"
+        ) == (gallery_page_sha256, b"a", b"z")
 
         for view, values in (
             (
@@ -1657,9 +1695,9 @@ def test_batch2_page_families_are_total_and_inline_projections_are_not_objects()
                 (gallery_page_sha256, b"a", b"z"),
             ),
         ):
-            with pytest.raises(sqlite3.OperationalError, match="view"):
+            with view_write_rejection(connection):
                 connection.execute(
-                    f"INSERT INTO {view} VALUES ({', '.join('?' for _ in values)})",
+                    f"INSERT INTO {view} ({', '.join(table_columns(connection, view))}) VALUES ({', '.join('%s' for _ in values)})",
                     values,
                 )
     finally:
@@ -1682,9 +1720,9 @@ def test_secondary_sealed_projection_metadata_drift_is_rejected() -> None:
         refinement._validate_physical_schema(broken, logical)
 
 
-def test_generation_projections_derive_one_commit_mapping_without_extra_objects() -> (
-    None
-):
+def test_generation_projections_derive_one_commit_mapping_without_extra_objects(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     build_id = b"b" * 16
@@ -1692,13 +1730,12 @@ def test_generation_projections_derive_one_commit_mapping_without_extra_objects(
     channel = b"default"
     receipt_id = b"r" * 16
     preparation_id = b"p" * 16
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
         connection.execute(
-            "INSERT INTO catalog_publication_commits VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO catalog_publication_commits VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 receipt_id,
                 candidate_id,
@@ -1717,55 +1754,59 @@ def test_generation_projections_derive_one_commit_mapping_without_extra_objects(
             ),
         )
         connection.execute(
-            "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
+            "INSERT INTO catalog_source_build_base_publication_commits VALUES (%s, %s)",
             (build_id, receipt_id),
         )
         connection.execute(
-            "INSERT INTO catalog_publication_candidate_base_publication_commits "
-            "VALUES (?, ?)",
+            "INSERT INTO catalog_publication_candidate_base_publication_commits VALUES (%s, %s)",
             (candidate_id, receipt_id),
         )
         connection.execute(
-            "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+            "INSERT INTO catalog_source_revision_descriptors VALUES (%s, %s, %s)",
             (7, channel, b"s" * 32),
         )
         connection.execute(
-            "INSERT INTO catalog_publication_commit_head_receipts VALUES (?, ?)",
+            "INSERT INTO catalog_publication_commit_head_receipts VALUES (%s, %s)",
             (channel, receipt_id),
         )
 
-        assert connection.execute(
+        assert inspect_one(
+            connection,
             "SELECT base.build_id, committed.source_revision, committed.generation "
             "FROM catalog_source_build_base_publication_commits AS base "
             "JOIN catalog_publication_commits AS committed "
-            "ON committed.receipt_id = base.base_receipt_id"
-        ).fetchone() == (build_id, 7, 4)
-        assert connection.execute("SELECT * FROM catalog_source_heads").fetchone() == (
+            "ON committed.receipt_id = base.base_receipt_id",
+        ) == (build_id, 7, 4)
+        assert inspect_one(connection, "SELECT * FROM catalog_source_heads") == (
             channel,
             7,
             4,
             12,
         )
-        assert connection.execute(
-            "SELECT * FROM catalog_publication_candidate_base_catalog"
-        ).fetchone() == (candidate_id, 9, 4)
-        assert connection.execute(
+        assert inspect_one(
+            connection, "SELECT * FROM catalog_publication_candidate_base_catalog"
+        ) == (candidate_id, 9, 4)
+        assert inspect_one(
+            connection,
             "SELECT head.channel, committed.revision, committed.generation, "
             "committed.committed_at "
             "FROM catalog_publication_commit_heads AS head "
             "JOIN catalog_publication_commits AS committed "
-            "ON committed.receipt_id = head.receipt_id"
-        ).fetchone() == (channel, 9, 4, 12)
-        assert (
+            "ON committed.receipt_id = head.receipt_id",
+        ) == (channel, 9, 4, 12)
+        assert [
+            (name,)
+            for name in (
+                "catalog_source_build_base_source",
+                "catalog_publication_heads",
+            )
+            if introspect_fixture(connection, refinement).table(name) is not None
+        ] == []
+        with view_write_rejection(connection):
             connection.execute(
-                "SELECT name FROM sqlite_master WHERE name IN "
-                "('catalog_source_build_base_source', 'catalog_publication_heads')"
-            ).fetchall()
-            == []
-        )
-        with pytest.raises(sqlite3.OperationalError, match="view"):
-            connection.execute(
-                "INSERT INTO catalog_source_heads VALUES (?, ?, ?, ?)",
+                "INSERT INTO catalog_source_heads "
+                f"({', '.join(table_columns(connection, 'catalog_source_heads'))}) "
+                "VALUES (%s, %s, %s, %s)",
                 (channel, 7, 4, 12),
             )
     finally:
@@ -1802,6 +1843,7 @@ def test_generation_projections_derive_one_commit_mapping_without_extra_objects(
     ],
 )
 def test_vertical_view_definition_drift_is_rejected(
+    database_factory: DatabaseFactory,
     relation_name: str,
     table: str,
     dependency: str,
@@ -1809,10 +1851,10 @@ def test_vertical_view_definition_drift_is_rejected(
 ) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        database = refinement.introspect_sqlite(_SQLiteConnectionReader(connection))
+        render_fixture(connection, refinement, physical_spec)
+        database = introspect_fixture(connection, refinement)
     finally:
         connection.close()
 
@@ -1857,148 +1899,153 @@ def test_generated_physical_contract_is_not_stale() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_sqlite_overlay_view_uses_nearest_shadow_and_tombstone() -> None:
+def test_sqlite_overlay_view_uses_nearest_shadow_and_tombstone(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     root = b"r" * 16
     middle = b"m" * 16
     leaf = b"l" * 16
     first_hash = b"1" * 32
     removed_hash = b"2" * 32
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
-        connection.executemany(
-            "INSERT INTO catalog_analysis_state_ancestry VALUES (?, ?, ?)",
-            (
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
+        connection.execute_many(
+            "INSERT INTO catalog_analysis_state_ancestry VALUES (%s, %s, %s)",
+            [
                 (root, 0, root),
                 (middle, 0, middle),
                 (middle, 1, root),
                 (leaf, 0, leaf),
                 (leaf, 1, middle),
                 (leaf, 2, root),
-            ),
+            ],
         )
         file_decisions = (
             (root, first_hash, 2, 1, 1),
             (root, removed_hash, 3, 1, 1),
             (middle, first_hash, 4, 2, 2),
         )
-        connection.executemany(
-            "INSERT INTO catalog_a_file_decision_shadow_anchors VALUES (?, ?)",
-            (
+        connection.execute_many(
+            "INSERT INTO catalog_a_file_decision_shadow_anchors VALUES (%s, %s)",
+            [
                 (analysis_id, file_sha256)
                 for analysis_id, file_sha256, *_ in file_decisions
-            ),
+            ],
         )
         for table, position in (
             ("catalog_a_file_decision_shadow_occurrences", 2),
             ("catalog_a_file_decision_shadow_artists", 3),
             ("catalog_a_file_decision_shadow_gallery_artist_max", 4),
         ):
-            connection.executemany(
-                f"INSERT INTO {table} VALUES (?, ?, ?)",
-                (
+            connection.execute_many(
+                f"INSERT INTO {table} VALUES (%s, %s, %s)",
+                [
                     (analysis_id, file_sha256, row[position])
                     for row in file_decisions
                     for analysis_id, file_sha256 in (row[:2],)
-                ),
+                ],
             )
-        connection.executemany(
-            "INSERT INTO catalog_a_file_decision_shadow_seals VALUES (?, ?)",
-            (
+        connection.execute_many(
+            "INSERT INTO catalog_a_file_decision_shadow_seals VALUES (%s, %s)",
+            [
                 (analysis_id, file_sha256)
                 for analysis_id, file_sha256, *_ in file_decisions
-            ),
+            ],
         )
         connection.execute(
-            "INSERT INTO catalog_analysis_file_hash_decision_tombstone VALUES (?, ?)",
+            "INSERT INTO catalog_analysis_file_hash_decision_tombstone VALUES (%s, %s)",
             (middle, removed_hash),
         )
 
-        assert connection.execute(
+        assert inspect_all(
+            connection,
             """
             SELECT file_sha256, occurrence_count, artist_count,
                    maximum_gallery_artist_count
             FROM catalog_analysis_file_hash_decision_resolved
-            WHERE analysis_id = ?
+            WHERE analysis_id = %s
             ORDER BY file_sha256
             """,
             (leaf,),
-        ).fetchall() == [(first_hash, 4, 2, 2)]
-        assert connection.execute(
+        ) == [(first_hash, 4, 2, 2)]
+        assert inspect_all(
+            connection,
             """
             SELECT file_sha256, occurrence_count, artist_count,
                    maximum_gallery_artist_count
             FROM catalog_analysis_file_hash_decision_resolved
-            WHERE analysis_id = ?
+            WHERE analysis_id = %s
             ORDER BY file_sha256
             """,
             (root,),
-        ).fetchall() == [
+        ) == [
             (first_hash, 2, 1, 1),
             (removed_hash, 3, 1, 1),
         ]
 
         connection.execute(
-            "INSERT INTO catalog_analysis_file_hash_decision_tombstone VALUES (?, ?)",
+            "INSERT INTO catalog_analysis_file_hash_decision_tombstone VALUES (%s, %s)",
             (leaf, first_hash),
         )
         assert (
-            connection.execute(
+            inspect_all(
+                connection,
                 """
             SELECT file_sha256
             FROM catalog_analysis_file_hash_decision_resolved
-            WHERE analysis_id = ?
+            WHERE analysis_id = %s
             """,
                 (leaf,),
-            ).fetchall()
+            )
             == []
         )
     finally:
         connection.close()
 
 
-def test_analysis_sqlite_fixture_enforces_group_membership_and_checks() -> None:
+def test_analysis_native_fixture_enforces_group_membership_and_checks(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     analysis_id = b"a" * 16
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
         connection.execute(
-            "INSERT INTO catalog_analysis_content_owner_shadows VALUES (?, ?, ?)",
+            "INSERT INTO catalog_analysis_content_owner_shadows VALUES (%s, %s, %s)",
             (analysis_id, b"c" * 32, 1),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_content_owner_shadows VALUES (?, ?, ?)",
+                "INSERT INTO catalog_analysis_content_owner_shadows VALUES (%s, %s, %s)",
                 (analysis_id, b"d" * 32, 1),
             )
 
         connection.execute(
-            "INSERT INTO catalog_analysis_gid_winner_selections VALUES (?, ?)",
+            "INSERT INTO catalog_analysis_gid_winner_selections VALUES (%s, %s)",
             (analysis_id, 1),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_gid_winner_selections VALUES (?, ?)",
+                "INSERT INTO catalog_analysis_gid_winner_selections VALUES (%s, %s)",
                 (analysis_id, 1),
             )
 
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_exclusion_delta_old_excluded_flags "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO catalog_analysis_exclusion_delta_old_excluded_flags VALUES (%s, %s, %s)",
                 (analysis_id, b"6" * 32, 2),
             )
 
         stage = b"changed_gallery"
         connection.execute(
-            "INSERT INTO catalog_analysis_batch_receipt_stored "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO catalog_analysis_batch_receipt_stored VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 analysis_id,
                 stage,
@@ -2012,96 +2059,83 @@ def test_analysis_sqlite_fixture_enforces_group_membership_and_checks() -> None:
                 1_767_225_602_000_000,
             ),
         )
-        assert connection.execute(
-            "SELECT row_count FROM catalog_analysis_batch_receipts"
-        ).fetchone() == (2,)
+        assert inspect_one(
+            connection, "SELECT row_count FROM catalog_analysis_batch_receipts"
+        ) == (2,)
 
-        # state_component is an exact binary domain in the atomic wide seal.
+        # Closed enum membership is shared; native storage coercion is checked
+        # separately from the portable domain of accepted stored bytes.
         connection.execute(
-            "INSERT INTO catalog_analysis_state_component_seals VALUES (?, ?, ?, ?)",
+            "INSERT INTO catalog_analysis_state_component_seals VALUES (%s, %s, %s, %s)",
             (analysis_id, b"file_hash_decision", 0, 1),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_state_component_seals VALUES (?, ?, ?, ?)",
-                (analysis_id, "content_owner", 0, 1),
+                "INSERT INTO catalog_analysis_state_component_seals VALUES (%s, %s, %s, %s)",
+                (analysis_id, b"unregistered_component", 0, 1),
             )
     finally:
         connection.close()
 
 
-def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states() -> (
-    None
-):
+def test_native_fixture_enforces_positive_revisions_states_and_bounds(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical_spec)
+        set_foreign_key_checks(connection, enabled=False)
 
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_content_blobs VALUES (?, ?)", ("a" * 32, 1)
-            )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_content_blobs VALUES (?, ?)", (b"a" * 32, 1.5)
-            )
-
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+                "INSERT INTO catalog_source_revision_descriptors VALUES (%s, %s, %s)",
                 (0, b"default", b"s" * 32),
             )
         connection.execute(
-            "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+            "INSERT INTO catalog_source_revision_descriptors VALUES (%s, %s, %s)",
             (1, b"default", b"s" * 32),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_revision_descriptors VALUES (?, ?, ?)",
+                "INSERT INTO catalog_revision_descriptors VALUES (%s, %s, %s)",
                 (0, 0, 0),
             )
         connection.execute(
-            "INSERT INTO catalog_revision_descriptors VALUES (?, ?, ?)", (1, 0, 0)
+            "INSERT INTO catalog_revision_descriptors VALUES (%s, %s, %s)", (1, 0, 0)
         )
 
         connection.execute(
-            "INSERT INTO catalog_publication_generation_nodes VALUES (?)", (0,)
+            "INSERT INTO catalog_publication_generation_nodes VALUES (%s)", (0,)
         )
         connection.execute(
-            "INSERT INTO catalog_publication_generation_nodes VALUES (?)", (1,)
+            "INSERT INTO catalog_publication_generation_nodes VALUES (%s)", (1,)
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_publication_generation_successors VALUES (?, ?)",
+                "INSERT INTO catalog_publication_generation_successors VALUES (%s, %s)",
                 (0, 0),
             )
         connection.execute(
-            "INSERT INTO catalog_publication_generation_successors VALUES (?, ?)",
+            "INSERT INTO catalog_publication_generation_successors VALUES (%s, %s)",
             (1, 0),
         )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
-                (b"b" * 16, b"r" * 15),
-            )
         connection.execute(
-            "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
+            "INSERT INTO catalog_source_build_base_publication_commits VALUES (%s, %s)",
             (b"b" * 16, b"r" * 16),
         )
 
         connection.execute(
-            "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+            "INSERT INTO catalog_title_sort_policy VALUES (%s, %s, %s)",
             (1, 1, b"16.0.0"),
         )
         for policy_id, malformed_unicode_version in enumerate(
-            (b"", b"v" * 33, "16.0.0"), start=2
+            (b"", b"v" * 33), start=2
         ):
-            with pytest.raises(sqlite3.IntegrityError):
+            with constraint_violation(connection):
                 connection.execute(
-                    "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+                    "INSERT INTO catalog_title_sort_policy VALUES (%s, %s, %s)",
                     (policy_id, policy_id, malformed_unicode_version),
                 )
 
@@ -2113,32 +2147,33 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         for build_id, scope_key, state, sealed_at in builds:
             connection.execute(
-                "INSERT INTO catalog_source_build_descriptor VALUES (?, ?, ?, ?)",
+                "INSERT INTO catalog_source_build_descriptor VALUES (%s, %s, %s, %s)",
                 (build_id, scope_key, 1, 1),
             )
             connection.execute(
-                "INSERT INTO catalog_source_build_states VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_states VALUES (%s, %s)",
                 (build_id, state),
             )
             if sealed_at is not None:
                 connection.execute(
-                    "INSERT INTO catalog_source_build_sealed_ats VALUES (?, ?)",
+                    "INSERT INTO catalog_source_build_sealed_ats VALUES (%s, %s)",
                     (build_id, sealed_at),
                 )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_source_build_states VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_states VALUES (%s, %s)",
                 (b"z" * 16, "BROKEN"),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_source_build_sealed_ats VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_sealed_ats VALUES (%s, %s)",
                 (b"z" * 16, None),
             )
-        assert connection.execute(
+        assert inspect_all(
+            connection,
             "SELECT build_id, state, sealed_at FROM catalog_source_builds "
-            "ORDER BY build_id"
-        ).fetchall() == [
+            "ORDER BY build_id",
+        ) == [
             (b"c" * 16, "OPEN", None),
             (b"i" * 16, "ABANDONED", None),
         ]
@@ -2151,36 +2186,37 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         for analysis_id, build_id, policy_id, state, completed_at in analyses:
             connection.execute(
-                "INSERT INTO catalog_analysis_run_descriptor VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_analysis_run_descriptor VALUES (%s, %s, %s, %s, %s)",
                 (analysis_id, build_id, policy_id, bytes([policy_id]) * 32, 1),
             )
             connection.execute(
-                "INSERT INTO catalog_analysis_run_states VALUES (?, ?)",
+                "INSERT INTO catalog_analysis_run_states VALUES (%s, %s)",
                 (analysis_id, state),
             )
             if completed_at is not None:
                 connection.execute(
-                    "INSERT INTO catalog_analysis_run_completed_ats VALUES (?, ?)",
+                    "INSERT INTO catalog_analysis_run_completed_ats VALUES (%s, %s)",
                     (analysis_id, completed_at),
                 )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_run_completed_ats VALUES (?, ?)",
+                "INSERT INTO catalog_analysis_run_completed_ats VALUES (%s, %s)",
                 (b"z" * 16, None),
             )
-        assert connection.execute(
+        assert inspect_all(
+            connection,
             "SELECT analysis_id, state, completed_at FROM catalog_analysis_runs "
-            "ORDER BY analysis_id"
-        ).fetchall() == [
+            "ORDER BY analysis_id",
+        ) == [
             (b"k" * 16, "COMPLETE", 2),
             (b"n" * 16, "ABANDONED", None),
         ]
 
         for invalid_page_limit in (0, 129):
-            with pytest.raises(sqlite3.IntegrityError):
+            with constraint_violation(connection):
                 connection.execute(
                     "INSERT INTO catalog_analysis_batch_receipt_stored "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         b"x" * 16,
                         b"changed_gallery",
@@ -2195,36 +2231,35 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
                     ),
                 )
 
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_page_counts VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_page_counts VALUES (%s, %s, %s)",
                 (1, 1, 4_294_967_296),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_scans VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_scans VALUES (%s, %s, %s, %s, %s)",
                 (1, 1, b"s" * 32, 4_294_967_296, 0),
             )
-        for malformed in (b"f" * 39, b"f" * 41):
-            with pytest.raises(sqlite3.IntegrityError):
-                connection.execute(
-                    "INSERT INTO catalog_gallery_observation_discovery_fingerprints "
-                    "VALUES (?, ?, ?)",
-                    (1, 1, malformed),
-                )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_analysis_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_discovery_fingerprints "
+                "VALUES (%s, %s, %s)",
+                (1, 1, b"f" * 41),
+            )
+        with constraint_violation(connection):
+            connection.execute(
+                "INSERT INTO catalog_analysis_checkpoints VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (b"a" * 16, b"changed_gallery", 1, b"c" * 2049, 0, "OPEN", 1),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_publication_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_publication_checkpoints VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (b"p" * 16, b"ITEMS", 1, b"c" * 2049, 0, "OPEN", 1),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_prepared_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_prepared_artifacts VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     b"q" * 16,
                     b"k" * 32,
@@ -2239,28 +2274,74 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         connection.close()
 
 
-def test_sqlite_recomposed_manifest_policy_enforces_both_candidate_keys() -> None:
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite rejects TEXT/REAL storage classes and short BLOB widths; Maria typed columns coerce TEXT/REAL and pad short BINARY values, covered by the native physical-domain matrix",
+)
+def test_sqlite_fixture_rejects_dynamic_storage_classes_and_short_binary() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     connection = sqlite3.connect(":memory:")
     try:
         connection.executescript(refinement.render_sqlite_ddl(physical_spec))
-        connection.execute(
-            "INSERT INTO catalog_manifest_policies VALUES (?, ?, ?)", (1, 1, 1)
-        )
+        connection.execute("PRAGMA foreign_keys = OFF")
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_manifest_policies VALUES (?, ?, ?)", (3, 1, 1)
+                "INSERT INTO catalog_content_blobs VALUES (?, ?)", ("a" * 32, 1)
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_manifest_policies "
-                "(manifest_policy_id, manifest_algorithm_version) VALUES (?, ?)",
+                "INSERT INTO catalog_content_blobs VALUES (?, ?)", (b"a" * 32, 1.5)
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
+                (b"b" * 16, b"r" * 15),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+                (4, 4, "16.0.0"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_discovery_fingerprints "
+                "VALUES (?, ?, ?)",
+                (1, 1, b"f" * 39),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
+                "(gallery_id, observation_id, file_key, device) VALUES (?, ?, ?, ?)",
+                (3, 1, bytes(32), bytes(7)),
+            )
+    finally:
+        connection.close()
+
+
+def test_sqlite_recomposed_manifest_policy_enforces_both_candidate_keys(
+    database_factory: DatabaseFactory,
+) -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
+    connection = open_database(database_factory.config())
+    try:
+        render_fixture(connection, refinement, physical_spec)
+        connection.execute(
+            "INSERT INTO catalog_manifest_policies VALUES (%s, %s, %s)", (1, 1, 1)
+        )
+        with constraint_violation(connection):
+            connection.execute(
+                "INSERT INTO catalog_manifest_policies VALUES (%s, %s, %s)", (3, 1, 1)
+            )
+        with constraint_violation(connection):
+            connection.execute(
+                "INSERT INTO catalog_manifest_policies (manifest_policy_id, manifest_algorithm_version) VALUES (%s, %s)",
                 (2, 2),
             )
-        assert connection.execute(
-            "SELECT * FROM catalog_manifest_policies"
-        ).fetchall() == [(1, 1, 1)]
+        assert inspect_all(connection, "SELECT * FROM catalog_manifest_policies") == [
+            (1, 1, 1)
+        ]
     finally:
         connection.close()
 
@@ -2504,27 +2585,15 @@ def test_analysis_ancestry_endpoint_view_is_portable_and_uses_max_depth() -> Non
         assert "ancestor_depth" in view
 
 
-def test_fresh_source_slice_mariadb_ddl_refines_physical_spec(
-    mariadb_config: CoreConfig,
+def test_fresh_source_slice_ddl_refines_physical_spec(
+    db_config: CoreConfig,
 ) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    database_config = mariadb_config.database
-    with MariaDBConnector(
-        host=database_config.host,
-        port=database_config.port,
-        user=database_config.user,
-        password=database_config.password,
-        database=database_config.database,
-    ) as connector:
-        for statement in refinement.render_mariadb_ddl(physical_spec):
-            connector.execute(statement)
-        for statement in refinement.render_mariadb_ddl(
-            physical_spec,
-            idempotent=True,
-        ):
-            connector.execute(statement)
-        connector.execute("SET FOREIGN_KEY_CHECKS = 0")
+    with database_connector(db_config) as connector:
+        render_fixture(connector, refinement, physical_spec)
+        render_fixture(connector, refinement, physical_spec, idempotent=True)
+        set_foreign_key_checks(connector, enabled=False)
         connector.execute(
             "INSERT INTO catalog_gallery_gid_identities VALUES (%s)", (1,)
         )
@@ -2545,12 +2614,13 @@ def test_fresh_source_slice_mariadb_ddl_refines_physical_spec(
             "VALUES (%s, %s, %s, %s)",
             (1, 1, 1_767_225_600_000_000, 1_767_225_600_000_000),
         )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT gid, upload_time, download_time, modified_time "
-            "FROM catalog_gallery_observation_metadata"
+            "FROM catalog_gallery_observation_metadata",
         ) == (1, 1_767_225_600_000_000, 1_767_225_600_000_000, 1_767_225_600_000_000)
-        connector.execute("SET FOREIGN_KEY_CHECKS = 1")
-        database = refinement.introspect_mariadb(connector)
+        set_foreign_key_checks(connector, enabled=True)
+        database = introspect_fixture(connector, refinement)
 
     report = refinement.compare_physical_refinement(
         logical,
@@ -2564,7 +2634,9 @@ def test_fresh_source_slice_mariadb_ddl_refines_physical_spec(
     gallery_name = database.table("catalog_source_locator_identity").column(
         "source_gallery_name"
     )
-    assert gallery_name.type_name == "VARBINARY(255)"
+    assert gallery_name.type_name == (
+        "BLOB" if db_config.database.sql_type == "sqlite" else "VARBINARY(255)"
+    )
     assert gallery_name.collation is None
     assert database.table("catalog_analysis_gid_candidates") is None
     selection = database.table("catalog_analysis_gid_winner_selections")
@@ -2576,52 +2648,18 @@ def test_fresh_source_slice_mariadb_ddl_refines_physical_spec(
     refinement.assert_physical_refines(report)
 
 
-def test_current_fresh_sqlite_schema_refines_source_slice(
-    sqlite_config: CoreConfig,
-) -> None:
-    VNextDatabaseAdminFacade(sqlite_config).initialize()
+def test_current_fresh_schema_refines_source_slice(db_config: CoreConfig) -> None:
+    with closing(VNextDatabaseAdminFacade(db_config)) as admin:
+        admin.initialize()
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-    with SQLiteConnector(database=sqlite_config.database.database) as connector:
-        database = refinement.introspect_sqlite(connector)
-
-    report = refinement.compare_physical_refinement(
-        logical,
-        physical_spec,
-        database,
-    )
-
+    with database_connector(db_config) as connector:
+        database = introspect_fixture(connector, refinement)
+    report = refinement.compare_physical_refinement(logical, physical_spec, database)
     assert report.conforms, report.render()
     assert report.fully_conforms
+    assert report.backend == db_config.database.sql_type
     assert database.table("catalog_gallery_observation_files") is None
-    refinement.assert_physical_refines(report)
-
-
-def test_current_fresh_mariadb_schema_refines_source_slice(
-    mariadb_config: CoreConfig,
-) -> None:
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
-    database_config = mariadb_config.database
-    with MariaDBConnector(
-        host=database_config.host,
-        port=database_config.port,
-        user=database_config.user,
-        password=database_config.password,
-        database=database_config.database,
-    ) as connector:
-        physical = refinement.introspect_mariadb(connector)
-    logical = refinement.load_logical_schema(CATALOG)
-    physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
-
-    report = refinement.compare_physical_refinement(
-        logical,
-        physical_spec,
-        physical,
-    )
-
-    assert report.conforms, report.render()
-    assert report.fully_conforms
-    assert report.backend == "mariadb"
     refinement.assert_physical_refines(report)
 
 
@@ -2659,17 +2697,19 @@ def test_physical_publication_projection_requires_both_occurrence_times(
         refinement._validate_physical_schema(invalid, logical)
 
 
-def test_metadata_projection_preserves_distinct_upload_times_for_shared_gid() -> None:
+def test_metadata_projection_preserves_distinct_upload_times_for_shared_gid(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical)
+        set_foreign_key_checks(connection, enabled=False)
         for gallery_id, observation_id in ((1, 1), (1, 2), (2, 1)):
             if observation_id == 1:
                 connection.execute(
-                    "INSERT INTO catalog_gallery_identities VALUES (?, ?, ?, ?)",
+                    "INSERT INTO catalog_gallery_identities VALUES (%s, %s, %s, %s)",
                     (
                         gallery_id,
                         bytes([gallery_id]) * 32,
@@ -2678,104 +2718,110 @@ def test_metadata_projection_preserves_distinct_upload_times_for_shared_gid() ->
                     ),
                 )
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_allocations VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_allocations VALUES (%s, %s, %s)",
                 (gallery_id, observation_id, observation_id),
             )
         connection.commit()
-        connection.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connection, enabled=True)
         connection.execute(
-            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (7,)
+            "INSERT INTO catalog_gallery_gid_identities VALUES (%s)", (7,)
         )
         for gallery_id in (1, 2):
             name = f"gallery-{gallery_id}".encode()
             connection.execute(
-                "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)", (name, 7)
+                "INSERT INTO catalog_source_gallery_name_gids VALUES (%s, %s)",
+                (name, 7),
             )
             connection.execute(
-                "INSERT INTO catalog_gallery_source_name_accesses VALUES (?, ?)",
+                "INSERT INTO catalog_gallery_source_name_accesses VALUES (%s, %s)",
                 (gallery_id, name),
             )
         # The local scalar cannot become visible without its exact upload child.
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (%s, %s, %s, %s)",
                 (1, 2, 13, 17),
             )
         expected = [(1, 1, 7, 11, 13, 17), (1, 2, 7, 23, 13, 17), (2, 1, 7, 29, 13, 17)]
         for gallery_id, observation_id, _gid, upload, download, modified in expected:
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_upload_times VALUES (%s, %s, %s)",
                 (gallery_id, observation_id, upload),
             )
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (?, ?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_metadata_locals VALUES (%s, %s, %s, %s)",
                 (gallery_id, observation_id, download, modified),
             )
         assert (
-            connection.execute(
-                "SELECT * FROM catalog_gallery_observation_metadata ORDER BY gallery_id, observation_id"
-            ).fetchall()
+            inspect_all(
+                connection,
+                "SELECT * FROM catalog_gallery_observation_metadata ORDER BY gallery_id, observation_id",
+            )
             == expected
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO catalog_gallery_observation_upload_times VALUES (?, ?, ?)",
+                "INSERT INTO catalog_gallery_observation_upload_times VALUES (%s, %s, %s)",
                 (1, 1, 99),
             )
     finally:
         connection.close()
 
 
-def test_publication_projection_retains_each_occurrence_upload_time() -> None:
+def test_publication_projection_retains_each_occurrence_upload_time(
+    database_factory: DatabaseFactory,
+) -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical = refinement.load_physical_schema(PHYSICAL, logical)
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(refinement.render_sqlite_ddl(physical))
-        connection.execute("PRAGMA foreign_keys = OFF")
+        render_fixture(connection, refinement, physical)
+        set_foreign_key_checks(connection, enabled=False)
         publication_key = bytes([7]) * 32
         connection.execute(
-            "INSERT INTO catalog_gallery_gid_identities VALUES (?)", (7,)
+            "INSERT INTO catalog_gallery_gid_identities VALUES (%s)", (7,)
         )
         connection.execute(
-            "INSERT INTO catalog_source_gallery_name_gids VALUES (?, ?)",
+            "INSERT INTO catalog_source_gallery_name_gids VALUES (%s, %s)",
             (b"gallery-7", 7),
         )
         connection.execute(
-            "INSERT INTO catalog_gallery_source_name_accesses VALUES (?, ?)",
+            "INSERT INTO catalog_gallery_source_name_accesses VALUES (%s, %s)",
             (1, b"gallery-7"),
         )
         connection.execute(
-            "INSERT INTO catalog_publication_identities VALUES (?, ?)",
+            "INSERT INTO catalog_publication_identities VALUES (%s, %s)",
             (publication_key, 7),
         )
         for revision, upload in ((1, 11), (2, 23)):
             occurrence = bytes([revision]) * 32
             connection.execute(
-                "INSERT INTO catalog_publication_occurrence_identities VALUES (?, ?, ?)",
+                "INSERT INTO catalog_publication_occurrence_identities VALUES (%s, %s, %s)",
                 (occurrence, revision, publication_key),
             )
             connection.execute(
-                "INSERT INTO catalog_publication_storage VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO catalog_publication_storage VALUES (%s, %s, %s, %s, %s, %s)",
                 (occurrence, 1, bytes(32), bytes(32), 17, bytes(32)),
             )
             connection.execute(
-                "INSERT INTO catalog_publication_download_times VALUES (?, ?)",
+                "INSERT INTO catalog_publication_download_times VALUES (%s, %s)",
                 (occurrence, 13),
             )
             connection.execute(
-                "INSERT INTO catalog_publication_upload_times VALUES (?, ?)",
+                "INSERT INTO catalog_publication_upload_times VALUES (%s, %s)",
                 (occurrence, upload),
             )
-        assert connection.execute(
-            "SELECT revision, upload_time FROM catalog_publications ORDER BY revision"
-        ).fetchall() == [(1, 11), (2, 23)]
+        assert inspect_all(
+            connection,
+            "SELECT revision, upload_time FROM catalog_publications ORDER BY revision",
+        ) == [(1, 11), (2, 23)]
         connection.execute(
-            "DELETE FROM catalog_publication_upload_times WHERE catalog_occurrence_sha256 = ?",
+            "DELETE FROM catalog_publication_upload_times WHERE catalog_occurrence_sha256 = %s",
             (bytes([2]) * 32,),
         )
-        assert connection.execute(
-            "SELECT revision, upload_time FROM catalog_publications ORDER BY revision"
-        ).fetchall() == [(1, 11)]
+        assert inspect_all(
+            connection,
+            "SELECT revision, upload_time FROM catalog_publications ORDER BY revision",
+        ) == [(1, 11)]
     finally:
         connection.close()

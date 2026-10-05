@@ -6,15 +6,25 @@ import importlib.util
 import logging
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
+from vnext_probe_databases import observe_probe_claims
+from vnext_test_database import (
+    DatabaseFactory,
+    database_connector,
+    inspect_one,
+    open_database,
+)
 
+from h2hdb import VNextIngestFacade
 from h2hdb.ingest_performance import IngestPerformance
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector
-from h2hdb.sqlite_connector import SQLiteConnector
 
 
 @pytest.fixture
@@ -60,15 +70,17 @@ def test_matrix_covers_row_windows_and_raw_lengths_without_conflating_dimensions
 
 
 def test_nested_telemetry_cannot_hide_or_double_count_physical_sql(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     telemetry = IngestPerformance(
-        logging.getLogger("h2hdb.probe-test"), backend="sqlite"
+        logging.getLogger("h2hdb.probe-test"), backend=database_factory.backend
     )
 
     def action() -> None:
         with instrument_connector(
-            SQLiteConnector(str(tmp_path / "nested.db"))
+            database_connector(database_factory.config("nested.db"))
         ) as connector:
             assert connector.fetch_one("SELECT %s", (1,)) == (1,)
             with telemetry.step("analysis", "prepare", "parent", 1):
@@ -85,12 +97,14 @@ def test_nested_telemetry_cannot_hide_or_double_count_physical_sql(
 
 
 def test_added_n_plus_one_sql_is_rejected_by_the_same_cost_budget(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     def run(redundant: int) -> dict[str, Any]:
         def action() -> None:
             with instrument_connector(
-                SQLiteConnector(str(tmp_path / f"n{redundant}.db"))
+                database_connector(database_factory.config(f"n{redundant}.db"))
             ) as connector:
                 assert connector.fetch_all("SELECT %s UNION ALL SELECT %s", (1, 2)) == [
                     (1,),
@@ -112,15 +126,17 @@ def test_added_n_plus_one_sql_is_rejected_by_the_same_cost_budget(
 
 
 def test_source_batch_aggregation_keeps_independent_action_cost_labels(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     telemetry = IngestPerformance(
-        logging.getLogger("h2hdb.probe-source"), backend="sqlite"
+        logging.getLogger("h2hdb.probe-source"), backend=database_factory.backend
     )
 
     def action() -> None:
         with instrument_connector(
-            SQLiteConnector(str(tmp_path / "source-phases.db"))
+            database_connector(database_factory.config("source-phases.db"))
         ) as connector:
             for component in ("FILE_PAGE", "TAG_PAGE"):
                 for phase in ("issue", "prepare", "commit"):
@@ -139,22 +155,26 @@ def test_source_batch_aggregation_keeps_independent_action_cost_labels(
 
 
 def test_known_query_delay_is_attributed_to_the_delayed_fingerprint(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    probe: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    database_factory: DatabaseFactory,
 ) -> None:
-    original = SQLiteConnector.fetch_one
+    connector_type = type(database_connector(database_factory.config("delay.db")))
+    original = connector_type.fetch_one
 
     def delayed(
-        self: SQLiteConnector, query: str, data: tuple[Any, ...] = ()
+        self: SQLConnector, query: str, data: tuple[Any, ...] = ()
     ) -> tuple[Any, ...]:
         if query == "SELECT 42":
             time.sleep(0.02)
         return original(self, query, data)
 
-    monkeypatch.setattr(SQLiteConnector, "fetch_one", delayed)
+    monkeypatch.setattr(connector_type, "fetch_one", delayed)
 
     def action() -> None:
         with instrument_connector(
-            SQLiteConnector(str(tmp_path / "delay.db"))
+            database_connector(database_factory.config("delay.db"))
         ) as connector:
             connector.fetch_one("SELECT 41")
             connector.fetch_one("SELECT 42")
@@ -168,10 +188,12 @@ def test_known_query_delay_is_attributed_to_the_delayed_fingerprint(
 
 
 def test_budget_overflow_and_exception_restore_physical_observer(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     original = probe._MeasuredConnector._call
-    with SQLiteConnector(str(tmp_path / "overflow.db")) as raw:
+    with database_connector(database_factory.config("overflow.db")) as raw:
         with pytest.raises(RuntimeError, match="budget exceeded"):
             with probe.PhysicalObserver(budget=2).installed():
                 connector = instrument_connector(raw)
@@ -182,20 +204,22 @@ def test_budget_overflow_and_exception_restore_physical_observer(
 
 
 def test_production_phase_counters_match_independent_calls_and_reject_corruption(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     from h2hdb.database_performance import DatabasePerformance, database_phase
 
     telemetry = DatabasePerformance(
         logging.getLogger("h2hdb.probe-telemetry"),
-        backend="sqlite",
+        backend=database_factory.backend,
         level=logging.DEBUG,
     )
 
     def action() -> None:
         with telemetry.operation("test_audit"):
             with instrument_connector(
-                SQLiteConnector(str(tmp_path / "phases.db"))
+                database_connector(database_factory.config("phases.db"))
             ) as connector:
                 connector.fetch_one("SELECT 1")
                 with database_phase("validator"):
@@ -230,18 +254,22 @@ def test_query_dictionary_is_lossless_and_cost_repeat_regression_is_rejected(
 
 
 def test_info_quiet_readonly_done_is_explicit_not_a_fake_counter_match(
-    probe: ModuleType, tmp_path: Path
+    probe: ModuleType,
+    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
     from h2hdb.database_performance import DatabasePerformance
 
     telemetry = DatabasePerformance(
-        logging.getLogger("h2hdb.probe-quiet"), backend="sqlite", level=logging.INFO
+        logging.getLogger("h2hdb.probe-quiet"),
+        backend=database_factory.backend,
+        level=logging.INFO,
     )
 
     def action() -> None:
         with telemetry.operation("current_only_cleanup") as span:
             with instrument_connector(
-                SQLiteConnector(str(tmp_path / "quiet.db"))
+                database_connector(database_factory.config("quiet.db"))
             ) as connector:
                 connector.fetch_one("SELECT 1")
             span.describe(quiet=True)
@@ -253,3 +281,84 @@ def test_info_quiet_readonly_done_is_explicit_not_a_fake_counter_match(
     result["outcome"] = "PROGRESSED"
     with pytest.raises(RuntimeError, match="read-only DONE"):
         probe.verify_diagnostic_counters(result, required=True, allow_quiet=True)
+
+
+def test_direct_successor_claim_never_drains_or_retries(
+    probe: ModuleType,
+) -> None:
+    facade = Mock(spec=VNextIngestFacade)
+    facade.try_claim_ingest.return_value = None
+    with pytest.raises(RuntimeError, match="next ingest claim after DONE was refused"):
+        probe.require_direct_claim(facade)
+    assert facade.method_calls == [
+        ("try_claim_ingest", (True, probe.LEASE_MICROSECONDS), {})
+    ]
+
+
+@pytest.mark.deep
+@pytest.mark.parametrize("case_name,revisions", [("baseline", 2), ("depth", 18)])
+def test_real_revision_claims_preserve_natural_generations_and_compaction(
+    probe: ModuleType,
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    case_name: str,
+    revisions: int,
+) -> None:
+    config = database_factory.config("natural-revisions")
+    claims = observe_probe_claims(monkeypatch)
+    result = probe.run_case(
+        config,
+        probe.Case(case_name, probe.Shape(galleries=1, pages=1, tags=0), revisions),
+        "info",
+    )
+    expected = list(range(1, revisions + 2))
+    assert result["measurement_protocol"] == "consecutive-work-generations-v1"
+    assert claims == expected
+    records = result["revisions"]
+    assert [record["ingest_generation"] for record in records] == expected[:-1]
+    assert [
+        record["next_claim"]["ingest_generation"] for record in records
+    ] == expected[1:]
+    for ordinal, record in enumerate(records, start=1):
+        assert record["publication_oracle"]["verified"]
+        assert record["cleanup"]["outcome"] == "DONE"
+        assert record["next_claim"]["granted"]
+        assert "post_claim_cleanup" not in record
+        assert len(record["audits"]) == 3
+        assert {audit["sql_calls"] for audit in record["audits"]} == {
+            record["audits"][0]["sql_calls"]
+        }
+        queries = [
+            query for query in record["claim"]["queries"] if query["category"] == "sql"
+        ]
+        assert queries
+        assert not any(
+            query["sql"].lstrip().upper().startswith("DELETE") for query in queries
+        )
+        if ordinal < revisions:
+            assert record["next_claim"]["kind"] == "next_revision"
+            assert record["next_claim"]["measurement_revision"] == ordinal + 1
+    if case_name == "depth":
+        assert [record["overlay_depth"] for record in records] == [*range(17), 0]
+        assert records[16]["ingest_generation"] == 17
+        assert records[17]["ingest_generation"] == 18
+    assert result["final_full_ready_audit"]["diagnostic_counter_check"] == "passed"
+    assert result["final_full_ready_audit_scope"] == (
+        "after_final_cleanup_before_final_claim_probe"
+    )
+    final = result["post_measurement_next_claim"]
+    assert final["ingest_generation"] == expected[-1]
+    assert final["granted"] and final["completed"] and final["state_changed"]
+    assert not final["included_in_revision_costs"]
+    assert (
+        final["cleanup_after_probe"]
+        == final["ready_audit_after_probe"]
+        == "not_checked"
+    )
+    assert records[-1]["next_claim"]["kind"] == "post_measurement_probe"
+    with closing(open_database(config)) as connector:
+        assert inspect_one(
+            connector,
+            "SELECT current_generation, completed_generation, phase "
+            "FROM operational_ingest_coordination_heads WHERE singleton_id = 1",
+        ) == (expected[-1], expected[-1], "READY")

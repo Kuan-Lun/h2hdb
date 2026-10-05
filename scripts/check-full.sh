@@ -24,6 +24,9 @@ run_timed_stage() {
 
 run_timed_stage "fast checks" scripts/check-fast.sh
 run_timed_stage \
+    "database backend collection contracts" \
+    .venv/bin/python -m pytest --collect-only -q -o addopts='' --check-backend-pairs
+run_timed_stage \
     "formal coverage metadata" \
     .venv/bin/python scripts/verify-formal.py coverage --validate-only
 run_timed_stage \

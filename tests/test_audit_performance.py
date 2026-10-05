@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 from vnext_fault_harness import backend_of, open_connector
+from vnext_test_database import database_connector
 
 from h2hdb import CoreConfig, VNextDatabaseAdminFacade
 from h2hdb.config_loader import LoggerConfig
@@ -19,8 +20,8 @@ from h2hdb.operational_refinement import OperationalSemanticValidationError
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_admin import VNextSchemaAdmin
 from h2hdb.schema_epoch import SchemaEpochAdmissionError, SchemaEpochValidationError
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
 from h2hdb.vnext_transaction import VNextUnitOfWork
@@ -203,9 +204,9 @@ def test_real_semantic_corruption_reports_failed_validator_without_message_or_to
 
 @pytest.mark.parametrize("level", ["info", "debug"])
 def test_audit_logging_level_selects_summary_or_validator_details(
-    sqlite_config: CoreConfig, caplog: pytest.LogCaptureFixture, level: str
+    db_config: CoreConfig, caplog: pytest.LogCaptureFixture, level: str
 ) -> None:
-    config = sqlite_config.model_copy(
+    config = db_config.model_copy(
         update={"logger": LoggerConfig.model_validate({"level": level})}
     )
     with closing(VNextDatabaseAdminFacade(config)) as admin:
@@ -234,53 +235,56 @@ class _Clock:
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_actual_validator_delay_is_attributed_and_emitted_only_after_connection_close(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     caplog: pytest.LogCaptureFixture,
     fail: bool,
 ) -> None:
-    with closing(VNextDatabaseAdminFacade(sqlite_config)) as admin:
+    with closing(VNextDatabaseAdminFacade(db_config)) as admin:
         admin.initialize()
-    context = RepositoryContext.from_config(_debug(sqlite_config))
+    context = RepositoryContext.from_config(_debug(db_config))
     clock = _Clock()
-    open_connections: list[SQLiteConnector] = []
+    open_connections: list[SQLConnector] = []
     emitted_while_open: list[logging.LogRecord] = []
     delayed_queries = 0
 
-    class DelayedConnector(SQLiteConnector):
-        def connect(self) -> None:
-            super().connect()
-            open_connections.append(self)
+    def monitored_connector() -> SQLConnector:
+        connector = database_connector(db_config)
+        original_connect = connector.connect
+        original_close = connector.close
+        original_fetch_all = connector.fetch_all
 
-        def close(self) -> None:
-            super().close()
-            open_connections.remove(self)
+        def connect() -> None:
+            original_connect()
+            open_connections.append(connector)
 
-        def fetch_all(
-            self, query: str, data: tuple[Any, ...] = ()
-        ) -> list[tuple[Any, ...]]:
+        def close() -> None:
+            original_close()
+            open_connections.remove(connector)
+
+        def fetch_all(query: str, data: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
             nonlocal delayed_queries
             if "FROM operational_maintenance_gate_heads" in query:
                 clock.now += 2.5
                 delayed_queries += 1
                 if fail:
                     raise RuntimeError("private SQL failure detail")
-            return super().fetch_all(query, data)
+            return original_fetch_all(query, data)
+
+        connector.connect = connect  # type: ignore[method-assign] # Native instance observation.
+        connector.close = close  # type: ignore[method-assign] # Native instance observation.
+        connector.fetch_all = fetch_all  # type: ignore[method-assign] # Native instance observation.
+        return instrument_connector(connector)
 
     class TransactionGuard(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
             if open_connections:
                 emitted_while_open.append(record)
 
-    monitored = replace(
-        context,
-        SQLConnector=lambda: instrument_connector(
-            DelayedConnector(database=sqlite_config.database.database)
-        ),
-    )
+    monitored = replace(context, SQLConnector=monitored_connector)
     schema_admin = VNextSchemaAdmin(monitored)
     schema_admin._performance = DatabasePerformance(
         logging.getLogger(_LOGGER),
-        backend="sqlite",
+        backend=db_config.database.sql_type,
         level=logging.DEBUG,
         clock=clock,
     )
@@ -321,14 +325,15 @@ def test_actual_validator_delay_is_attributed_and_emitted_only_after_connection_
 
 
 def test_building_marker_rejected_before_full_validator_records(
-    sqlite_config: CoreConfig, caplog: pytest.LogCaptureFixture
+    db_config: CoreConfig, caplog: pytest.LogCaptureFixture
 ) -> None:
-    with closing(VNextDatabaseAdminFacade(_debug(sqlite_config))) as admin:
+    with closing(VNextDatabaseAdminFacade(_debug(db_config))) as admin:
         admin.initialize()
-        with closing(open_connector(sqlite_config)) as connector:
-            connector.execute(
-                "UPDATE h2hdb_schema_epoch SET state = 'BUILDING', ready_at = NULL"
-            )
+        with closing(open_connector(db_config)) as connector:
+            with connector.transaction():
+                connector.execute(
+                    "UPDATE h2hdb_schema_epoch SET state = 'BUILDING', ready_at = NULL"
+                )
         caplog.clear()
         with caplog.at_level(logging.DEBUG, logger=_LOGGER):
             with pytest.raises(SchemaEpochAdmissionError, match="not READY"):
@@ -340,7 +345,7 @@ def test_building_marker_rejected_before_full_validator_records(
     assert _phases(records, "readiness_marker")[0]["status"] == "failed"
 
     caplog.clear()
-    with closing(VNextDatabaseAdminFacade(_debug(sqlite_config))) as admin:
+    with closing(VNextDatabaseAdminFacade(_debug(db_config))) as admin:
         with caplog.at_level(logging.DEBUG, logger=_LOGGER):
             resumed = admin.initialize()
     assert resumed.outcome is SchemaProvisioningOutcome.RESUMED
@@ -360,19 +365,17 @@ def test_building_marker_rejected_before_full_validator_records(
 
 
 def test_provider_blocker_reports_failure_before_database_open(
-    sqlite_config: CoreConfig,
+    db_config: CoreConfig,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from pathlib import Path
-
     from h2hdb.vnext_schema_provider import VNextSchemaProviderUnavailableError
 
     def blocked(provider: GeneratedVNextSchemaProvider) -> None:
         raise VNextSchemaProviderUnavailableError("private provider failure detail")
 
     monkeypatch.setattr(GeneratedVNextSchemaProvider, "_require_available", blocked)
-    with closing(VNextDatabaseAdminFacade(_debug(sqlite_config))) as admin:
+    with closing(VNextDatabaseAdminFacade(_debug(db_config))) as admin:
         with caplog.at_level(logging.DEBUG, logger=_LOGGER):
             with pytest.raises(VNextSchemaProviderUnavailableError):
                 admin.check()
@@ -380,5 +383,4 @@ def test_provider_blocker_reports_failure_before_database_open(
     assert _terminal(records)["event"] == "failed"
     assert _terminal(records)["connection_calls"] == 0
     assert _phases(records, "provider_resolution")[0]["status"] == "failed"
-    assert not Path(sqlite_config.database.database).exists()
     assert "private provider failure detail" not in caplog.text

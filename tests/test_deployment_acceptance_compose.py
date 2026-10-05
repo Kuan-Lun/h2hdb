@@ -620,3 +620,89 @@ def test_prepare_copies_wrapper_bytes_and_writes_only_synthetic_configuration(
             images=IMAGES,
             credentials=CREDENTIALS,
         )
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+def test_core_backend_topology_preserves_role_and_read_only_contracts(
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    images = {
+        role: identity
+        for role, identity in IMAGES.items()
+        if role != "mariadb" or backend == "mariadb"
+    }
+    isolated = compose.derive_compose(
+        model(),
+        tmp_path / "fixture",
+        project=PROJECT,
+        images=images,
+        credentials=CREDENTIALS,
+        backend=backend,
+    )
+    assert ("database" in isolated["services"]) is (backend == "mariadb")
+    configs = compose._configurations("debug", None, backend)
+    writer = configs["h2hdb-config.json"]["database"]
+    reader = configs["h2hdb-reader-config.json"]["database"]
+    assert writer["sql_type"] == reader["sql_type"] == backend
+    assert reader["access_mode"] == "read-only"
+    assert configs["h2hdb-ingest.json"]["core"]["database"] == writer
+    assert configs["h2hdb-opds.json"]["core"]["database"] == reader
+    for role, name in compose.SERVICES.items():
+        service = isolated["services"][name]
+        assert service["command"] == model()["services"][name]["command"]
+        assert service["user"] == "65534:65534"
+        volumes = [
+            volume for volume in service["volumes"] if volume["type"] == "volume"
+        ]
+        assert volumes == (
+            [
+                {
+                    "type": "volume",
+                    "source": "database-data",
+                    "target": compose.SQLITE_DIRECTORY,
+                }
+            ]
+            if backend == "sqlite"
+            else []
+        )
+    if backend == "sqlite":
+        assert writer == {"sql_type": "sqlite", "database": compose.SQLITE_DATABASE}
+        assert reader == {**writer, "access_mode": "read-only"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "different-volume",
+        "read-only-volume",
+        "missing-volume",
+        "extra-service",
+        "volume-label",
+    ],
+)
+def test_sqlite_shared_volume_drift_is_rejected(tmp_path: Path, change: str) -> None:
+    isolated = compose.derive_compose(
+        model(),
+        tmp_path / "fixture",
+        project=PROJECT,
+        images={key: value for key, value in IMAGES.items() if key != "mariadb"},
+        credentials=CREDENTIALS,
+        backend="sqlite",
+    )
+    volumes = isolated["services"][compose.SERVICES["opds"]]["volumes"]
+    match change:
+        case "different-volume":
+            volumes[-1]["source"] = "other"
+        case "read-only-volume":
+            volumes[-1]["read_only"] = True
+        case "missing-volume":
+            volumes.pop()
+        case "extra-service":
+            isolated["services"]["database"] = {}
+        case _:
+            isolated["volumes"]["database-data"]["labels"] = {}
+    with pytest.raises(ValueError):
+        compose.validate_isolation(
+            isolated, tmp_path / "fixture", project=PROJECT, backend="sqlite"
+        )

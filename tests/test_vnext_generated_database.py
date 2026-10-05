@@ -3,29 +3,29 @@ from __future__ import annotations
 from itertools import groupby
 from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import Mock
+from unittest.mock import MagicMock
 
 import pytest
-import test_vnext_catalog_reader_mariadb as mariadb_reader_tests
+import vnext_test_database as native_fixture
 from vnext_generated_database import open_generated_sqlite_database
 
 from h2hdb import CoreConfig
 from h2hdb._generated_vnext_schema import ARTIFACT
-from h2hdb.mariadb_connector import MariaDBConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_schema_provider import GeneratedVNextSchemaProvider
 
 
-def test_generated_mariadb_reader_fixture_batches_every_fact_in_exact_order(
+@pytest.mark.parametrize("backend", ("sqlite", "mariadb"))
+def test_generated_native_fixture_batches_every_fact_in_exact_order(
     monkeypatch: pytest.MonkeyPatch,
+    backend: str,
 ) -> None:
-    connector = Mock(spec=MariaDBConnector)
-    monkeypatch.setattr(
-        mariadb_reader_tests, "MariaDBConnector", Mock(return_value=connector)
-    )
-    assert mariadb_reader_tests._generated_mariadb(CoreConfig()) is connector
-    connector.connect.assert_called_once_with()
-    payload: Any = ARTIFACT["backends"]["mariadb"]
+    connector = MagicMock(spec=SQLConnector)
+    monkeypatch.setattr(native_fixture, "open_database", lambda _config: connector)
+    monkeypatch.setattr(native_fixture, "connector_backend", lambda _connector: backend)
+    assert native_fixture.open_generated_database(CoreConfig()) is connector
+    payload: Any = ARTIFACT["backends"][backend]
     assert [call.args for call in connector.execute.call_args_list] == [
         (sql,)
         for _slice_id, statements in payload["slices"]
@@ -89,6 +89,10 @@ class _FailingBatchConnector(SQLiteConnector):
         super().close()
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite transactional DDL must roll back schema creation; MariaDB DDL commits implicitly",
+)
 def test_generated_sqlite_setup_is_one_exact_batched_transaction(
     tmp_path: Path,
 ) -> None:
@@ -123,6 +127,10 @@ def test_generated_sqlite_setup_is_one_exact_batched_transaction(
         connector.close()
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite transactional DDL must roll back schema creation; MariaDB DDL commits implicitly",
+)
 def test_generated_sqlite_setup_rolls_back_and_closes_on_batch_failure(
     tmp_path: Path,
 ) -> None:

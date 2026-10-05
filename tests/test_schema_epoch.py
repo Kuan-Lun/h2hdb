@@ -6,12 +6,27 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    fixture_transaction,
+    inspect_all,
+    inspect_one,
+    open_database,
+)
 
-from h2hdb.domain import SchemaProvisioningOutcome
+from h2hdb import CoreConfig, DatabaseAccessMode
+from h2hdb.domain import (
+    SchemaEpochReport,
+    SchemaProvisioningOutcome,
+    SchemaProvisioningReport,
+)
 from h2hdb.schema_epoch import (
     SCHEMA_EPOCH_CONTROL_TABLE,
+    MariaDBSchemaEpochCatalog,
     SchemaCreateStatement,
     SchemaEpochAdmissionError,
     SchemaEpochDefinition,
@@ -23,10 +38,12 @@ from h2hdb.schema_epoch import (
     SchemaSemanticValidationPhase,
     SchemaSlice,
     SQLiteSchemaEpochCatalog,
+    run_mariadb_schema_epoch,
     run_sqlite_schema_epoch,
+    validate_mariadb_schema_epoch,
     validate_sqlite_schema_epoch,
 )
-from h2hdb.sql_connector import SQLConnector
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 
 DDL_MANIFEST = "11" * 32
@@ -124,6 +141,7 @@ def test_prior_schema_definition_is_rejected_without_compatibility_path(
 @dataclass
 class FakeProvider:
     definition: SchemaEpochDefinition
+    backend: str = "sqlite"
     semantic_result: Sequence[str] | None = None
     semantic_error: Exception | None = None
     global_error: Exception | None = None
@@ -142,31 +160,51 @@ class FakeProvider:
             raise self.slice_error
         match schema_slice.slice_id:
             case "identity":
-                assert _table_columns(connector, PARENT.name) == (
+                assert _table_columns(connector, PARENT.name, backend=self.backend) == (
                     ("parent_id", "INTEGER", 1, 1),
                     ("payload", "BLOB", 1, 0),
                     ("payload_version", "INTEGER", 1, 0),
                 )
             case "membership":
-                assert _table_columns(connector, CHILD.name) == (
+                assert _table_columns(connector, CHILD.name, backend=self.backend) == (
                     ("child_id", "INTEGER", 1, 1),
                     ("parent_id", "INTEGER", 1, 0),
                     ("digest", "BLOB", 1, 0),
                 )
-                indexes = connector.fetch_all("PRAGMA index_list(vnext_epoch_children)")
-                assert CHILD_INDEX.name in {str(row[1]) for row in indexes}
+                if self.backend == "sqlite":
+                    indexes = connector.fetch_all(
+                        "PRAGMA index_list(vnext_epoch_children)"
+                    )
+                    assert CHILD_INDEX.name in {str(row[1]) for row in indexes}
+                else:
+                    indexes = connector.fetch_all(
+                        "SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vnext_epoch_children'"
+                    )
+                    assert CHILD_INDEX.name in {str(row[0]) for row in indexes}
             case _:  # pragma: no cover - protects future fake-provider edits
                 raise AssertionError(f"Unknown test slice: {schema_slice.slice_id}")
 
     def validate_global(self, connector: SQLConnector) -> None:
         if self.global_error is not None:
             raise self.global_error
-        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        if self.backend == "sqlite":
+            assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        else:
+            assert (
+                connector.fetch_all(
+                    "SELECT child.child_id FROM vnext_epoch_children AS child LEFT JOIN vnext_epoch_parents AS parent ON child.parent_id = parent.parent_id WHERE parent.parent_id IS NULL"
+                )
+                == []
+            )
         assert connector.fetch_one("SELECT COUNT(*) FROM h2hdb_schema_epoch") == (1,)
-        assert connector.fetch_one(
-            "SELECT typeof(manifest_sha256), length(manifest_sha256) "
-            "FROM h2hdb_schema_epoch WHERE singleton_id = 1"
-        ) == ("blob", 32)
+        if self.backend == "sqlite":
+            assert connector.fetch_one(
+                "SELECT typeof(manifest_sha256), length(manifest_sha256) FROM h2hdb_schema_epoch WHERE singleton_id = 1"
+            ) == ("blob", 32)
+        else:
+            assert connector.fetch_one(
+                "SELECT OCTET_LENGTH(manifest_sha256) FROM h2hdb_schema_epoch WHERE singleton_id = 1"
+            ) == (32,)
 
     def validate_bootstrap_seeds(self, connector: SQLConnector) -> Sequence[str]:
         if self.seed_error is not None:
@@ -208,48 +246,165 @@ class FakeProvider:
 
 
 def _table_columns(
-    connector: SQLConnector, table_name: str
+    connector: SQLConnector, table_name: str, *, backend: str | None = None
 ) -> tuple[tuple[str, str, int, int], ...]:
+    backend = backend or connector_backend(connector)
+    if backend == "sqlite":
+        return tuple(
+            (str(name), str(column_type), int(not_null), int(primary_key))
+            for _, name, column_type, not_null, _, primary_key in inspect_all(
+                connector, f"PRAGMA table_info({table_name})"
+            )
+        )
     return tuple(
-        (str(name), str(column_type), int(not_null), int(primary_key))
-        for _, name, column_type, not_null, _, primary_key in connector.fetch_all(
-            f"PRAGMA table_info({table_name})"
+        (
+            str(name),
+            "INTEGER"
+            if str(column_type).lower() == "int"
+            else str(column_type).upper(),
+            int(nullable == "NO"),
+            int(key == "PRI"),
+        )
+        for name, column_type, nullable, key in inspect_all(
+            connector,
+            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
+            (table_name,),
         )
     )
 
 
-def _connected(database: Path) -> SQLiteConnector:
-    connector = SQLiteConnector(str(database))
-    connector.connect()
-    return connector
+def _connected(config: CoreConfig) -> SQLConnector:
+    return open_database(config)
+
+
+def _catalog(
+    connector: SQLConnector,
+) -> SQLiteSchemaEpochCatalog | MariaDBSchemaEpochCatalog:
+    return (
+        SQLiteSchemaEpochCatalog()
+        if connector_backend(connector) == "sqlite"
+        else MariaDBSchemaEpochCatalog()
+    )
+
+
+def _native_definition(
+    definition: SchemaEpochDefinition, backend: str
+) -> SchemaEpochDefinition:
+    if backend == "sqlite":
+        return definition
+    parent = replace(
+        PARENT_STATEMENT,
+        sql="CREATE TABLE IF NOT EXISTS vnext_epoch_parents (parent_id INTEGER NOT NULL PRIMARY KEY, payload BLOB NOT NULL, payload_version INTEGER NOT NULL CHECK (payload_version = 1)) ENGINE=InnoDB",
+    )
+    child = replace(
+        CHILD_STATEMENT,
+        sql="CREATE TABLE IF NOT EXISTS vnext_epoch_children (child_id INTEGER NOT NULL PRIMARY KEY, parent_id INTEGER NOT NULL, digest BLOB NOT NULL CHECK (OCTET_LENGTH(digest) = 32), KEY vnext_epoch_children_parent_idx (parent_id, child_id), FOREIGN KEY (parent_id) REFERENCES vnext_epoch_parents (parent_id)) ENGINE=InnoDB",
+    )
+    return replace(
+        definition,
+        expected_objects=frozenset({PARENT, CHILD}),
+        slices=(
+            SchemaSlice("identity", (parent,)),
+            SchemaSlice("membership", (child,)),
+        ),
+        bootstrap_seeds=tuple(
+            replace(
+                seed,
+                sql=seed.sql.replace(
+                    "ON CONFLICT(parent_id) DO NOTHING",
+                    "ON DUPLICATE KEY UPDATE parent_id = parent_id",
+                ),
+            )
+            for seed in definition.bootstrap_seeds
+        ),
+    )
+
+
+def _native_provider(connector: SQLConnector, provider: FakeProvider) -> FakeProvider:
+    backend = connector_backend(connector)
+    return replace(
+        provider,
+        definition=_native_definition(provider.definition, backend),
+        backend=backend,
+    )
+
+
+def _run_schema_epoch(
+    connector: SQLConnector,
+    provider: FakeProvider,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> SchemaProvisioningReport:
+    function = (
+        run_sqlite_schema_epoch
+        if connector_backend(connector) == "sqlite"
+        else run_mariadb_schema_epoch
+    )
+    return function(connector, _native_provider(connector, provider), clock=clock)
+
+
+def _validate_schema_epoch(
+    connector: SQLConnector, provider: FakeProvider
+) -> SchemaEpochReport:
+    function = (
+        validate_sqlite_schema_epoch
+        if connector_backend(connector) == "sqlite"
+        else validate_mariadb_schema_epoch
+    )
+    return function(connector, _native_provider(connector, provider))
+
+
+def _assert_no_open_transaction(connector: SQLConnector) -> None:
+    assert not getattr(connector, "connection").in_transaction
+    if connector_backend(connector) == "mariadb":
+        assert not getattr(connector, "_in_transaction")
+
+
+def _assert_unpublished(connector: SQLConnector) -> None:
+    if connector_backend(connector) == "sqlite":
+        assert _catalog(connector).list_objects(connector) == frozenset()
+    else:
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
+            "BUILDING",
+        )
 
 
 def _initialize_building(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     definition: SchemaEpochDefinition,
     *,
     completed_statement_count: int = 0,
 ) -> None:
+    definition = _native_definition(definition, connector_backend(connector))
     statements = [
         statement
         for schema_slice in definition.slices
         for statement in schema_slice.statements
     ]
-    with connector.transaction():
-        SQLiteSchemaEpochCatalog().create_control_table(connector)
+
+    def control() -> None:
+        _catalog(connector).create_control_table(connector)
+
+    def marker() -> None:
         connector.execute(
-            """
-            INSERT INTO h2hdb_schema_epoch (
-                singleton_id, epoch, schema_version, state,
-                manifest_sha256, started_at, ready_at
-            ) VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)
-            """,
+            "INSERT INTO h2hdb_schema_epoch (singleton_id, epoch, schema_version, state, manifest_sha256, started_at, ready_at) VALUES (1, %s, %s, 'BUILDING', %s, 1, NULL)",
             (
                 definition.epoch,
                 definition.schema_version,
                 bytes.fromhex(definition.manifest_sha256),
             ),
         )
+
+    if connector_backend(connector) == "sqlite":
+        with connector.transaction():
+            control()
+            marker()
+            for statement in statements[:completed_statement_count]:
+                connector.execute(statement.sql)
+    else:
+        control()
+        with connector.transaction():
+            marker()
         for statement in statements[:completed_statement_count]:
             connector.execute(statement.sql)
 
@@ -282,25 +437,17 @@ class FaultAtProviderStatementConnector(SQLiteConnector):
             raise RuntimeError(f"fault at provider statement {self._fail_at}")
 
 
-class NoOpReadyCASConnector(SQLiteConnector):
-    def execute(self, query: str, data: tuple[object, ...] = ()) -> None:
-        if (
-            query.lstrip().upper().startswith("UPDATE H2HDB_SCHEMA_EPOCH")
-            and "SET state = 'READY'" in query
-        ):
-            return
-        super().execute(query, data)
-
-
 def test_empty_database_builds_and_ready_rerun_only_probes_marker(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    database = tmp_path / "epoch.sqlite3"
+    database = database_factory.config()
     connector = _connected(database)
     provider = FakeProvider(_definition())
     try:
-        first = run_sqlite_schema_epoch(connector, provider, clock=lambda: NOW)
-        second = run_sqlite_schema_epoch(connector, provider, clock=lambda: NOW)
+        first = _run_schema_epoch(connector, provider, clock=lambda: NOW)
+        _assert_no_open_transaction(connector)
+        second = _run_schema_epoch(connector, provider, clock=lambda: NOW)
+        _assert_no_open_transaction(connector)
     finally:
         connector.close()
 
@@ -325,15 +472,16 @@ def test_empty_database_builds_and_ready_rerun_only_probes_marker(
     ],
 )
 def test_nonempty_database_is_rejected_without_drop_or_adoption(
-    tmp_path: Path, legacy_ddl: str
+    database_factory: DatabaseFactory, legacy_ddl: str
 ) -> None:
-    database = tmp_path / "nonempty.sqlite3"
+    database = database_factory.config()
     connector = _connected(database)
-    connector.execute(legacy_ddl)
+    with fixture_transaction(connector):
+        connector.execute(legacy_ddl)
     try:
         with pytest.raises(SchemaEpochAdmissionError, match="truly empty"):
-            run_sqlite_schema_epoch(connector, FakeProvider(_definition()))
-        objects = SQLiteSchemaEpochCatalog().list_objects(connector)
+            _run_schema_epoch(connector, FakeProvider(_definition()))
+        objects = _catalog(connector).list_objects(connector)
     finally:
         connector.close()
 
@@ -343,15 +491,18 @@ def test_nonempty_database_is_rejected_without_drop_or_adoption(
     assert objects
 
 
-def test_control_table_with_wrong_shape_is_rejected(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "wrong-control.sqlite3")
-    connector.execute(
-        "CREATE TABLE h2hdb_schema_epoch (singleton_id INTEGER PRIMARY KEY)"
-    )
+def test_control_table_with_wrong_shape_is_rejected(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
+    with fixture_transaction(connector):
+        connector.execute(
+            "CREATE TABLE h2hdb_schema_epoch (singleton_id INTEGER PRIMARY KEY)"
+        )
     try:
         with pytest.raises(SchemaEpochValidationError, match="wrong shape"):
-            run_sqlite_schema_epoch(connector, FakeProvider(_definition()))
-        columns = connector.fetch_all("PRAGMA table_info(h2hdb_schema_epoch)")
+            _run_schema_epoch(connector, FakeProvider(_definition()))
+        columns = _table_columns(connector, "h2hdb_schema_epoch")
     finally:
         connector.close()
 
@@ -360,9 +511,9 @@ def test_control_table_with_wrong_shape_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("completed_statement_count", [0, 1, 2, 3])
 def test_committed_partial_build_resumes_from_slice_one(
-    tmp_path: Path, completed_statement_count: int
+    database_factory: DatabaseFactory, completed_statement_count: int
 ) -> None:
-    connector = _connected(tmp_path / f"partial-{completed_statement_count}.sqlite3")
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(
         connector,
@@ -375,7 +526,13 @@ def test_committed_partial_build_resumes_from_slice_one(
         slice_hook=lambda schema_slice: visited_slices.append(schema_slice.slice_id),
     )
     try:
-        report = run_sqlite_schema_epoch(connector, provider, clock=lambda: NOW)
+        report = _run_schema_epoch(connector, provider, clock=lambda: NOW)
+        _assert_no_open_transaction(connector)
+        assert (
+            _run_schema_epoch(connector, provider).outcome
+            is SchemaProvisioningOutcome.ALREADY_READY
+        )
+        _assert_no_open_transaction(connector)
     finally:
         connector.close()
 
@@ -384,6 +541,10 @@ def test_committed_partial_build_resumes_from_slice_one(
     assert report.activation_audit is not None
 
 
+@pytest.mark.backend_specific(
+    backend="sqlite",
+    reason="SQLite transactional DDL rolls every provider statement back; MariaDB committed-DDL recovery is a separate native contract",
+)
 @pytest.mark.parametrize("fail_at", [1, 2, 3, 4])
 def test_each_provider_statement_fault_rolls_back_and_rerun_converges(
     tmp_path: Path, fail_at: int
@@ -394,25 +555,32 @@ def test_each_provider_statement_fault_rolls_back_and_rerun_converges(
     provider = FakeProvider(_definition())
     try:
         with pytest.raises(RuntimeError, match=f"statement {fail_at}"):
-            run_sqlite_schema_epoch(connector, provider, clock=lambda: NOW)
-        assert SQLiteSchemaEpochCatalog().list_objects(connector) == frozenset()
-        report = run_sqlite_schema_epoch(connector, provider, clock=lambda: NOW)
+            _run_schema_epoch(connector, provider, clock=lambda: NOW)
+        _assert_unpublished(connector)
+        report = _run_schema_epoch(connector, provider, clock=lambda: NOW)
     finally:
         connector.close()
 
     assert report.state == "READY"
 
 
-def test_existing_same_name_wrong_shape_fails_slice_validation(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "wrong-provider-shape.sqlite3")
+def test_existing_same_name_wrong_shape_fails_slice_validation(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition)
-    connector.execute("CREATE TABLE vnext_epoch_parents (parent_id TEXT PRIMARY KEY)")
+    with fixture_transaction(connector):
+        connector.execute(
+            "CREATE TABLE vnext_epoch_parents (parent_id INTEGER PRIMARY KEY)"
+        )
     try:
         with pytest.raises(AssertionError):
-            run_sqlite_schema_epoch(connector, FakeProvider(definition))
-        assert _table_columns(connector, PARENT.name) == (("parent_id", "TEXT", 0, 1),)
-        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+            _run_schema_epoch(connector, FakeProvider(definition))
+        assert _table_columns(connector, PARENT.name) == (
+            ("parent_id", "INTEGER", int(connector_backend(connector) == "mariadb"), 1),
+        )
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
             "BUILDING",
         )
     finally:
@@ -420,8 +588,10 @@ def test_existing_same_name_wrong_shape_fails_slice_validation(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("field", ["epoch", "schema_version", "manifest_sha256"])
-def test_building_identity_drift_is_rejected(tmp_path: Path, field: str) -> None:
-    connector = _connected(tmp_path / f"building-drift-{field}.sqlite3")
+def test_building_identity_drift_is_rejected(
+    database_factory: DatabaseFactory, field: str
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition)
     updates: dict[str, object] = {
@@ -429,13 +599,14 @@ def test_building_identity_drift_is_rejected(tmp_path: Path, field: str) -> None
         "schema_version": 1,
         "manifest_sha256": b"x" * 32,
     }
-    connector.execute(
-        f"UPDATE h2hdb_schema_epoch SET {field} = %s WHERE singleton_id = 1",
-        (updates[field],),
-    )
+    with fixture_transaction(connector):
+        connector.execute(
+            f"UPDATE h2hdb_schema_epoch SET {field} = %s WHERE singleton_id = 1",
+            (updates[field],),
+        )
     try:
         with pytest.raises(SchemaEpochDriftError):
-            run_sqlite_schema_epoch(connector, FakeProvider(definition))
+            _run_schema_epoch(connector, FakeProvider(definition))
     finally:
         connector.close()
 
@@ -472,13 +643,13 @@ def test_building_identity_drift_is_rejected(tmp_path: Path, field: str) -> None
     ],
 )
 def test_ready_rejects_ddl_or_obligation_manifest_drift(
-    tmp_path: Path, provider: FakeProvider
+    database_factory: DatabaseFactory, provider: FakeProvider
 ) -> None:
-    connector = _connected(tmp_path / "ready-manifest-drift.sqlite3")
+    connector = _connected(database_factory.config())
     try:
-        run_sqlite_schema_epoch(connector, FakeProvider(_definition()))
+        _run_schema_epoch(connector, FakeProvider(_definition()))
         with pytest.raises(SchemaEpochDriftError, match="manifest"):
-            run_sqlite_schema_epoch(connector, provider)
+            _run_schema_epoch(connector, provider)
     finally:
         connector.close()
 
@@ -488,45 +659,66 @@ def test_ready_rejects_ddl_or_obligation_manifest_drift(
     [("epoch", 4), ("schema_version", 1), ("manifest_sha256", b"z" * 32)],
 )
 def test_ready_control_identity_drift_is_rejected(
-    tmp_path: Path, field: str, value: object
+    database_factory: DatabaseFactory, field: str, value: object
 ) -> None:
-    connector = _connected(tmp_path / f"ready-control-drift-{field}.sqlite3")
+    connector = _connected(database_factory.config())
     provider = FakeProvider(_definition())
     try:
-        run_sqlite_schema_epoch(connector, provider)
-        connector.execute(
-            f"UPDATE h2hdb_schema_epoch SET {field} = %s WHERE singleton_id = 1",
-            (value,),
-        )
+        _run_schema_epoch(connector, provider)
+        with fixture_transaction(connector):
+            connector.execute(
+                f"UPDATE h2hdb_schema_epoch SET {field} = %s WHERE singleton_id = 1",
+                (value,),
+            )
         with pytest.raises(SchemaEpochDriftError):
-            run_sqlite_schema_epoch(connector, provider)
+            _run_schema_epoch(connector, provider)
     finally:
         connector.close()
 
 
-def test_ready_missing_or_extra_object_is_rejected(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "ready-object-drift.sqlite3")
+def test_ready_missing_or_extra_object_is_rejected(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     provider = FakeProvider(_definition())
     try:
-        run_sqlite_schema_epoch(connector, provider)
-        connector.execute("DROP INDEX vnext_epoch_children_parent_idx")
-        assert run_sqlite_schema_epoch(connector, provider).activation_audit is None
+        _run_schema_epoch(connector, provider)
+        with fixture_transaction(connector):
+            connector.execute(
+                "DROP INDEX vnext_epoch_children_parent_idx"
+                if connector_backend(connector) == "sqlite"
+                else "DROP TABLE vnext_epoch_children"
+            )
+        assert _run_schema_epoch(connector, provider).activation_audit is None
         with (
             connector.read_transaction(),
             pytest.raises(SchemaEpochValidationError, match="missing"),
         ):
-            validate_sqlite_schema_epoch(connector, provider)
+            _validate_schema_epoch(connector, provider)
 
-        connector.execute(INDEX_STATEMENT.sql)
-        connector.execute(
-            "CREATE INDEX unexpected_idx ON vnext_epoch_parents (payload)"
-        )
-        assert run_sqlite_schema_epoch(connector, provider).activation_audit is None
+        if connector_backend(connector) == "sqlite":
+            with fixture_transaction(connector):
+                connector.execute(INDEX_STATEMENT.sql)
+            with fixture_transaction(connector):
+                connector.execute(
+                    "CREATE INDEX unexpected_idx ON vnext_epoch_parents (payload)"
+                )
+        else:
+            with fixture_transaction(connector):
+                connector.execute(
+                    _native_definition(provider.definition, "mariadb")
+                    .slices[1]
+                    .statements[0]
+                    .sql
+                )
+            with fixture_transaction(connector):
+                connector.execute("CREATE TABLE unexpected_table (value INTEGER)")
+        assert _run_schema_epoch(connector, provider).activation_audit is None
         with (
             connector.read_transaction(),
             pytest.raises(SchemaEpochAdmissionError, match="outside"),
         ):
-            validate_sqlite_schema_epoch(connector, provider)
+            _validate_schema_epoch(connector, provider)
     finally:
         connector.close()
 
@@ -547,18 +739,18 @@ def test_ready_missing_or_extra_object_is_rejected(tmp_path: Path) -> None:
     ],
 )
 def test_semantic_validator_must_report_exact_ordered_obligation_manifest(
-    tmp_path: Path, semantic_result: tuple[str, ...], match: str
+    database_factory: DatabaseFactory, semantic_result: tuple[str, ...], match: str
 ) -> None:
-    connector = _connected(tmp_path / "semantic-id-drift.sqlite3")
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition)
     try:
         with pytest.raises(SchemaEpochValidationError, match=match):
-            run_sqlite_schema_epoch(
+            _run_schema_epoch(
                 connector,
                 FakeProvider(definition, semantic_result=semantic_result),
             )
-        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
             "BUILDING",
         )
     finally:
@@ -566,55 +758,65 @@ def test_semantic_validator_must_report_exact_ordered_obligation_manifest(
 
 
 def test_bootstrap_validator_must_report_exact_ordered_seed_manifest(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = _connected(tmp_path / "seed-id-drift.sqlite3")
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition)
     try:
         with pytest.raises(SchemaEpochValidationError, match="reported seed IDs"):
-            run_sqlite_schema_epoch(
+            _run_schema_epoch(
                 connector,
                 FakeProvider(definition, seed_result=("forged-seed",)),
             )
-        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
             "BUILDING",
         )
     finally:
         connector.close()
 
 
-def test_conflicting_bootstrap_row_is_never_adopted(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "seed-collision.sqlite3")
+def test_conflicting_bootstrap_row_is_never_adopted(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition, completed_statement_count=3)
-    connector.execute(
-        "INSERT INTO vnext_epoch_parents "
-        "(parent_id, payload, payload_version) VALUES (0, %s, 1)",
-        (b"x" * 32,),
-    )
+    with fixture_transaction(connector):
+        connector.execute(
+            "INSERT INTO vnext_epoch_parents "
+            "(parent_id, payload, payload_version) VALUES (0, %s, 1)",
+            (b"x" * 32,),
+        )
     try:
         with pytest.raises(SchemaEpochValidationError, match="differs"):
-            run_sqlite_schema_epoch(connector, FakeProvider(definition))
-        assert connector.fetch_one(
-            "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
+            _run_schema_epoch(connector, FakeProvider(definition))
+        assert inspect_one(
+            connector, "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
         ) == (b"x" * 32,)
-        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
             "BUILDING",
         )
     finally:
         connector.close()
 
 
-def test_committed_bootstrap_seed_replays_exactly_once(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "seed-response-loss.sqlite3")
+def test_committed_bootstrap_seed_replays_exactly_once(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition, completed_statement_count=3)
-    connector.execute(PARENT_SEED.sql, PARENT_SEED.parameters)
+    seed = _native_definition(definition, connector_backend(connector)).bootstrap_seeds[
+        0
+    ]
+    with fixture_transaction(connector):
+        connector.execute(seed.sql, seed.parameters)
     try:
-        report = run_sqlite_schema_epoch(connector, FakeProvider(definition))
-        rows = connector.fetch_all(
-            "SELECT parent_id, payload, payload_version FROM vnext_epoch_parents"
+        report = _run_schema_epoch(connector, FakeProvider(definition))
+        rows = inspect_all(
+            connector,
+            "SELECT parent_id, payload, payload_version FROM vnext_epoch_parents",
         )
     finally:
         connector.close()
@@ -629,20 +831,21 @@ def test_committed_bootstrap_seed_replays_exactly_once(tmp_path: Path) -> None:
 
 
 def test_ready_validation_does_not_require_mutable_seed_row_to_stay_at_genesis(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = _connected(tmp_path / "mutable-seed-after-ready.sqlite3")
+    connector = _connected(database_factory.config())
     provider = FakeProvider(_definition())
     try:
-        run_sqlite_schema_epoch(connector, provider)
-        connector.execute(
-            "UPDATE vnext_epoch_parents SET payload = %s WHERE parent_id = 0",
-            (b"m" * 32,),
-        )
+        _run_schema_epoch(connector, provider)
+        with fixture_transaction(connector):
+            connector.execute(
+                "UPDATE vnext_epoch_parents SET payload = %s WHERE parent_id = 0",
+                (b"m" * 32,),
+            )
         with connector.read_transaction():
-            report = validate_sqlite_schema_epoch(connector, provider)
-        current = connector.fetch_one(
-            "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
+            report = _validate_schema_epoch(connector, provider)
+        current = inspect_one(
+            connector, "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
         )
     finally:
         connector.close()
@@ -653,15 +856,15 @@ def test_ready_validation_does_not_require_mutable_seed_row_to_stay_at_genesis(
 
 
 def test_explicit_ready_audit_uses_only_recurring_semantic_obligations(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    connector = _connected(tmp_path / "semantic-validation-lifecycle.sqlite3")
+    connector = _connected(database_factory.config())
     provider = FakeProvider(_definition())
     try:
-        first = run_sqlite_schema_epoch(connector, provider)
-        assert run_sqlite_schema_epoch(connector, provider).activation_audit is None
+        first = _run_schema_epoch(connector, provider)
+        assert _run_schema_epoch(connector, provider).activation_audit is None
         with connector.read_transaction():
-            second = validate_sqlite_schema_epoch(connector, provider)
+            second = _validate_schema_epoch(connector, provider)
     finally:
         connector.close()
 
@@ -681,11 +884,17 @@ def test_explicit_ready_audit_uses_only_recurring_semantic_obligations(
     ]
 
 
-def test_semantic_validator_cannot_mutate_bootstrap_rows(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "seed-validator-mutation.sqlite3")
+def test_semantic_validator_cannot_mutate_bootstrap_rows(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition, completed_statement_count=3)
-    connector.execute(PARENT_SEED.sql, PARENT_SEED.parameters)
+    seed = _native_definition(definition, connector_backend(connector)).bootstrap_seeds[
+        0
+    ]
+    with fixture_transaction(connector):
+        connector.execute(seed.sql, seed.parameters)
 
     class MutatingProvider(FakeProvider):
         def validate_semantics(
@@ -693,10 +902,11 @@ def test_semantic_validator_cannot_mutate_bootstrap_rows(tmp_path: Path) -> None
             connector: SQLConnector,
             phase: SchemaSemanticValidationPhase,
         ) -> Sequence[str]:
-            connector.execute(
-                "UPDATE vnext_epoch_parents SET payload = %s WHERE parent_id = 0",
-                (b"z" * 32,),
-            )
+            with fixture_transaction(connector):
+                connector.execute(
+                    "UPDATE vnext_epoch_parents SET payload = %s WHERE parent_id = 0",
+                    (b"z" * 32,),
+                )
             return (
                 self.definition.activation_semantic_obligation_ids
                 if phase is SchemaSemanticValidationPhase.ACTIVATION
@@ -705,9 +915,9 @@ def test_semantic_validator_cannot_mutate_bootstrap_rows(tmp_path: Path) -> None
 
     try:
         with pytest.raises(SchemaEpochValidationError, match="read-only"):
-            run_sqlite_schema_epoch(connector, MutatingProvider(definition))
-        assert connector.fetch_one(
-            "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
+            _run_schema_epoch(connector, MutatingProvider(definition))
+        assert inspect_one(
+            connector, "SELECT payload FROM vnext_epoch_parents WHERE parent_id = 0"
         ) == (b"\x00" * 32,)
     finally:
         connector.close()
@@ -715,9 +925,9 @@ def test_semantic_validator_cannot_mutate_bootstrap_rows(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("validator", ["slice", "global", "semantic"])
 def test_validator_failure_never_publishes_ready(
-    tmp_path: Path, validator: str
+    database_factory: DatabaseFactory, validator: str
 ) -> None:
-    connector = _connected(tmp_path / f"validator-{validator}.sqlite3")
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition)
     error = RuntimeError(f"{validator} validator failed")
@@ -729,16 +939,21 @@ def test_validator_failure_never_publishes_ready(
     )
     try:
         with pytest.raises(RuntimeError, match=f"{validator} validator failed"):
-            run_sqlite_schema_epoch(connector, provider)
-        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+            _run_schema_epoch(connector, provider)
+        _assert_no_open_transaction(connector)
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
             "BUILDING",
         )
+        assert _run_schema_epoch(connector, FakeProvider(definition)).state == "READY"
+        _assert_no_open_transaction(connector)
     finally:
         connector.close()
 
 
-def test_semantic_validator_cannot_create_schema_objects(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "validator-side-effect.sqlite3")
+def test_semantic_validator_cannot_create_schema_objects(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
 
     class SideEffectProvider(FakeProvider):
@@ -747,7 +962,8 @@ def test_semantic_validator_cannot_create_schema_objects(tmp_path: Path) -> None
             connector: SQLConnector,
             phase: SchemaSemanticValidationPhase,
         ) -> Sequence[str]:
-            connector.execute("CREATE TABLE validator_side_effect (value INTEGER)")
+            with fixture_transaction(connector):
+                connector.execute("CREATE TABLE validator_side_effect (value INTEGER)")
             return (
                 self.definition.activation_semantic_obligation_ids
                 if phase is SchemaSemanticValidationPhase.ACTIVATION
@@ -756,14 +972,16 @@ def test_semantic_validator_cannot_create_schema_objects(tmp_path: Path) -> None
 
     try:
         with pytest.raises(SchemaEpochValidationError, match="read-only"):
-            run_sqlite_schema_epoch(connector, SideEffectProvider(definition))
-        assert SQLiteSchemaEpochCatalog().list_objects(connector) == frozenset()
+            _run_schema_epoch(connector, SideEffectProvider(definition))
+        _assert_unpublished(connector)
     finally:
         connector.close()
 
 
-def test_semantic_validator_accepts_one_read_only_cte(tmp_path: Path) -> None:
-    connector = _connected(tmp_path / "validator-read-only-cte.sqlite3")
+def test_semantic_validator_accepts_one_read_only_cte(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
     definition = _definition()
 
     class ReadOnlyCTEProvider(FakeProvider):
@@ -787,7 +1005,7 @@ def test_semantic_validator_accepts_one_read_only_cte(tmp_path: Path) -> None:
             )
 
     try:
-        report = run_sqlite_schema_epoch(connector, ReadOnlyCTEProvider(definition))
+        report = _run_schema_epoch(connector, ReadOnlyCTEProvider(definition))
         assert report.state == "READY"
     finally:
         connector.close()
@@ -812,10 +1030,10 @@ def test_semantic_validator_accepts_one_read_only_cte(tmp_path: Path) -> None:
     ],
 )
 def test_semantic_validator_fetch_cannot_smuggle_side_effects(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
     query: str,
 ) -> None:
-    connector = _connected(tmp_path / "validator-fetch-side-effect.sqlite3")
+    connector = _connected(database_factory.config())
     definition = _definition()
 
     class SideEffectProvider(FakeProvider):
@@ -833,28 +1051,38 @@ def test_semantic_validator_fetch_cannot_smuggle_side_effects(
 
     try:
         with pytest.raises(SchemaEpochValidationError, match="read-only"):
-            run_sqlite_schema_epoch(connector, SideEffectProvider(definition))
-        assert SQLiteSchemaEpochCatalog().list_objects(connector) == frozenset()
+            _run_schema_epoch(connector, SideEffectProvider(definition))
+        _assert_unpublished(connector)
     finally:
         connector.close()
 
 
-def test_failed_compare_and_set_is_detected(tmp_path: Path) -> None:
-    database = tmp_path / "cas.sqlite3"
-    connector = NoOpReadyCASConnector(str(database))
-    connector.connect()
+def test_failed_compare_and_set_is_detected(database_factory: DatabaseFactory) -> None:
+    database = database_factory.config()
+    connector = _connected(database)
+    original_execute = connector.execute
+
+    def execute(query: str, data: tuple[Any, ...] = ()) -> None:
+        if (
+            query.lstrip().upper().startswith("UPDATE H2HDB_SCHEMA_EPOCH")
+            and "SET state = 'READY'" in query
+        ):
+            return
+        original_execute(query, data)
+
+    connector.execute = execute  # type: ignore[method-assign] # Inject exact native CAS response loss.
     try:
         with pytest.raises(SchemaEpochValidationError, match="compare-and-set"):
-            run_sqlite_schema_epoch(connector, FakeProvider(_definition()))
-        assert SQLiteSchemaEpochCatalog().list_objects(connector) == frozenset()
+            _run_schema_epoch(connector, FakeProvider(_definition()))
+        _assert_unpublished(connector)
     finally:
         connector.close()
 
 
 def test_two_sqlite_runners_serialize_and_second_revalidates_ready(
-    tmp_path: Path,
+    database_factory: DatabaseFactory,
 ) -> None:
-    database = tmp_path / "concurrent.sqlite3"
+    database = database_factory.config()
     first_inside_slice = threading.Event()
     release_first = threading.Event()
     second_finished = threading.Event()
@@ -870,7 +1098,7 @@ def test_two_sqlite_runners_serialize_and_second_revalidates_ready(
     def run_first() -> None:
         connector = _connected(database)
         try:
-            reports["first"] = run_sqlite_schema_epoch(
+            reports["first"] = _run_schema_epoch(
                 connector,
                 FakeProvider(_definition(), slice_hook=blocking_hook),
                 clock=lambda: NOW,
@@ -883,7 +1111,7 @@ def test_two_sqlite_runners_serialize_and_second_revalidates_ready(
     def run_second() -> None:
         connector = _connected(database)
         try:
-            reports["second"] = run_sqlite_schema_epoch(
+            reports["second"] = _run_schema_epoch(
                 connector, FakeProvider(_definition()), clock=lambda: NOW
             )
         except BaseException as error:  # pragma: no cover - asserted below
@@ -1003,9 +1231,9 @@ def test_epoch_requires_at_least_one_semantic_obligation() -> None:
 
 @pytest.mark.parametrize("injection_phase", ["slice", "global"])
 def test_build_final_inventories_reject_new_objects_and_retry_is_fresh(
-    tmp_path: Path, injection_phase: str
+    database_factory: DatabaseFactory, injection_phase: str
 ) -> None:
-    connector = _connected(tmp_path / "fresh-inventory.sqlite3")
+    connector = _connected(database_factory.config())
     definition = _definition()
     _initialize_building(connector, definition, completed_statement_count=1)
 
@@ -1015,25 +1243,93 @@ def test_build_final_inventories_reject_new_objects_and_retry_is_fresh(
         ) -> None:
             super().validate_slice(connector, schema_slice)
             if injection_phase == "slice" and schema_slice.slice_id == "identity":
-                connector.execute("CREATE TABLE unexpected_during_build (value INT)")
+                with fixture_transaction(connector):
+                    connector.execute(
+                        "CREATE TABLE unexpected_during_build (value INT)"
+                    )
 
         def validate_global(self, connector: SQLConnector) -> None:
             super().validate_global(connector)
             if injection_phase == "global":
-                connector.execute("CREATE TABLE unexpected_during_build (value INT)")
+                with fixture_transaction(connector):
+                    connector.execute(
+                        "CREATE TABLE unexpected_during_build (value INT)"
+                    )
 
     try:
         with pytest.raises(
             (SchemaEpochAdmissionError, SchemaEpochValidationError),
             match="outside|closed-world",
         ):
-            run_sqlite_schema_epoch(connector, InjectingProvider(definition))
-        assert connector.fetch_one("SELECT state FROM h2hdb_schema_epoch") == (
+            _run_schema_epoch(connector, InjectingProvider(definition))
+        _assert_no_open_transaction(connector)
+        assert inspect_one(connector, "SELECT state FROM h2hdb_schema_epoch") == (
             "BUILDING",
         )
-        assert not connector.check_table_exists("unexpected_during_build")
-        report = run_sqlite_schema_epoch(connector, FakeProvider(definition))
+        retained = connector.check_table_exists("unexpected_during_build")
+        assert retained is (connector_backend(connector) == "mariadb")
+        if retained:
+            # MariaDB DDL commits independently; remove exactly the injected
+            # foreign object before demonstrating a fresh inventory on retry.
+            with fixture_transaction(connector):
+                connector.execute("DROP TABLE unexpected_during_build")
+        report = _run_schema_epoch(connector, FakeProvider(definition))
         assert report.outcome is SchemaProvisioningOutcome.RESUMED
         assert report.activation_audit is not None
+        _assert_no_open_transaction(connector)
     finally:
         connector.close()
+
+
+def test_failed_native_seed_dml_leaves_no_transaction_and_durable_prefix_resumes(
+    database_factory: DatabaseFactory,
+) -> None:
+    connector = _connected(database_factory.config())
+    definition = _definition()
+    _initialize_building(connector, definition, completed_statement_count=1)
+    bad_seed = replace(PARENT_SEED, parameters=(0, None, 1))
+    try:
+        with pytest.raises(DatabaseDuplicateKeyError):
+            _run_schema_epoch(
+                connector,
+                FakeProvider(replace(definition, bootstrap_seeds=(bad_seed,))),
+            )
+        _assert_no_open_transaction(connector)
+        assert connector.check_table_exists(PARENT.name)
+        # The legal parent DDL was committed before the failing attempt on both
+        # engines; retry must preserve it and finish the exact same manifest.
+        report = _run_schema_epoch(connector, FakeProvider(definition))
+        assert report.outcome is SchemaProvisioningOutcome.RESUMED
+        _assert_no_open_transaction(connector)
+    finally:
+        connector.close()
+
+
+def test_ready_epoch_fully_checks_through_read_only_config(
+    database_factory: DatabaseFactory,
+) -> None:
+    config = database_factory.config()
+    provider = FakeProvider(_definition())
+    connector = _connected(config)
+    try:
+        _run_schema_epoch(connector, provider, clock=lambda: NOW)
+        _assert_no_open_transaction(connector)
+    finally:
+        connector.close()
+    readonly = config.model_copy(
+        update={
+            "database": config.database.model_copy(
+                update={"access_mode": DatabaseAccessMode.read_only}
+            )
+        }
+    )
+    connector = _connected(readonly)
+    try:
+        with connector.read_transaction():
+            report = _validate_schema_epoch(connector, provider)
+        _assert_no_open_transaction(connector)
+    finally:
+        connector.close()
+    assert report.state == "READY"
+    assert report.resumed_build
+    assert not report.transitioned_to_ready

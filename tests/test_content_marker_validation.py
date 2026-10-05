@@ -1,6 +1,6 @@
 """Marker prefetch preserves the visited prefix's exact canonical authority.
 
-These fault tests use real generated SQLite canonical trees. The observation
+These fault tests use real generated SQLite/MariaDB canonical trees. The observation
 row wrapper isolates marker-prefix behavior; full preparation and real keyset
 SQL correspondence are exercised by the analysis preparation cost tests.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
@@ -18,11 +17,17 @@ from vnext_canonical_value_fixtures import (
     seed_canonical_allocation,
     seed_canonical_page,
 )
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    connector_backend,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
 from h2hdb import vnext_analysis_repository as analysis
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueNotReadyError,
@@ -43,8 +48,8 @@ type _Fault = Literal[
 
 
 @pytest.fixture
-def connector(tmp_path: Path) -> Iterator[SQLiteConnector]:
-    database = open_generated_sqlite_database(tmp_path / "marker.sqlite3")
+def connector(database_factory: DatabaseFactory) -> Iterator[SQLConnector]:
+    database = open_generated_database(database_factory.config())
     try:
         yield database
     finally:
@@ -52,7 +57,7 @@ def connector(tmp_path: Path) -> Iterator[SQLiteConnector]:
 
 
 def _store_value(
-    connector: SQLiteConnector, payload: bytes, *, domain: str = "tag_value_utf8_v1"
+    connector: SQLConnector, payload: bytes, *, domain: str = "tag_value_utf8_v1"
 ) -> bytes:
     with (
         CanonicalValueUploadPlan.from_parts(domain, (payload,)) as plan,
@@ -93,11 +98,11 @@ def _store_value(
 
 @dataclass
 class _TagRows:
-    connector: SQLiteConnector
+    connector: SQLConnector
     values: Sequence[bytes]
 
     def fetch_one(self, sql: str, parameters: tuple[Any, ...] = ()) -> tuple[Any, ...]:
-        return self.connector.fetch_one(sql, parameters)
+        return inspect_one(self.connector, sql, parameters)
 
     def fetch_all(
         self, sql: str, parameters: tuple[Any, ...] = ()
@@ -108,34 +113,36 @@ class _TagRows:
             after, limit = parameters[-2:]
             assert limit == (1 if after == -1 else 128)
             return list(enumerate(self.values))[after + 1 : after + 1 + limit]
-        return self.connector.fetch_all(sql, parameters)
+        return inspect_all(self.connector, sql, parameters)
 
 
-def _has_marker(connector: SQLiteConnector, values: Sequence[bytes]) -> bool:
+def _has_marker(connector: SQLConnector, values: Sequence[bytes]) -> bool:
     with connector.read_transaction():
         return analysis._gallery_has_already_uploaded_marker(
             VNextUnitOfWork(
-                cast(SQLConnector, _TagRows(connector, values)), backend="sqlite"
+                cast(SQLConnector, _TagRows(connector, values)),
+                backend=connector_backend(connector),
             ),
             1,
             1,
         )
 
 
-def _corrupt_value(connector: SQLiteConnector, value: bytes, fault: _Fault) -> bytes:
+def _corrupt_value(connector: SQLConnector, value: bytes, fault: _Fault) -> bytes:
     match fault:
         case "domain":
             return _store_value(connector, b"bad-domain", domain="source_title_utf8_v1")
         case "digest":
             return b"invalid digest"
-    (root,) = connector.fetch_one(
+    (root,) = inspect_one(
+        connector,
         "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
         (value,),
     )
     # These deliberate corruptions must be readable even when foreign keys
     # would normally prevent an interrupted external write from creating them.
-    connector.execute("PRAGMA foreign_keys = OFF")
+    set_foreign_key_checks(connector, enabled=False)
     try:
         with connector.transaction():
             match fault:
@@ -152,7 +159,8 @@ def _corrupt_value(connector: SQLiteConnector, value: bytes, fault: _Fault) -> b
                         (value,),
                     )
                 case "payload":
-                    (payload,) = connector.fetch_one(
+                    (payload,) = inspect_one(
+                        connector,
                         "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
                         "WHERE page_sha256 = %s",
                         (root,),
@@ -177,7 +185,7 @@ def _corrupt_value(connector: SQLiteConnector, value: bytes, fault: _Fault) -> b
                         (root, root),
                     )
     finally:
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
     return value
 
 
@@ -187,7 +195,7 @@ def _corrupt_value(connector: SQLiteConnector, value: bytes, fault: _Fault) -> b
 )
 @pytest.mark.parametrize("marker_first", [False, True])
 def test_marker_prefetch_exposes_only_visited_prefix_corruption(
-    connector: SQLiteConnector, fault: _Fault, marker_first: bool
+    connector: SQLConnector, fault: _Fault, marker_first: bool
 ) -> None:
     ordinary = _store_value(connector, b"ordinary")
     marker = _store_value(connector, ANALYSIS_ALREADY_UPLOADED_MARKER.upper())
@@ -213,7 +221,7 @@ def test_marker_prefetch_exposes_only_visited_prefix_corruption(
     ["identity", "allocation", "payload", "count", "parent", "domain", "digest"],
 )
 def test_first_marker_ignores_unvisited_corrupt_tail(
-    connector: SQLiteConnector, fault: _Fault
+    connector: SQLConnector, fault: _Fault
 ) -> None:
     marker = _store_value(connector, ANALYSIS_ALREADY_UPLOADED_MARKER)
     corrupt = _corrupt_value(connector, _store_value(connector, b"bad"), fault)
@@ -222,7 +230,7 @@ def test_first_marker_ignores_unvisited_corrupt_tail(
 
 @pytest.mark.parametrize("marker_position", [127, 128, 129])
 def test_marker_early_exit_survives_prefetched_corrupt_tail_at_page_boundary(
-    connector: SQLiteConnector, marker_position: int
+    connector: SQLConnector, marker_position: int
 ) -> None:
     ordinary = _store_value(connector, b"ordinary")
     marker = _store_value(connector, ANALYSIS_ALREADY_UPLOADED_MARKER)
@@ -234,7 +242,7 @@ def test_marker_early_exit_survives_prefetched_corrupt_tail_at_page_boundary(
     "size", [0, CANONICAL_VALUE_CHUNK_BYTES, CANONICAL_VALUE_CHUNK_BYTES + 1]
 )
 def test_marker_prefetch_retains_streaming_for_multi_page_values(
-    connector: SQLiteConnector, monkeypatch: pytest.MonkeyPatch, size: int
+    connector: SQLConnector, monkeypatch: pytest.MonkeyPatch, size: int
 ) -> None:
     scout = _store_value(connector, b"scout")
     ordinary = _store_value(connector, b"x" * size)
@@ -260,7 +268,7 @@ def test_marker_prefetch_retains_streaming_for_multi_page_values(
     "error_type", [sqlite3.OperationalError, OSError, KeyboardInterrupt]
 )
 def test_marker_prefetch_does_not_hide_operational_errors(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
     error_type: type[BaseException],
 ) -> None:
@@ -278,7 +286,7 @@ def test_marker_prefetch_does_not_hide_operational_errors(
 
 
 def test_marker_does_not_validate_unvisited_page_cursor(
-    connector: SQLiteConnector, monkeypatch: pytest.MonkeyPatch
+    connector: SQLConnector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     marker = _store_value(connector, ANALYSIS_ALREADY_UPLOADED_MARKER)
     ordinary = _store_value(connector, b"ordinary")
@@ -298,7 +306,7 @@ def test_marker_does_not_validate_unvisited_page_cursor(
 
 
 def test_marker_prefetch_revalidates_each_new_snapshot(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
 ) -> None:
     scout = _store_value(connector, b"scout")
     ordinary = _store_value(connector, b"ordinary")
@@ -309,7 +317,7 @@ def test_marker_prefetch_revalidates_each_new_snapshot(
 
 
 def _scalar_marker_result(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
     values: Sequence[bytes],
 ) -> bool:
@@ -343,7 +351,7 @@ def _scalar_marker_result(
     ],
 )
 def test_marker_batch_and_scalar_paths_match_exact_ascii_oracle(
-    connector: SQLiteConnector,
+    connector: SQLConnector,
     monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
     expected: bool,
@@ -355,7 +363,7 @@ def test_marker_batch_and_scalar_paths_match_exact_ascii_oracle(
 
 
 def test_first_marker_does_not_prefetch_maximum_single_leaf_tail(
-    connector: SQLiteConnector, monkeypatch: pytest.MonkeyPatch
+    connector: SQLConnector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     marker = _store_value(connector, ANALYSIS_ALREADY_UPLOADED_MARKER)
     values = [marker]
@@ -363,7 +371,8 @@ def test_first_marker_does_not_prefetch_maximum_single_leaf_tail(
         prefix = f"tail-{position:03d}:".encode()
         payload = prefix + b"x" * (CANONICAL_VALUE_CHUNK_BYTES - len(prefix))
         values.append(_store_value(connector, payload))
-    (root,) = connector.fetch_one(
+    (root,) = inspect_one(
+        connector,
         "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
         "WHERE value_sha256 = %s",
         (marker,),

@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 from test_vnext_ingest_analysis import _Clock, _policy, _seed_empty, _session
+from vnext_test_database import DatabaseFactory
 
 from h2hdb import (
     CoreConfig,
@@ -121,13 +122,9 @@ def test_performance_uses_application_handler_and_preserves_default_info(
 
 
 def test_empty_recovery_probe_finishes_before_uninstrumented_work(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    database_factory: DatabaseFactory, caplog: pytest.LogCaptureFixture
 ) -> None:
-    config = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite", database=str(tmp_path / "catalog.sqlite3")
-        )
-    )
+    config = database_factory.config("recovery")
     with closing(VNextDatabaseAdminFacade(config)) as admin:
         admin.initialize()
     performance_now = 0.0
@@ -154,13 +151,13 @@ def test_empty_recovery_probe_finishes_before_uninstrumented_work(
 
 
 def test_analysis_owner_labels_fresh_and_replayed_steps_after_validation(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    database_factory: DatabaseFactory, caplog: pytest.LogCaptureFixture
 ) -> None:
-    database = tmp_path / "analysis.sqlite3"
+    database = database_factory.config("analysis")
     build_id, gate, turn = _seed_empty(database)
     session = _session(gate, turn)
     config = CoreConfig(
-        database=DatabaseConfig(sql_type="sqlite", database=str(database)),
+        database=database.database,
         logger=LoggerConfig.model_validate({"level": "debug"}),
     )
     with caplog.at_level(logging.DEBUG, logger="h2hdb.ingest_performance"):

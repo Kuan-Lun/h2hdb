@@ -7,13 +7,18 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
 from vnext_pipeline import collect_source
+from vnext_test_database import (
+    DatabaseFactory,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_generated_database,
+)
 
 from h2hdb import (
     ArtifactSourceRole,
     CoreConfig,
-    DatabaseConfig,
     DirectoryObservation,
     FileContentReceipt,
     FileObservation,
@@ -30,7 +35,6 @@ from h2hdb import (
     VNextSourceManifestMismatchError,
 )
 from h2hdb.repository import RepositoryContext
-from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_gallery_staging_repository import (
     GalleryObservationComponentRootBuilder,
 )
@@ -51,8 +55,8 @@ from h2hdb.vnext_source_build_repository import (
 from h2hdb.vnext_source_observation_spool import _iter_metadata_chunks
 
 
-def _generated_database(path: Path) -> None:
-    open_generated_sqlite_database(path).close()
+def _generated_database(config: CoreConfig) -> None:
+    open_generated_database(config).close()
 
 
 def _drain_current_only_maintenance(facade: VNextIngestFacade) -> None:
@@ -393,13 +397,14 @@ def test_metadata_component_has_no_canonical_empty_leaf() -> None:
 
 @pytest.mark.parametrize("file_count", (0, 257), ids=("empty", "leaf-boundary-257"))
 def test_preflight_summary_equals_durable_sqlite_build_manifest(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     file_count: int,
 ) -> None:
     path = tmp_path / f"source-preflight-{file_count}.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        database_factory.config(str(path)),
         clock=lambda: 100,
     )
     session = facade.try_claim_ingest(True, 1_000_000)
@@ -419,8 +424,9 @@ def test_preflight_summary_equals_durable_sqlite_build_manifest(
             pytest.fail("source manifest boundary did not seal")
 
     assert result.source_receipt is not None
-    with SQLiteConnector(str(path)) as connector:
-        durable = connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        durable = inspect_one(
+            connector,
             "SELECT manifest.manifest_sha256, discovery.gallery_count, "
             "manifest.file_count, manifest.byte_count "
             "FROM catalog_build_manifest_core AS manifest "
@@ -440,13 +446,14 @@ def test_preflight_summary_equals_durable_sqlite_build_manifest(
 
 
 def test_staging_uses_only_sealed_observations_after_collection_and_close_cleans_spool(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "source-frozen-adapter-disabled.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        database_factory.config(str(path)),
         clock=lambda: 100,
     )
     session = facade.try_claim_ingest(True, 1_000_000)
@@ -482,8 +489,9 @@ def test_staging_uses_only_sealed_observations_after_collection_and_close_cleans
         else:
             pytest.fail("frozen source did not seal")
         assert result.source_receipt is not None
-        with SQLiteConnector(str(path)) as connector:
-            assert connector.fetch_one(
+        with database_connector(database_factory.config(str(path))) as connector:
+            assert inspect_one(
+                connector,
                 "SELECT manifest.manifest_sha256, discovery.gallery_count, "
                 "manifest.file_count, manifest.byte_count "
                 "FROM catalog_build_manifest_core AS manifest "
@@ -506,12 +514,13 @@ def test_staging_uses_only_sealed_observations_after_collection_and_close_cleans
 
 
 def test_live_mutation_after_observation_stages_the_frozen_snapshot(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "source-frozen-live-mutation.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        database_factory.config(str(path)),
         clock=lambda: 100,
     )
     session = facade.try_claim_ingest(True, 1_000_000)
@@ -536,8 +545,9 @@ def test_live_mutation_after_observation_stages_the_frozen_snapshot(
             pytest.fail("frozen A source did not seal after live mutation B")
 
     assert result.source_receipt is not None
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
             "SELECT manifest.manifest_sha256, discovery.gallery_count, "
             "manifest.file_count, manifest.byte_count "
             "FROM catalog_build_manifest_core AS manifest "
@@ -553,19 +563,19 @@ def test_live_mutation_after_observation_stages_the_frozen_snapshot(
             frozen.file_count,
             frozen.byte_count,
         )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_source_build_states WHERE state = 'ABANDONED'"
+        assert inspect_one(
+            connector,
+            "SELECT COUNT(*) FROM catalog_source_build_states WHERE state = 'ABANDONED'",
         ) == (0,)
 
 
 def test_frozen_pages_replay_exactly_and_metadata_resumes_from_byte_cursor(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "source-frozen-page-replay.sqlite3"
-    _generated_database(path)
-    facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
-    )
+    _generated_database(database_factory.config(str(path)))
+    facade = VNextIngestFacade(database_factory.config(str(path)))
     session = facade.try_claim_ingest(True, 1_000_000)
     assert session is not None
     policy = facade.ensure_policy(session, _policy())
@@ -651,12 +661,13 @@ def test_frozen_pages_replay_exactly_and_metadata_resumes_from_byte_cursor(
 
 
 def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "source-preflight-terminal-mismatch.sqlite3"
-    _generated_database(path)
+    _generated_database(database_factory.config(str(path)))
     facade = VNextIngestFacade(
-        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        database_factory.config(str(path)),
         clock=lambda: 100,
     )
     session = facade.try_claim_ingest(True, 1_000_000)
@@ -684,22 +695,26 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
         else:
             pytest.fail("changed adapter replay did not reach manifest comparison")
 
-    with SQLiteConnector(str(path)) as connector:
-        abandoned_build = connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_states WHERE state = 'ABANDONED'"
+    with database_connector(database_factory.config(str(path))) as connector:
+        abandoned_build = inspect_one(
+            connector,
+            "SELECT build_id FROM catalog_source_build_states WHERE state = 'ABANDONED'",
         )
         assert len(abandoned_build) == 1
         assert (
-            connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
+            inspect_all(connector, "SELECT * FROM operational_source_working_builds")
+            == []
         )
-        assert connector.fetch_all("SELECT * FROM catalog_build_manifest_core") == []
-        assert connector.fetch_one(
+        assert inspect_all(connector, "SELECT * FROM catalog_build_manifest_core") == []
+        assert inspect_one(
+            connector,
             "SELECT state, processed_gallery_count "
-            "FROM operational_source_build_assembly_checkpoints"
+            "FROM operational_source_build_assembly_checkpoints",
         ) == ("OPEN", 1)
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT COUNT(*) FROM operational_source_build_assembly_batch_receipts "
-            "WHERE terminal = 1"
+            "WHERE terminal = 1",
         ) == (0,)
 
     facade.complete_ingest(session)
@@ -730,7 +745,7 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
         stable_facade.complete_ingest(stable_session)
         return result.source_receipt.build_id, result.replayed
 
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    config = database_factory.config(str(path))
     stable_build, stable_replayed = drive_stable(
         VNextIngestFacade(config, clock=lambda: 200),
     )
@@ -744,11 +759,12 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
 
 
 def test_new_generation_atomically_recovers_stale_open_mismatch_build(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "source-preflight-stale-open-recovery.sqlite3"
-    _generated_database(path)
-    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    _generated_database(database_factory.config(str(path)))
+    config = database_factory.config(str(path))
     facade = VNextIngestFacade(config, clock=lambda: 100)
     session = facade.try_claim_ingest(True, 1_000_000)
     assert session is not None
@@ -777,14 +793,16 @@ def test_new_generation_atomically_recovers_stale_open_mismatch_build(
                 prepared = facade.prepare_source_step(source, issued)
                 facade.commit_source_step(session, prepared)
 
-    with SQLiteConnector(str(path)) as connector:
-        stale_build = connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_states WHERE state = 'OPEN'"
+    with database_connector(database_factory.config(str(path))) as connector:
+        stale_build = inspect_one(
+            connector,
+            "SELECT build_id FROM catalog_source_build_states WHERE state = 'OPEN'",
         )
         assert len(stale_build) == 1
         assert (
-            connector.fetch_one(
-                "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+            inspect_one(
+                connector,
+                "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
             )
             == stale_build
         )
@@ -811,22 +829,24 @@ def test_new_generation_atomically_recovers_stale_open_mismatch_build(
 
     assert result.source_receipt is not None
     assert result.source_receipt.build_id != stale_build[0]
-    with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_one(
+    with database_connector(database_factory.config(str(path))) as connector:
+        assert inspect_one(
+            connector,
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
             (stale_build[0],),
         ) == ("ABANDONED",)
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
+        assert inspect_one(
+            connector,
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1",
         ) == (result.source_receipt.build_id,)
 
 
 def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
-    mariadb_config: CoreConfig,
+    db_config: CoreConfig,
 ) -> None:
-    VNextDatabaseAdminFacade(mariadb_config).initialize()
+    VNextDatabaseAdminFacade(db_config).initialize()
     adapter = _BoundarySource(1)
-    first = VNextIngestFacade(mariadb_config, clock=lambda: 100)
+    first = VNextIngestFacade(db_config, clock=lambda: 100)
     first_session = first.try_claim_ingest(True, 1_000_000)
     assert first_session is not None
     first_policy = first.ensure_policy(first_session, _policy())
@@ -846,19 +866,21 @@ def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
                 prepared = first.prepare_source_step(source, issued)
                 first.commit_source_step(first_session, prepared)
 
-    context = RepositoryContext.from_config(mariadb_config)
+    context = RepositoryContext.from_config(db_config)
     with context.SQLConnector() as connector, connector.read_transaction():
-        abandoned = connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_states WHERE state = 'ABANDONED'"
+        abandoned = inspect_one(
+            connector,
+            "SELECT build_id FROM catalog_source_build_states WHERE state = 'ABANDONED'",
         )
         assert len(abandoned) == 1
         assert (
-            connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
+            inspect_all(connector, "SELECT * FROM operational_source_working_builds")
+            == []
         )
     first.complete_ingest(first_session)
 
     def stable_turn(now: int) -> tuple[bytes, bool]:
-        facade = VNextIngestFacade(mariadb_config, clock=lambda: now)
+        facade = VNextIngestFacade(db_config, clock=lambda: now)
         _drain_current_only_maintenance(facade)
         session = facade.try_claim_ingest(True, 1_000_000)
         assert session is not None

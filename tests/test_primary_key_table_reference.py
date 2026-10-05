@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 import pytest
+from vnext_test_database import DatabaseFactory, database_connector
 
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sql_connector import SQLConnector
@@ -106,10 +107,10 @@ def test_measured_reference_preserves_dialect_without_recording_database_work(
     assert recorder.calls == []
 
 
-def test_sqlite_primary_reference_executes_composite_keyset_query(
-    tmp_path: Path,
+def test_primary_reference_executes_composite_keyset_query(
+    database_factory: DatabaseFactory,
 ) -> None:
-    with SQLiteConnector(str(tmp_path / "keyset.sqlite3")) as connector:
+    with database_connector(database_factory.config()) as connector:
         connector.execute(
             "CREATE TABLE keyset_rows (owner INTEGER, position INTEGER, "
             "PRIMARY KEY (owner, position))"

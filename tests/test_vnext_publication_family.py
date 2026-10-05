@@ -4,10 +4,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from vnext_generated_database import open_generated_sqlite_database
+from vnext_test_database import (
+    DatabaseFactory,
+    inspect_all,
+    open_generated_database,
+    set_foreign_key_checks,
+)
 
+from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
-from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_publication_family import (
     CatalogContributorFamily,
     CatalogPublicationDownloadTimeFamily,
@@ -27,8 +33,8 @@ from h2hdb.vnext_publication_family import (
 )
 
 
-def _generated_database(path: Path) -> SQLiteConnector:
-    return open_generated_sqlite_database(path)
+def _generated_database(config: CoreConfig) -> SQLConnector:
+    return open_generated_database(config)
 
 
 class _ContributorRecorder:
@@ -99,9 +105,12 @@ def test_catalog_contributor_uses_one_atomic_bcnf_relation() -> None:
 
 
 def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
+    database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "publication-family.sqlite3")
+    connector = _generated_database(
+        database_factory.config(str(tmp_path / "publication-family.sqlite3"))
+    )
     gid = 17
     publication_key = identity.publication_key(gid)
     publication = CatalogPublicationFamily(
@@ -130,7 +139,7 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
         upload_time=9,
     )
     try:
-        connector.execute("PRAGMA foreign_keys = OFF")
+        set_foreign_key_checks(connector, enabled=False)
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_gallery_source_name_accesses "
@@ -154,7 +163,7 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
             assert ensure_catalog_publication_download_time_family(
                 connector, download_time
             ) == (download_time, True)
-            assert connector.fetch_all("SELECT * FROM catalog_publications") == []
+            assert inspect_all(connector, "SELECT * FROM catalog_publications") == []
             assert ensure_catalog_publication_upload_time_family(
                 connector, upload_time
             ) == (upload_time, True)
@@ -162,12 +171,13 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                 title,
                 False,
             )
-        connector.execute("PRAGMA foreign_keys = ON")
+        set_foreign_key_checks(connector, enabled=True)
 
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT revision, publication_key, gallery_id, summary_sha256, "
             "language_sha256, modified_at, download_time, upload_time "
-            "FROM catalog_publications"
+            "FROM catalog_publications",
         ) == [
             (
                 publication.revision,
@@ -180,9 +190,10 @@ def test_catalog_publication_and_title_are_atomic_exact_replay_rows(
                 upload_time.upload_time,
             )
         ]
-        assert connector.fetch_all(
+        assert inspect_all(
+            connector,
             "SELECT revision, publication_key, source_title_sha256, "
-            "source_gallery_name FROM catalog_publication_titles"
+            "source_gallery_name FROM catalog_publication_titles",
         ) == [
             (
                 title.revision,

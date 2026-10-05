@@ -14,10 +14,22 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from vnext_manifest_database import (
+    constraint_violation,
+    introspect_fixture,
+    render_fixture,
+)
+from vnext_test_database import (
+    DatabaseFactory,
+    database_connector,
+    inspect_all,
+    inspect_one,
+    open_database,
+    set_foreign_key_checks,
+)
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import CoreConfig
-from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.vnext_identity import (
     GALLERY_OBSERVATION_DURABLE_PARSER_PHASES,
     GalleryObservationMetadata,
@@ -263,7 +275,9 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     } == {"file_hash_cache", "operational_activation"}
 
 
-def test_maintenance_gate_holder_allows_one_owner_to_hold_every_slot() -> None:
+def test_maintenance_gate_holder_allows_one_owner_to_hold_every_slot(
+    database_factory: DatabaseFactory,
+) -> None:
     contract = checker.load_contract(LOGICAL_PATH)
     holder = next(
         value for value in contract.relations if value.name == "maintenance_gate_holder"
@@ -321,11 +335,9 @@ def test_maintenance_gate_holder_allows_one_owner_to_hold_every_slot() -> None:
 
     logical, _local_names, physical, stubs = _schemas()
     del logical
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
+        render_fixture(connection, operational_refinement, physical, stubs)
         owner = b"exclusive-owner!"
         other_owner = b"other-owner-0001"
         assert len(owner) == len(other_owner) == 16
@@ -333,35 +345,35 @@ def test_maintenance_gate_holder_allows_one_owner_to_hold_every_slot() -> None:
             """
             INSERT INTO operational_maintenance_gate_generations
                 (gate_generation, mode, created_at)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             """,
             (1, "EXCLUSIVE", 1),
         )
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_maintenance_gate_owners
                 (owner_token, gate_generation, lease_expires_at)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             """,
-            ((owner, 1, 100), (other_owner, 1, 100)),
+            [(owner, 1, 100), (other_owner, 1, 100)],
         )
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-            VALUES (?, ?)
+            VALUES (%s, %s)
             """,
-            ((owner, slot) for slot in range(64)),
+            [(owner, slot) for slot in range(64)],
         )
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_maintenance_gate_holders "
-            "WHERE owner_token = ?",
+        assert inspect_one(
+            connection,
+            "SELECT COUNT(*) FROM operational_maintenance_gate_holders WHERE owner_token = %s",
             (owner,),
-        ).fetchone() == (64,)
-        with pytest.raises(sqlite3.IntegrityError):
+        ) == (64,)
+        with constraint_violation(connection):
             connection.execute(
                 """
                 INSERT INTO operational_maintenance_gate_holders (owner_token, slot)
-                VALUES (?, ?)
+                VALUES (%s, %s)
                 """,
                 (other_owner, 0),
             )
@@ -485,13 +497,13 @@ def test_operational_greenfield_identity_and_history_shapes() -> None:
     }
 
 
-def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None:
+def test_operational_sqlite_history_and_attempts_accept_required_reuse(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
+        render_fixture(connection, operational_refinement, physical, stubs)
         first_build = bytes([1]) * 16
         second_build = bytes([2]) * 16
         first_owner = bytes([3]) * 16
@@ -516,11 +528,9 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         )
         assert all(len(value) == 16 for value in values)
 
-        connection.executemany(
-            "INSERT INTO catalog_source_build_descriptor "
-            "(build_id, scope_key, manifest_policy_id, created_at) "
-            "VALUES (?, ?, 1, 1)",
-            ((first_build, b"s" * 32), (second_build, b"t" * 32)),
+        connection.execute_many(
+            "INSERT INTO catalog_source_build_descriptor (build_id, scope_key, manifest_policy_id, created_at) VALUES (%s, %s, 1, 1)",
+            [(first_build, b"s" * 32), (second_build, b"t" * 32)],
         )
         connection.execute(
             "INSERT INTO operational_deletion_request_generations "
@@ -530,7 +540,7 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             "INSERT INTO operational_deletion_request_generation_heads "
             "(singleton_id, current_generation, updated_at) VALUES (1, 0, 0)"
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
                 "UPDATE operational_deletion_request_generation_heads "
                 "SET current_generation = 1, updated_at = 1 "
@@ -540,54 +550,54 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             "INSERT INTO operational_deletion_request_generations "
             "(generation, allocated_at) VALUES (1, 1)"
         )
-        advanced = connection.execute(
+        advanced = connection.execute_affected(
             "UPDATE operational_deletion_request_generation_heads "
             "SET current_generation = 1, updated_at = 1 "
             "WHERE singleton_id = 1 AND current_generation = 0"
         )
-        assert advanced.rowcount == 1
-        stale = connection.execute(
+        assert advanced == 1
+        stale = connection.execute_affected(
             "UPDATE operational_deletion_request_generation_heads "
             "SET current_generation = 1, updated_at = 2 "
             "WHERE singleton_id = 1 AND current_generation = 0"
         )
-        assert stale.rowcount == 0
-        connection.executemany(
+        assert stale == 0
+        connection.execute_many(
             """
             INSERT INTO operational_ingest_generations
                 (generation, started_at, completed_at)
-            VALUES (?, ?, NULL)
+            VALUES (%s, %s, NULL)
             """,
-            ((1, 1), (2, 2)),
+            [(1, 1), (2, 2)],
         )
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_ingest_generation_owners
                 (generation, owner_token, claimed_at, lease_expires_at)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             """,
-            ((1, first_owner, 1, 10), (2, second_owner, 2, 20)),
+            [(1, first_owner, 1, 10), (2, second_owner, 2, 20)],
         )
         connection.execute(
             """
             INSERT INTO operational_source_build_generations (build_id, generation)
-            VALUES (?, ?)
+            VALUES (%s, %s)
             """,
             (first_build, 1),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
                 """
                 INSERT INTO operational_source_build_generations
                     (build_id, generation)
-                VALUES (?, ?)
+                VALUES (%s, %s)
                 """,
                 (second_build, 1),
             )
         connection.execute(
             """
             INSERT INTO operational_source_build_generations (build_id, generation)
-            VALUES (?, ?)
+            VALUES (%s, %s)
             """,
             (first_build, 2),
         )
@@ -598,44 +608,48 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         connection.execute(
             "DELETE FROM operational_ingest_generation_owners WHERE generation = 1"
         )
-        assert connection.execute(
+        assert inspect_one(
+            connection,
             "SELECT build_id FROM operational_source_build_generations "
-            "WHERE generation = 1"
-        ).fetchone() == (first_build,)
+            "WHERE generation = 1",
+        ) == (first_build,)
 
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_deletion_request_attempts
                 (request_token, gid, requested_at)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             """,
-            ((first_request, 42, 1), (second_request, 42, 2)),
+            [(first_request, 42, 1), (second_request, 42, 2)],
         )
         connection.execute(
             """
             INSERT INTO operational_deletion_request_heads (gid, request_token)
-            VALUES (?, ?)
+            VALUES (%s, %s)
             """,
             (42, first_request),
         )
         connection.execute(
             """
             UPDATE operational_deletion_request_heads
-            SET request_token = ? WHERE gid = ?
+            SET request_token = %s WHERE gid = %s
             """,
             (second_request, 42),
         )
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_deletion_request_attempts"
-        ).fetchone() == (2,)
-        assert connection.execute("""
+        assert inspect_one(
+            connection, "SELECT COUNT(*) FROM operational_deletion_request_attempts"
+        ) == (2,)
+        assert inspect_one(
+            connection,
+            """
             SELECT request_token FROM operational_deletion_request_heads
             WHERE gid = 42
-            """).fetchone() == (second_request,)
+            """,
+        ) == (second_request,)
         connection.execute(
             """
             INSERT INTO operational_deletion_request_urls (request_token, url)
-            VALUES (?, '')
+            VALUES (%s, '')
             """,
             (first_request,),
         )
@@ -648,8 +662,7 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             "SOURCE_BUILD", (0,)
         )
         connection.execute(
-            "INSERT INTO operational_cleanup_sweep_targets "
-            "(target_kind,shard_no,target_key) VALUES ('SOURCE_BUILD',0,?)",
+            "INSERT INTO operational_cleanup_sweep_targets (target_kind,shard_no,target_key) VALUES ('SOURCE_BUILD',0,%s)",
             (target_key,),
         )
         connection.execute(
@@ -659,7 +672,7 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
                  cycle_cutoff_at,algorithm_version,max_rows_per_transaction,
                  hash_cache_max_age_microseconds,frozen_root_count,
                  frozen_root_set_sha256,state,created_at,completed_at)
-            VALUES (?, ?, 1, 1000, 2, 100, 100, 0, ?, 'OPEN', 1, NULL)
+            VALUES (%s, %s, 1, 1000, 2, 100, 100, 0, %s, 'OPEN', 1, NULL)
             """,
             (
                 first_cleanup,
@@ -669,9 +682,9 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         )
         connection.execute(
             """UPDATE operational_cleanup_jobs
-               SET cleanup_id=?, cycle_generation=2, created_at=2,
-                   frozen_root_set_sha256=?
-               WHERE target_key=? AND cleanup_id=? AND cycle_generation=1""",
+               SET cleanup_id=%s, cycle_generation=2, created_at=2,
+                   frozen_root_set_sha256=%s
+               WHERE target_key=%s AND cleanup_id=%s AND cycle_generation=1""",
             (
                 second_cleanup,
                 _empty_cleanup_frozen_root_digest(second_cleanup),
@@ -683,65 +696,65 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             "INSERT INTO operational_cleanup_phases (phase,target_kind,phase_order) "
             "VALUES ('SB_GENERATION','SOURCE_BUILD',1)"
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
                 """INSERT INTO operational_cleanup_checkpoints
                    (cleanup_id,phase,generation,cursor_bytes,deleted_count,
                     chain_sha256,state,updated_at)
-                   VALUES (?,'SB_GENERATION',0,X'',0,?,'OPEN',3)""",
+                   VALUES (%s,'SB_GENERATION',0,X'',0,%s,'OPEN',3)""",
                 (first_cleanup, bytes(32)),
             )
 
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_operational_policys
                 (operational_policy_id, operational_schema_version,
                  algorithm_version, max_batch_rows)
-            VALUES (?, 1, ?, 100)
+            VALUES (%s, 1, %s, 100)
             """,
-            ((1, 1), (2, 2)),
+            [(1, 1), (2, 2)],
         )
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_operational_event_streams
                 (preparation_id, created_at)
-            VALUES (?, ?)
+            VALUES (%s, %s)
             """,
-            ((first_preparation, 1), (second_preparation, 2)),
+            [(first_preparation, 1), (second_preparation, 2)],
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
                 """
                 INSERT INTO operational_operational_preparations
                     (preparation_id, build_id, deletion_request_generation,
                      operational_policy_id, state, prepared_at, completed_at)
-                VALUES (?, ?, 2, 1, 'OPEN', 1, NULL)
+                VALUES (%s, %s, 2, 1, 'OPEN', 1, NULL)
                 """,
                 (first_preparation, first_build),
             )
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_operational_preparations
                 (preparation_id, build_id, deletion_request_generation,
                  operational_policy_id, state, prepared_at, completed_at)
-            VALUES (?, ?, 1, ?, 'OPEN', ?, NULL)
+            VALUES (%s, %s, 1, %s, 'OPEN', %s, NULL)
             """,
-            (
+            [
                 (first_preparation, first_build, 1, 1),
                 (second_preparation, first_build, 2, 2),
-            ),
+            ],
         )
     finally:
         connection.close()
 
 
-def test_operational_sqlite_event_types_subtypes_and_inline_activation() -> None:
+def test_operational_sqlite_event_types_subtypes_and_inline_activation(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
+        render_fixture(connection, operational_refinement, physical, stubs)
         preparation = bytes([1]) * 16
         removed_event = bytes([2]) * 16
         deletion_event = bytes([3]) * 16
@@ -757,35 +770,35 @@ def test_operational_sqlite_event_types_subtypes_and_inline_activation() -> None
             VALUES (1, 1, 1, 100)
             """)
         connection.execute(
-            "INSERT INTO operational_operational_event_streams "
-            "(preparation_id, created_at) VALUES (?, 1)",
+            "INSERT INTO operational_operational_event_streams (preparation_id, created_at) VALUES (%s, 1)",
             (preparation,),
         )
         assert (
-            connection.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE name = 'operational_operational_activations'"
-            ).fetchone()
+            ()
+            if introspect_fixture(connection, refinement).table(
+                "operational_operational_activations"
+            )
             is None
-        )
-        with pytest.raises(sqlite3.IntegrityError):
+            else (1,)
+        ) == ()
+        with constraint_violation(connection):
             connection.execute(
                 """
                 INSERT INTO operational_operational_events
                     (event_id, preparation_id, sequence_no, event_type,
                      event_sha256, created_at)
-                VALUES (?, ?, 99, 'UNKNOWN', ?, 1)
+                VALUES (%s, %s, 99, 'UNKNOWN', %s, 1)
                 """,
                 (bytes([99]) * 16, preparation, bytes([99]) * 32),
             )
-        connection.executemany(
+        connection.execute_many(
             """
             INSERT INTO operational_operational_events
                 (event_id, preparation_id, sequence_no, event_type,
                  event_sha256, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (
+            [
                 (
                     removed_event,
                     preparation,
@@ -802,13 +815,13 @@ def test_operational_sqlite_event_types_subtypes_and_inline_activation() -> None
                     bytes([11]) * 32,
                     2,
                 ),
-            ),
+            ],
         )
         connection.execute(
             """
             INSERT INTO operational_operational_removed_gid_events
                 (event_id, gid, request_token)
-            VALUES (?, 42, ?)
+            VALUES (%s, 42, %s)
             """,
             (removed_event, removed_request),
         )
@@ -816,7 +829,7 @@ def test_operational_sqlite_event_types_subtypes_and_inline_activation() -> None
             """
             INSERT INTO operational_deletion_request_attempts
                 (request_token, gid, requested_at)
-            VALUES (?, 43, 1)
+            VALUES (%s, 43, 1)
             """,
             (deletion_request,),
         )
@@ -824,135 +837,124 @@ def test_operational_sqlite_event_types_subtypes_and_inline_activation() -> None
             """
             INSERT INTO operational_operational_deletion_consumption_events
                 (event_id, gid, deletion_request_token)
-            VALUES (?, 43, ?)
+            VALUES (%s, 43, %s)
             """,
             (deletion_event, deletion_request),
         )
-        assert connection.execute("""
+        assert inspect_one(
+            connection,
+            """
             SELECT COUNT(*)
             FROM operational_operational_events AS event
             JOIN catalog_publication_commits AS committed
               ON committed.preparation_id = event.preparation_id
-            """).fetchone() == (0,)
+            """,
+        ) == (0,)
         connection.execute(
             """
             INSERT INTO operational_operational_preparation_effect_seals
                 (preparation_id, event_count, final_chain_sha256, sealed_at)
-            VALUES (?, 2, ?, 2)
+            VALUES (%s, 2, %s, 2)
             """,
             (preparation, bytes([12]) * 32),
         )
         receipt_id = bytes([7]) * 16
         connection.execute(
-            "INSERT INTO catalog_publication_commits "
-            "(receipt_id, candidate_id, revision, source_revision, generation, "
-            "preparation_id, operational_policy_id, artifact_policy_id, "
-            "display_title_policy_id, new_galleries, changed_galleries, "
-            "removed_galleries, duplicate_losers, committed_at) "
-            "VALUES (?, ?, 1, 1, 1, ?, 1, 1, 1, 0, 0, 0, 0, 2)",
+            "INSERT INTO catalog_publication_commits (receipt_id, candidate_id, revision, source_revision, generation, preparation_id, operational_policy_id, artifact_policy_id, display_title_policy_id, new_galleries, changed_galleries, removed_galleries, duplicate_losers, committed_at) VALUES (%s, %s, 1, 1, 1, %s, 1, 1, 1, 0, 0, 0, 0, 2)",
             (receipt_id, bytes([8]) * 16, preparation),
         )
-        assert connection.execute("""
+        assert inspect_one(
+            connection,
+            """
             SELECT COUNT(*)
             FROM operational_operational_events AS event
             JOIN catalog_publication_commits AS committed
               ON committed.preparation_id = event.preparation_id
-            """).fetchone() == (2,)
+            """,
+        ) == (2,)
         empty_preparation = bytes([6]) * 16
         empty_chain = bytes.fromhex(
             "e3963ad6e07ac045502ad95ddb3805ac57deea8ffbb038ddf7c538a816301e71"
         )
         connection.execute(
-            "INSERT INTO operational_operational_event_streams "
-            "(preparation_id, created_at) VALUES (?, 3)",
+            "INSERT INTO operational_operational_event_streams (preparation_id, created_at) VALUES (%s, 3)",
             (empty_preparation,),
         )
         connection.execute(
             """
             INSERT INTO operational_operational_preparation_effect_seals
                 (preparation_id, event_count, final_chain_sha256, sealed_at)
-            VALUES (?, 0, ?, 3)
+            VALUES (%s, 0, %s, 3)
             """,
             (empty_preparation, empty_chain),
         )
-        assert connection.execute(
-            "SELECT event_count FROM "
-            "operational_operational_preparation_effect_seals "
-            "WHERE preparation_id = ?",
+        assert inspect_one(
+            connection,
+            "SELECT event_count FROM operational_operational_preparation_effect_seals WHERE preparation_id = %s",
             (empty_preparation,),
-        ).fetchone() == (0,)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_operational_events "
-            "WHERE preparation_id = ?",
+        ) == (0,)
+        assert inspect_one(
+            connection,
+            "SELECT COUNT(*) FROM operational_operational_events WHERE preparation_id = %s",
             (empty_preparation,),
-        ).fetchone() == (0,)
+        ) == (0,)
     finally:
         connection.close()
 
 
-def test_generation_retention_rows_outlive_ephemeral_owner_authority() -> None:
+def test_generation_retention_rows_outlive_ephemeral_owner_authority(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
+        render_fixture(connection, operational_refinement, physical, stubs)
         generation = 7
         owner = bytes([7]) * 16
         build_id = bytes([8]) * 16
         value_sha256 = bytes([9]) * 32
         connection.execute(
-            "INSERT INTO catalog_source_build_descriptor "
-            "(build_id, scope_key, manifest_policy_id, created_at) "
-            "VALUES (?, ?, 1, 1)",
+            "INSERT INTO catalog_source_build_descriptor (build_id, scope_key, manifest_policy_id, created_at) VALUES (%s, %s, 1, 1)",
             (build_id, b"s" * 32),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_anchors "
-            "(value_sha256) VALUES (?)",
+            "INSERT INTO catalog_canonical_value_allocation_anchors (value_sha256) VALUES (%s)",
             (value_sha256,),
         )
         connection.execute(
-            "INSERT INTO catalog_canonical_value_allocation_seals "
-            "(value_sha256) VALUES (?)",
+            "INSERT INTO catalog_canonical_value_allocation_seals (value_sha256) VALUES (%s)",
             (value_sha256,),
         )
         connection.execute(
-            "INSERT INTO operational_ingest_generations "
-            "(generation, started_at, completed_at) VALUES (?, 1, NULL)",
+            "INSERT INTO operational_ingest_generations (generation, started_at, completed_at) VALUES (%s, 1, NULL)",
             (generation,),
         )
         connection.execute(
-            "INSERT INTO operational_ingest_generation_owners "
-            "(generation, owner_token, claimed_at, lease_expires_at) "
-            "VALUES (?, ?, 1, 100)",
+            "INSERT INTO operational_ingest_generation_owners (generation, owner_token, claimed_at, lease_expires_at) VALUES (%s, %s, 1, 100)",
             (generation, owner),
         )
         connection.execute(
-            "INSERT INTO operational_source_build_generations "
-            "(build_id, generation) VALUES (?, ?)",
+            "INSERT INTO operational_source_build_generations (build_id, generation) VALUES (%s, %s)",
             (build_id, generation),
         )
         connection.execute(
-            "INSERT INTO operational_canonical_value_uploads "
-            "(generation, value_sha256) VALUES (?, ?)",
+            "INSERT INTO operational_canonical_value_uploads (generation, value_sha256) VALUES (%s, %s)",
             (generation, value_sha256),
         )
         connection.execute(
-            "UPDATE operational_ingest_generations SET completed_at = 2 "
-            "WHERE generation = ?",
+            "UPDATE operational_ingest_generations SET completed_at = 2 WHERE generation = %s",
             (generation,),
         )
         connection.execute(
-            "DELETE FROM operational_ingest_generation_owners WHERE generation = ?",
+            "DELETE FROM operational_ingest_generation_owners WHERE generation = %s",
             (generation,),
         )
-        assert connection.execute(
-            "SELECT generation FROM operational_source_build_generations"
-        ).fetchall() == [(generation,)]
-        assert connection.execute(
-            "SELECT generation FROM operational_canonical_value_uploads"
-        ).fetchall() == [(generation,)]
+        assert inspect_all(
+            connection, "SELECT generation FROM operational_source_build_generations"
+        ) == [(generation,)]
+        assert inspect_all(
+            connection, "SELECT generation FROM operational_canonical_value_uploads"
+        ) == [(generation,)]
     finally:
         connection.close()
 
@@ -2958,14 +2960,14 @@ def test_successful_gallery_staging_compacts_before_source_build_cleanup() -> No
     ]
 
 
-def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> None:
+def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
-        with pytest.raises(sqlite3.IntegrityError):
+        render_fixture(connection, operational_refinement, physical, stubs)
+        with constraint_violation(connection):
             connection.execute(
                 "INSERT INTO operational_cleanup_target_kinds(target_kind) VALUES ('UNKNOWN')"
             )
@@ -2976,27 +2978,21 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
             "SOURCE_BUILD", (0,)
         )
         connection.execute(
-            "INSERT INTO operational_cleanup_sweep_targets"
-            "(target_kind,shard_no,target_key) VALUES ('SOURCE_BUILD',0,?)",
+            "INSERT INTO operational_cleanup_sweep_targets(target_kind,shard_no,target_key) VALUES ('SOURCE_BUILD',0,%s)",
             (target_key,),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO operational_cleanup_sweep_targets(target_kind,shard_no,target_key) VALUES ('SOURCE_BUILD',256,?)",
+                "INSERT INTO operational_cleanup_sweep_targets(target_kind,shard_no,target_key) VALUES ('SOURCE_BUILD',256,%s)",
                 (bytes(32),),
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
                 "INSERT INTO operational_cleanup_phases(phase,target_kind,phase_order) VALUES ('ROGUE','SOURCE_BUILD',1)"
             )
-        with pytest.raises(sqlite3.IntegrityError):
+        with constraint_violation(connection):
             connection.execute(
-                "INSERT INTO operational_cleanup_jobs "
-                "(cleanup_id,target_key,cycle_generation,cycle_cutoff_at,"
-                "algorithm_version,max_rows_per_transaction,"
-                "hash_cache_max_age_microseconds,frozen_root_count,"
-                "frozen_root_set_sha256,state,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO operational_cleanup_jobs (cleanup_id,target_key,cycle_generation,cycle_cutoff_at,algorithm_version,max_rows_per_transaction,hash_cache_max_age_microseconds,frozen_root_count,frozen_root_set_sha256,state,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     bytes(16),
                     bytes(32),
@@ -3030,14 +3026,9 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
             created_at,
             completed_at,
         ) in invalid_jobs:
-            with pytest.raises(sqlite3.IntegrityError):
+            with constraint_violation(connection):
                 connection.execute(
-                    "INSERT INTO operational_cleanup_jobs "
-                    "(cleanup_id,target_key,cycle_generation,cycle_cutoff_at,"
-                    "algorithm_version,max_rows_per_transaction,"
-                    "hash_cache_max_age_microseconds,frozen_root_count,"
-                    "frozen_root_set_sha256,state,created_at,completed_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO operational_cleanup_jobs (cleanup_id,target_key,cycle_generation,cycle_cutoff_at,algorithm_version,max_rows_per_transaction,hash_cache_max_age_microseconds,frozen_root_count,frozen_root_set_sha256,state,created_at,completed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         cleanup_id,
                         target_key,
@@ -3397,14 +3388,14 @@ def test_operational_candidate_keys_never_use_arbitrary_payloads_or_prefixes() -
     assert "CHAR(32)" not in physical_text
 
 
-def test_complete_operational_sqlite_fixture_physically_refines() -> None:
+def test_complete_operational_sqlite_fixture_physically_refines(
+    database_factory: DatabaseFactory,
+) -> None:
     logical, local_names, physical, stubs = _schemas()
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
-        database = refinement.introspect_sqlite(_SQLiteReader(connection))
+        render_fixture(connection, operational_refinement, physical, stubs)
+        database = introspect_fixture(connection, refinement)
     finally:
         connection.close()
 
@@ -3449,54 +3440,64 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
     refinement.assert_physical_refines(report, require_complete=True)
 
 
-def test_operational_sqlite_typed_genesis_has_no_invented_control_facts() -> None:
+def test_operational_sqlite_typed_genesis_has_no_invented_control_facts(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
     machine = operational_refinement.validate_operational_machine_contract(
         LOGICAL_PATH, PHYSICAL_PATH
     )
     relation_by_name = {value.relation: value for value in physical.relations}
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
+        render_fixture(connection, operational_refinement, physical, stubs)
         for seed in machine.seeds:
             table = relation_by_name[seed.relation].table
             assert table is not None
-            columns = ", ".join(f'"{value.attribute}"' for value in seed.cells)
-            placeholders = ", ".join("?" for _value in seed.cells)
+            columns = ", ".join(f"`{value.attribute}`" for value in seed.cells)
+            placeholders = ", ".join("%s" for _value in seed.cells)
             connection.execute(
-                f'INSERT INTO "{table}" ({columns}) VALUES ({placeholders})',
+                f"INSERT INTO `{table}` ({columns}) VALUES ({placeholders})",
                 tuple(value.value for value in seed.cells),
             )
-        assert connection.execute("""
+        assert inspect_all(
+            connection,
+            """
             SELECT stream, next_revision, updated_at
             FROM operational_revision_allocators ORDER BY stream
-            """).fetchall() == [("CATALOG", 1, 0), ("SOURCE", 1, 0)]
-        assert connection.execute("""
+            """,
+        ) == [("CATALOG", 1, 0), ("SOURCE", 1, 0)]
+        assert inspect_all(
+            connection,
+            """
             SELECT generation, allocated_at
             FROM operational_deletion_request_generations
-            """).fetchall() == [(0, 0)]
-        assert connection.execute("""
+            """,
+        ) == [(0, 0)]
+        assert inspect_all(
+            connection,
+            """
             SELECT singleton_id, current_generation, updated_at
             FROM operational_deletion_request_generation_heads
-            """).fetchall() == [(1, 0, 0)]
+            """,
+        ) == [(1, 0, 0)]
         for relation_name in machine.absent_relations:
             table = relation_by_name[relation_name].table
             assert table is not None
-            assert connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone() == (
-                0,
-            )
+            assert inspect_one(connection, f"SELECT COUNT(*) FROM `{table}`") == (0,)
         connection.execute("""
             UPDATE operational_revision_allocators
             SET next_revision = 2, updated_at = 1
             WHERE stream = 'SOURCE'
             """)
-        assert connection.execute("""
+        assert inspect_one(
+            connection,
+            """
             SELECT next_revision, updated_at
             FROM operational_revision_allocators WHERE stream = 'SOURCE'
-            """).fetchone() == (2, 1)
-        with pytest.raises(sqlite3.IntegrityError):
+            """,
+        ) == (2, 1)
+        with constraint_violation(connection):
             connection.execute("""
                 UPDATE operational_revision_allocators
                 SET next_revision = 0 WHERE stream = 'CATALOG'
@@ -3505,7 +3506,9 @@ def test_operational_sqlite_typed_genesis_has_no_invented_control_facts() -> Non
         connection.close()
 
 
-def test_canonical_external_stub_uses_only_physical_page_tree_authority() -> None:
+def test_canonical_external_stub_uses_only_physical_page_tree_authority(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
     canonical = next(
         stub for stub in stubs if stub.relation == "canonical_value_identity"
@@ -3524,12 +3527,10 @@ def test_canonical_external_stub_uses_only_physical_page_tree_authority() -> Non
     assert "catalog_canonical_value_pages" not in sqlite_ddl
     assert "catalog_canonical_value_pages" not in mariadb_ddl
 
-    connection = sqlite3.connect(":memory:")
+    connection = open_database(database_factory.config())
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
-        database = refinement.introspect_sqlite(_SQLiteReader(connection))
+        render_fixture(connection, operational_refinement, physical, stubs)
+        database = introspect_fixture(connection, refinement)
     finally:
         connection.close()
     table = database.table("catalog_canonical_value_identities")
@@ -3540,77 +3541,69 @@ def test_canonical_external_stub_uses_only_physical_page_tree_authority() -> Non
     }
 
 
-def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite() -> None:
+def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite(
+    database_factory: DatabaseFactory,
+) -> None:
     _logical, _local_names, physical, stubs = _schemas()
-    connection = sqlite3.connect(":memory:")
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = open_database(database_factory.config())
+    set_foreign_key_checks(connection, enabled=True)
     owner = b"source-root-ownr"
     build_id = b"source-root-bld1"
     value_sha256 = bytes.fromhex("51" * 32)
     assert len(owner) == len(build_id) == 16
     try:
-        connection.executescript(
-            operational_refinement.render_sqlite_ddl(physical, stubs)
-        )
-        with connection:
+        render_fixture(connection, operational_refinement, physical, stubs)
+        with connection.transaction():
             connection.execute(
                 "INSERT INTO operational_ingest_generations "
                 "(generation, started_at, completed_at) VALUES (1, 1, NULL)"
             )
             connection.execute(
-                "INSERT INTO operational_ingest_generation_owners "
-                "(generation, owner_token, claimed_at, lease_expires_at) "
-                "VALUES (1, ?, 1, 100)",
+                "INSERT INTO operational_ingest_generation_owners (generation, owner_token, claimed_at, lease_expires_at) VALUES (1, %s, 1, 100)",
                 (owner,),
             )
             connection.execute(
-                "INSERT INTO catalog_canonical_value_allocation_anchors "
-                "(value_sha256) VALUES (?)",
+                "INSERT INTO catalog_canonical_value_allocation_anchors (value_sha256) VALUES (%s)",
                 (value_sha256,),
             )
             connection.execute(
-                "INSERT INTO catalog_canonical_value_allocation_seals "
-                "(value_sha256) VALUES (?)",
+                "INSERT INTO catalog_canonical_value_allocation_seals (value_sha256) VALUES (%s)",
                 (value_sha256,),
             )
             # The source-root claim intentionally precedes the build mapping
             # that its final identity enables; all declared FKs remain valid.
             connection.execute(
-                "INSERT INTO operational_canonical_value_uploads "
-                "(generation, value_sha256) VALUES (1, ?)",
+                "INSERT INTO operational_canonical_value_uploads (generation, value_sha256) VALUES (1, %s)",
                 (value_sha256,),
             )
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_source_build_generations"
-        ).fetchone() == (0,)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_canonical_value_uploads"
-        ).fetchone() == (1,)
+        assert inspect_one(
+            connection, "SELECT COUNT(*) FROM operational_source_build_generations"
+        ) == (0,)
+        assert inspect_one(
+            connection, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+        ) == (1,)
 
-        with connection:
+        with connection.transaction():
             connection.execute(
-                "INSERT INTO catalog_source_build_descriptor "
-                "(build_id, scope_key, manifest_policy_id, created_at) "
-                "VALUES (?, ?, 1, 1)",
+                "INSERT INTO catalog_source_build_descriptor (build_id, scope_key, manifest_policy_id, created_at) VALUES (%s, %s, 1, 1)",
                 (build_id, b"s" * 32),
             )
             connection.execute(
-                "INSERT INTO operational_source_build_generations "
-                "(build_id, generation) VALUES (?, 1)",
+                "INSERT INTO operational_source_build_generations (build_id, generation) VALUES (%s, 1)",
                 (build_id,),
             )
             connection.execute(
-                "DELETE FROM operational_canonical_value_uploads "
-                "WHERE generation = 1 AND value_sha256 = ?",
+                "DELETE FROM operational_canonical_value_uploads WHERE generation = 1 AND value_sha256 = %s",
                 (value_sha256,),
             )
-        assert connection.execute(
+        assert inspect_one(
+            connection,
             "SELECT build_id FROM operational_source_build_generations "
-            "WHERE generation = 1"
-        ).fetchone() == (build_id,)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM operational_canonical_value_uploads"
-        ).fetchone() == (0,)
+            "WHERE generation = 1",
+        ) == (build_id,)
+        assert inspect_one(
+            connection, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+        ) == (0,)
     finally:
         connection.close()
 
@@ -3858,24 +3851,16 @@ def test_operational_activation_is_an_inline_projection_without_sql_object() -> 
     )
 
 
-def test_complete_operational_mariadb_fixture_physically_refines(
-    mariadb_config: CoreConfig,
+def test_complete_operational_seeded_fixture_physically_refines(
+    db_config: CoreConfig,
 ) -> None:
     logical, local_names, physical, stubs = _schemas()
     machine = operational_refinement.validate_operational_machine_contract(
         LOGICAL_PATH, PHYSICAL_PATH
     )
     relation_by_name = {value.relation: value for value in physical.relations}
-    database_config = mariadb_config.database
-    with MariaDBConnector(
-        host=database_config.host,
-        port=database_config.port,
-        user=database_config.user,
-        password=database_config.password,
-        database=database_config.database,
-    ) as connector:
-        for statement in operational_refinement.render_mariadb_ddl(physical, stubs):
-            connector.execute(statement)
+    with database_connector(db_config) as connector:
+        render_fixture(connector, operational_refinement, physical, stubs)
         for seed in machine.seeds:
             table = relation_by_name[seed.relation].table
             assert table is not None
@@ -3885,19 +3870,25 @@ def test_complete_operational_mariadb_fixture_physically_refines(
                 f"INSERT INTO `{table}` ({columns}) VALUES ({placeholders})",
                 tuple(value.value for value in seed.cells),
             )
-        assert connector.fetch_all("""
+        assert inspect_all(
+            connector,
+            """
             SELECT stream, next_revision, updated_at
             FROM operational_revision_allocators ORDER BY stream
-            """) == [("CATALOG", 1, 0), ("SOURCE", 1, 0)]
+            """,
+        ) == [("CATALOG", 1, 0), ("SOURCE", 1, 0)]
         connector.execute("""
             UPDATE operational_revision_allocators
             SET next_revision = 2, updated_at = 1
             WHERE stream = 'SOURCE'
             """)
-        assert connector.fetch_one("""
+        assert inspect_one(
+            connector,
+            """
             SELECT next_revision, updated_at
             FROM operational_revision_allocators WHERE stream = 'SOURCE'
-            """) == (2, 1)
+            """,
+        ) == (2, 1)
         owner = b"source-root-ownr"
         build_id = b"source-root-bld1"
         value_sha256 = bytes.fromhex("51" * 32)
@@ -3928,8 +3919,8 @@ def test_complete_operational_mariadb_fixture_physically_refines(
                 "(generation, value_sha256) VALUES (1, %s)",
                 (value_sha256,),
             )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_source_build_generations"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_source_build_generations"
         ) == (0,)
         connector.commit()
         with connector.transaction():
@@ -3949,14 +3940,15 @@ def test_complete_operational_mariadb_fixture_physically_refines(
                 "WHERE generation = 1 AND value_sha256 = %s",
                 (value_sha256,),
             )
-        assert connector.fetch_one(
+        assert inspect_one(
+            connector,
             "SELECT build_id FROM operational_source_build_generations "
-            "WHERE generation = 1"
+            "WHERE generation = 1",
         ) == (build_id,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_canonical_value_uploads"
+        assert inspect_one(
+            connector, "SELECT COUNT(*) FROM operational_canonical_value_uploads"
         ) == (0,)
-        database = refinement.introspect_mariadb(connector)
+        database = introspect_fixture(connector, refinement)
 
     report = operational_refinement.compare_operational_refinement(
         logical,
@@ -3972,7 +3964,7 @@ def test_complete_operational_mariadb_fixture_physically_refines(
     assert schema_epoch is not None
     assert schema_epoch.column("manifest_sha256") == refinement.ColumnShape(
         "manifest_sha256",
-        "BINARY(32)",
+        "BLOB" if db_config.database.sql_type == "sqlite" else "BINARY(32)",
         False,
         None,
     )

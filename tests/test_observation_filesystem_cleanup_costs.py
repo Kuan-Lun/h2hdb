@@ -17,6 +17,7 @@ from vnext_catalog_identity_fixtures import seed_gallery_observation_file
 from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 from vnext_publication_cleanup_fixtures import partial_publication_setup
+from vnext_test_database import atomic_fixture
 
 import h2hdb.vnext_cleanup_repository as cleanup
 from h2hdb import CoreConfig
@@ -71,6 +72,7 @@ class _Sample:
     queries: tuple[str, ...]
 
 
+@atomic_fixture
 def _seed_observation(connector: SQLConnector, *, observation: int, files: int) -> None:
     connector.execute(
         "INSERT INTO catalog_gallery_observation_allocations "
@@ -282,10 +284,10 @@ def test_filesystem_cleanup_repeated_cycles_reload_retention_authority(
 
 
 def test_cost_oracle_rejects_scalar_deletion_with_correct_retained_results(
-    sqlite_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
+    db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     files = 65
-    gate, cycle = _seed(sqlite_config, files)
+    gate, cycle = _seed(db_config, files)
     original = cleanup._delete_static_key_page
 
     def scalar(work: VNextUnitOfWork, **kwargs: Any) -> None:
@@ -297,7 +299,7 @@ def test_cost_oracle_rejects_scalar_deletion_with_correct_retained_results(
 
     with monkeypatch.context() as patch:
         patch.setattr(cleanup, "_delete_static_key_page", scalar)
-        samples = _drain(sqlite_config, gate, cycle, monkeypatch, files=files)
+        samples = _drain(db_config, gate, cycle, monkeypatch, files=files)
     with pytest.raises(AssertionError, match="SQL cost"):
         _assert_costs(samples, files=files)
 
