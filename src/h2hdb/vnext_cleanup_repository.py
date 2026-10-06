@@ -442,6 +442,12 @@ class VNextCleanupRepository:
         )
 
     @staticmethod
+    def has_open_current_only_cycle(work: VNextUnitOfWork) -> bool:
+        """Preserve interrupted-cycle priority before scheduling resource I/O."""
+
+        return _load_open_current_only_cycle(work) is not None
+
+    @staticmethod
     def current_only_maintenance_state(
         work: VNextUnitOfWork,
         *,

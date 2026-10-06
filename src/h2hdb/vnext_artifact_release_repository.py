@@ -287,6 +287,28 @@ class ArtifactReleaseRepository:
     """Reconcile active protection tokens owned by inactive unpublished work."""
 
     @staticmethod
+    def has_pending_release(work: VNextUnitOfWork) -> bool:
+        """Return a fresh scheduling hint, never an external-release capability.
+
+        Share the exact candidate reachability predicate with page issuance.
+        The hint intentionally does not hydrate resources: issue, revalidation
+        and acknowledgement must still reconstruct all facts under a live
+        EXCLUSIVE lease before and after external I/O.
+        """
+
+        row = work.connector.fetch_one(
+            "SELECT 1 FROM catalog_prepared_artifacts AS prepared "
+            "WHERE prepared.state IN ('PENDING', 'PREPARED') "
+            + _CANDIDATE_ELIGIBILITY
+            + "LIMIT 1"
+        )
+        if row and row != (1,):
+            raise ArtifactReleaseConflictError(
+                "pending artifact release probe returned an invalid shape"
+            )
+        return bool(row)
+
+    @staticmethod
     def issue_page(
         work: VNextUnitOfWork,
         *,

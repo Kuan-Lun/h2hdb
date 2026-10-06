@@ -2040,9 +2040,12 @@ class VNextIngestFacade:
     ) -> VNextCurrentOnlyMaintenanceOutcome:
         """Advance one bounded publication/resource current-only fixed point.
 
-        When database cleanup is blocked by a resource protected by an
-        abandoned, unpublished candidate, one attempt terminally releases that
-        single protection token.  The database issues and revalidates the
+        After any interrupted cleanup cycle, pending resources protected by
+        abandoned, unpublished candidates take priority over new database
+        cleanup. One attempt terminally releases a single protection token,
+        without first repeating the catalog-wide eligibility scan. A fresh
+        resource hint is only scheduling evidence; it is never cached across
+        calls. The database issues and revalidates the
         immutable item, then adapter I/O runs outside every database transaction
         before the acknowledgement is committed.  A lost response repeats the
         same terminal protection-token tombstone on the next call.
@@ -2106,14 +2109,30 @@ class VNextIngestFacade:
                 "initial_state", transaction_outcome="unconfirmed"
             ) as step:
                 with connector.read_transaction():
+                    work = VNextUnitOfWork(connector, backend=self.__backend)
+                    with database_phase("maintenance_artifact_hint"):
+                        resource_pending = (
+                            artifact_release_adapters is not None
+                            and not VNextCleanupRepository.has_open_current_only_cycle(
+                                work
+                            )
+                            and ArtifactReleaseRepository.has_pending_release(work)
+                        )
                     maintenance_state = (
-                        VNextCleanupRepository.current_only_maintenance_state(
-                            VNextUnitOfWork(connector, backend=self.__backend),
+                        None
+                        if resource_pending
+                        else VNextCleanupRepository.current_only_maintenance_state(
+                            work,
                             cycle_cutoff_at=cycle_cutoff_at,
                         )
                     )
                 step.describe(
-                    transaction_outcome="committed", state=maintenance_state.value
+                    transaction_outcome="committed",
+                    state=(
+                        "RESOURCE_PENDING"
+                        if maintenance_state is None
+                        else maintenance_state.value
+                    ),
                 )
             if maintenance_state is CatalogPublicationMaintenanceState.DONE:
                 performance.describe(quiet=True)
@@ -2152,7 +2171,11 @@ class VNextIngestFacade:
                     connector, lease, duration=duration
                 )
                 released_artifact_page = (
-                    maintenance_state is CatalogPublicationMaintenanceState.BLOCKED
+                    (
+                        resource_pending
+                        or maintenance_state
+                        is CatalogPublicationMaintenanceState.BLOCKED
+                    )
                     and artifact_release_adapters is not None
                     and self.__release_current_only_artifact_page(
                         connector,
@@ -2258,13 +2281,26 @@ class VNextIngestFacade:
             "artifact_issue", transaction_outcome="unconfirmed"
         ) as step:
             with connector.transaction():
-                page = ArtifactReleaseRepository.issue_page(
-                    VNextUnitOfWork(connector, backend=self.__backend),
-                    gate_lease=lease,
-                    page_limit=_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT,
-                    now=self.__clock,
+                work = VNextUnitOfWork(connector, backend=self.__backend)
+                # Another owner can leave an interrupted cycle between the
+                # optimistic hint and our EXCLUSIVE claim. Resume it before
+                # scheduling new resource work, even if the hint found orphans.
+                page = (
+                    None
+                    if VNextCleanupRepository.has_open_current_only_cycle(work)
+                    else ArtifactReleaseRepository.issue_page(
+                        work,
+                        gate_lease=lease,
+                        page_limit=_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT,
+                        now=self.__clock,
+                    )
                 )
-            step.describe(transaction_outcome="committed", terminal=page.terminal)
+            step.describe(
+                transaction_outcome="committed", interrupted_cycle=page is None
+            )
+            if page is None:
+                return False
+            step.describe(terminal=page.terminal)
         if page.terminal:
             return False
 
