@@ -232,6 +232,26 @@ candidate scan only while that exact lease remains live. Final release still
 checks the lease, and the next ingest claim performs a fresh check. Reaching the
 cleanup batch budget still requires the final full state check.
 
+With artifact release adapters, each attempt first checks for interrupted cleanup
+and abandoned resource protections. An orphan hint schedules one resource release
+before new database cleanup, avoiding repeated catalog-wide empty probes for each
+resource. After claiming EXCLUSIVE it checks interrupted work again, then retains
+the exact issue/revalidate/external-I/O/acknowledge boundaries. The hint grants no
+authority and neither empty hints nor DONE are cached across calls. Once resources
+are drained, normal fresh eligibility checks still establish the fixed point.
+The release page remains one item; no longer I/O batch or schema change is needed.
+Telemetry adds `maintenance_artifact_hint` and the optimistic initial-state label
+`RESOURCE_PENDING` without changing public outcomes.
+
+`scripts/current_only_release_probe.py` constructs abandoned resources through
+public ingestion with foreign keys enabled. Its measured row-count vector N,
+outstanding resource count A and experimental page bound B separate retained
+data size from backlog and batching. It records SQL calls, SQLite VM estimates
+or MariaDB Handler reads, instrumented drain time, full READY, unchanged current
+catalog/library, and the next successful claim. The fixed selector budget rejects
+eligibility scans during pure resource release; it is not a production latency
+budget or evidence that the complete non-image workload meets 24 hours.
+
 Role audit pagination includes equivalent tuple and expanded seek predicates in
 one query so SQLite and MariaDB can use their composite indexes. Manual role and
 cleanup probes compare actual engine work with historical or deliberately slow

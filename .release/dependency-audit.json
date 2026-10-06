@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-04T08:11:50+00:00",
+  "checked_at": "2026-10-06T09:05:32+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.3",
+  "project_version": "0.45.4",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -59,7 +59,7 @@
     {
       "declared": "hypothesis>=6.165.10,<7.0.0",
       "group": "optional:dev",
-      "latest": "6.168.3",
+      "latest": "6.168.5",
       "latest_satisfies": true,
       "name": "hypothesis",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Compared every build, runtime, optional development and Node candidate with the 0.45.2 receipt. Only mypy 2.4.0 and Ruff 0.16.10 are newly released; reviewed their official changelogs (https://mypy.readthedocs.io/en/stable/changelog.html#mypy-2-4 and https://github.com/astral-sh/ruff/releases/tag/0.16.10), including native parser defaults, Python 3.15 support and preview-only UP052. Installed both in the local Python 3.14 environment; full strict mypy (379 files) and Ruff lint pass with existing settings. All candidates satisfy existing ranges; runtime and Node candidates unchanged. Core 0.45.3 retains public signatures and schema, and all four consumer ranges h2hdb>=0.43.0,<0.46.0 accept it. Candidate wheel integration and release gates are reported separately, not implied by this receipt.",
+    "note": "Compared every build, runtime, optional development and Node registry candidate with the 0.45.3 receipt, including candidates outside upper bounds. Only Hypothesis changed, from 6.168.3 to 6.168.5. Reviewed official notes https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.4 (PyPy 3.12 support) and https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.5 (Django from_field type annotation). Installed 6.168.5 in the repository-local Python 3.14 environment for validation; schema codec property tests and strict mypy pass. All latest candidates satisfy existing ranges and declare Python 3.14 support; runtime and Node candidates are unchanged. Core 0.45.4 preserves public signatures, outcomes and schema while scheduling fresh orphan releases before new database cleanup; four consumer ranges >=0.43.0,<0.46.0 accept it. Repository gates, candidate-wheel resolution and deployment acceptance are reported separately.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

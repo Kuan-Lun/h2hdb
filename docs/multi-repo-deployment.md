@@ -171,6 +171,9 @@ Applications import these public entry points from `h2hdb`:
   metadata cleanup; artifact-free callers may omit it. Its typed outcome
   distinguishes `PROGRESSED` (retry immediately) from `BLOCKED`/`CONTENDED`
   (retry on the ordinary resident poll cadence) and terminal `DONE`.
+  Interrupted cleanup retains priority. Otherwise a fresh orphan-resource hint
+  schedules one exact fenced resource release before scanning new database
+  cleanup candidates; it never preserves empty results across attempts.
 
 Repository classes that accept a connector or unit of work are internal
 coordination surfaces. A sibling repository must not depend on physical table
