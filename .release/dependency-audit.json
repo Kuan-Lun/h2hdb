@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-06T09:05:32+00:00",
+  "checked_at": "2026-10-07T13:57:16+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.4",
+  "project_version": "0.45.5",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Compared every build, runtime, optional development and Node registry candidate with the 0.45.3 receipt, including candidates outside upper bounds. Only Hypothesis changed, from 6.168.3 to 6.168.5. Reviewed official notes https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.4 (PyPy 3.12 support) and https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.5 (Django from_field type annotation). Installed 6.168.5 in the repository-local Python 3.14 environment for validation; schema codec property tests and strict mypy pass. All latest candidates satisfy existing ranges and declare Python 3.14 support; runtime and Node candidates are unchanged. Core 0.45.4 preserves public signatures, outcomes and schema while scheduling fresh orphan releases before new database cleanup; four consumer ranges >=0.43.0,<0.46.0 accept it. Repository gates, candidate-wheel resolution and deployment acceptance are reported separately.",
+    "note": "Reviewed all build, runtime, optional development and Node candidates against the 0.45.4 receipt, including registry candidates outside current upper bounds: all 12 Python entries and the Node entry are unchanged. The local Python 3.14 environment has every latest discovered Python candidate installed. Existing upstream compatibility review and upper-bound rationale remain applicable; no dependency manifests changed. Core 0.45.5 reuses existing durable assembly receipts to bound source selection, existing packet-safe executemany for changed hashes, and shared fresh cleanup predicates with indexed raw-child absence probes. No schema, public signature, configuration, or data-format migration is introduced. All four actual Compose Python roles declare >=0.43.0,<0.46.0. Candidate wheel resolution, exact runtime artifact checks, dual-engine manual results, code review and release gates are recorded separately; this audit is not their receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
