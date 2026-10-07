@@ -40,7 +40,7 @@
 - task branch 可包含多個邏輯 Conventional Commits。避免巨大 commit；小而
   內聚的任務仍可只有一個 commit。
 - 任務完成後執行 `scripts/git-flow-merge.sh`。該腳本負責 exact-tree release
-  gate、`--no-ff --no-commit` candidate、自動 Codex code review、最後的 merge
+  gate、`--no-ff --no-commit` candidate、依變更 profile 選擇的 Codex code review、最後的 merge
   commit、安全移除 task worktree，以及以 `git branch -d` 刪除已合併的本機
   branch。Review 失敗亦須 abort merge並保留 task branch。
 - task branch 與 primary 只須有 common ancestor；不得要求 task branch 必須
@@ -131,7 +131,22 @@
 - `scripts/format.sh`：明確執行會修改檔案的 Ruff fixer、Ruff formatter與
   Markdown fixer。
 - `scripts/check-fast.sh`：離線、唯讀的 Ruff、format check、strict mypy與
-  markdownlint；每次非 merge commit執行。不得寫入 Ruff或 mypy cache。
+  markdownlint；非純文件的非 merge commit執行。不得寫入 Ruff或 mypy cache。
+- `scripts/check_change_scope.py` 是檢查 profile 分類的唯一入口，與版本
+  impact 判定分開。非 merge commit比較 HEAD與 staged index；merge比較
+  primary parent與真正 staged candidate 的完整差異，不得只看最後一個
+  commit、commit message或工作樹。文件 allowlist以腳本為準；只有一般
+  非 executable 文件的新增、修改或刪除可使用 documentation profile。
+  程式、測試、依賴、schema、設定、hooks、代理政策、未知路徑、檔案類型
+  或 mode變更均使用 full profile。Rename的兩端都須分類，Git或分類失敗
+  必須阻止操作，空差異不得當成純文件豁免。
+- 純文件 commit與merge執行 `scripts/check-docs.py`，只驗證 exact candidate
+  的 whitespace、套件 README引用與 repository-local Markdown規則，不啟動 Ruff、mypy、
+  pytest、Lean、TLC、build或 online code review。文件內容與設定從 Git tree
+  匯出至隔離暫存目錄，不能拿 unstaged內容代替 candidate；檢查結束須確認
+  candidate未變動。Branch、提交格式與task-level版本政策仍適用。
+  明確手動執行 `scripts/check-fast.sh` 或 `scripts/check-full.sh` 始終執行
+  原有完整 profile，不因目前差異是文件而降級。
 - `scripts/run-pytest.py merge`是 canonical bounded pytest runner。它先執行
   `not deep and not mariadb`，再以單一 worker、`H2HDB_TEST_MARIADB=1`執行
   `mariadb_smoke and mariadb and not deep`；collection、execution、teardown、
@@ -163,13 +178,16 @@
   真實 CBZ／raster oracle已驗證。不得為此把 adapter依賴加入 Core。
 - `.githooks/pre-merge-commit` 透過 `scripts/release-gate.py run --index`
   驗證 staged candidate；不得另建競爭的第二套 merge gate。
-- release gate先離線驗證 exact candidate code review evidence，再驗證
-  task-level version與 dependency audit，最後呼叫
-  `scripts/check-full.sh`。成功 receipt存在 Git metadata，且只對 exact tree、
-  project version、gate profile與 required-check set有效。
-- release receipt只證明 bounded pytest merge profile；不得宣稱它執行或證明
+- release gate重新分類 exact candidate；full profile先離線驗證 code review
+  evidence，再驗證 task-level version與 dependency audit，最後呼叫
+  `scripts/check-full.sh`。Documentation profile保留版本政策，改執行文件
+  檢查。成功 receipt存在 Git metadata，綁定 exact tree、project version、
+  gate profile與 required-check set；文件 receipt另綁定比較 base tree，
+  不得當作 full receipt。重用任何receipt前仍重核task-level版本政策。
+- Full release receipt只證明 bounded pytest merge profile；不得宣稱它執行或證明
   `deep` matrices、非 smoke live-MariaDB cases或 deep TLC。手動 deep結果必須
-  連同 exact invocation另行回報。
+  連同 exact invocation另行回報。文件 receipt只證明文件檢查，不能宣稱通過
+  程式測試。Version-increasing push涵蓋release變更時仍要求full receipt。
 - exact-tree release receipt不得 commit、修改或偽造。相同 tree的 merge
   commit與 pre-push可以重用 receipt；tree或 required checks改變就必須重跑。
 - dependency audit可連網；commit hooks只驗證 candidate內既有 evidence，
@@ -183,7 +201,9 @@
 ## Code Review Rules
 
 - 每次 task合併前，`scripts/git-flow-merge.sh` 必須先準備真正的 two-parent
-  merge candidate，再於 Git hooks之外呼叫 `scripts/review-code.py run --index`。
+  merge candidate，再依primary parent到candidate的完整差異分類。Full
+  profile於 Git hooks之外呼叫 `scripts/review-code.py run --index`；純文件
+  profile不啟動code review，既有release gate仍獨立重核分類與文件結果。
   此步驟可使用已登入的 Codex服務；需要 local `.venv`與 PATH中的 `codex`。
   Review採 read-only sandbox，不得修改檔案、執行 merge/gate、啟動服務或
   自動修正問題。不得要求 GitHub PR、Actions或 provider-specific Stop hook。
@@ -208,7 +228,7 @@
   的 `run`會先廢止舊紀錄，失敗不得沿用舊結果。
   同一 candidate同時只允許一個 `run`；重疊請求在啟動審查前拒絕，不取代
   正在執行者，也不代表新的審查結果。POSIX離線 verify在審查執行中亦拒絕。
-- Code review紀錄與測試 release receipt分開。既有 release gate在重用
+- Code review紀錄與測試 release receipt分開。Full release gate在重用
   release receipt前及完整 checks後都必須驗證 code review，且不得自行連線
   呼叫模型。AI未發現問題不等於程式正確性的證明；本機紀錄亦非防竄改簽章。
   Codex原始結果與診斷保留於 metadata，CLI版本與 model override記錄於

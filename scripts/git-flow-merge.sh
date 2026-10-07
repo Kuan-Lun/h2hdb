@@ -61,14 +61,26 @@ restore_after_failure() {
 
 review_candidate() {
     cd "$merge_worktree" || fail "cannot enter merge worktree: $merge_worktree"
-    [[ -f scripts/review-code.py ]] || fail 'scripts/review-code.py is missing'
+    local python scope
     if [[ -x .venv/bin/python ]]; then
-        exec .venv/bin/python scripts/review-code.py run --index
+        python=.venv/bin/python
+    elif [[ -x .venv/Scripts/python.exe ]]; then
+        python=.venv/Scripts/python.exe
+    else
+        fail 'create the local development environment with scripts/rebuild-env.sh'
     fi
-    if [[ -x .venv/Scripts/python.exe ]]; then
-        exec .venv/Scripts/python.exe scripts/review-code.py run --index
-    fi
-    fail 'create the local development environment with scripts/rebuild-env.sh'
+    scope="$("$python" scripts/check_change_scope.py --index --base HEAD)" \
+        || fail 'cannot classify the merge candidate'
+    case "$scope" in
+        documentation)
+            printf '%s\n' 'Documentation-only candidate: online code review is not required.'
+            ;;
+        full)
+            [[ -f scripts/review-code.py ]] || fail 'scripts/review-code.py is missing'
+            exec "$python" scripts/review-code.py run --index
+            ;;
+        *) fail "invalid check scope: $scope" ;;
+    esac
 }
 
 repository_root="$(git rev-parse --show-toplevel)"

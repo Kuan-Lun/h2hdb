@@ -16,11 +16,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from check_change_scope import ChangeScopeError, classify_changes, resolve_tree
 from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-RECEIPT_SCHEMA_VERSION = 1
-RELEASE_PROFILE = "h2hdb-release-v5"
+RECEIPT_SCHEMA_VERSION = 2
+RELEASE_PROFILE = "h2hdb-release-v6"
+DOCUMENTATION_PROFILE = "h2hdb-documentation-v1"
+DOCUMENTATION_CHECKS = (
+    "candidate-whitespace",
+    "project-readme-reference",
+    "markdownlint-cli2",
+    "version-policy",
+)
 REQUIRED_CHECKS = (
     "exact-candidate-code-review",
     "ruff-lint",
@@ -44,6 +52,33 @@ VersionChange = Literal["initial", "same", "increase", "decrease"]
 
 class ReleaseGateError(RuntimeError):
     """A local release invariant was not satisfied."""
+
+
+@dataclass(frozen=True)
+class GateScope:
+    base_tree: str
+    kind: Literal["documentation", "full"]
+
+    @property
+    def profile(self) -> str:
+        return (
+            DOCUMENTATION_PROFILE if self.kind == "documentation" else RELEASE_PROFILE
+        )
+
+    @property
+    def checks(self) -> tuple[str, ...]:
+        return DOCUMENTATION_CHECKS if self.kind == "documentation" else REQUIRED_CHECKS
+
+    @property
+    def receipt_base(self) -> str | None:
+        # Full checks validate the entire tree; a documentation result only
+        # establishes the permitted delta from its exact comparison base.
+        return self.base_tree if self.kind == "documentation" else None
+
+
+def _scope(base: str, tree: str) -> GateScope:
+    base_tree = resolve_tree(REPOSITORY_ROOT, base)
+    return GateScope(base_tree, classify_changes(base_tree, tree, REPOSITORY_ROOT))
 
 
 @dataclass(frozen=True)
@@ -178,15 +213,14 @@ def _assert_no_unstaged_or_untracked_files() -> None:
         )
     if unstaged.returncode == 1:
         raise ReleaseGateError(
-            "A version-bump commit must not contain unstaged tracked changes. "
-            "Stage or stash them before retrying the commit."
+            "Candidate verification requires no unstaged tracked changes. "
+            "Stage the intended changes or use a separate clean worktree."
         )
     untracked = _git("ls-files", "--others", "--exclude-standard", "-z")
     if untracked:
         paths = [value for value in untracked.split("\0") if value]
         raise ReleaseGateError(
-            "A version-bump commit must not contain untracked files: "
-            + ", ".join(paths)
+            "Candidate verification requires no untracked files: " + ", ".join(paths)
         )
 
 
@@ -206,42 +240,47 @@ def _receipt_directory() -> Path:
     return common_directory / "h2hdb-release" / "receipts"
 
 
-def _receipt_path(tree: str) -> Path:
-    return _receipt_directory() / f"{tree}.json"
+def _receipt_path(tree: str, scope: GateScope) -> Path:
+    suffix = f".{scope.receipt_base}" if scope.receipt_base is not None else ""
+    return _receipt_directory() / f"{tree}.{scope.profile}{suffix}.json"
 
 
-def _receipt_matches(document: object, *, tree: str, version: Version) -> bool:
+def _receipt_matches(
+    document: object, *, tree: str, version: Version, scope: GateScope
+) -> bool:
     if not isinstance(document, dict):
         return False
     return (
         document.get("schema_version") == RECEIPT_SCHEMA_VERSION
-        and document.get("profile") == RELEASE_PROFILE
+        and document.get("profile") == scope.profile
+        and document.get("base_tree") == scope.receipt_base
         and document.get("tree") == tree
         and document.get("project_version") == str(version)
-        and document.get("checks") == list(REQUIRED_CHECKS)
+        and document.get("checks") == list(scope.checks)
         and document.get("result") == "passed"
     )
 
 
-def _has_valid_receipt(tree: str, version: Version) -> bool:
-    path = _receipt_path(tree)
+def _has_valid_receipt(tree: str, version: Version, scope: GateScope) -> bool:
+    path = _receipt_path(tree, scope)
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError, json.JSONDecodeError, OSError:
         return False
-    return _receipt_matches(document, tree=tree, version=version)
+    return _receipt_matches(document, tree=tree, version=version, scope=scope)
 
 
-def _write_receipt(tree: str, version: Version) -> Path:
+def _write_receipt(tree: str, version: Version, scope: GateScope) -> Path:
     directory = _receipt_directory()
     directory.mkdir(parents=True, exist_ok=True)
-    destination = _receipt_path(tree)
+    destination = _receipt_path(tree, scope)
     document = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
-        "profile": RELEASE_PROFILE,
+        "profile": scope.profile,
+        "base_tree": scope.receipt_base,
         "tree": tree,
         "project_version": str(version),
-        "checks": list(REQUIRED_CHECKS),
+        "checks": list(scope.checks),
         "result": "passed",
         "verified_at": datetime.now(UTC).isoformat(),
         "environment": {
@@ -301,29 +340,59 @@ def _run_release_gate(
     tree: str,
     version: Version,
     *,
+    scope: GateScope,
     refresh: bool,
     version_arguments: tuple[str, ...],
     review_arguments: tuple[str, ...],
 ) -> None:
-    _verify_code_review(review_arguments, expected_tree=tree)
-    if not refresh and _has_valid_receipt(tree, version):
-        _assert_candidate_unchanged(tree, version)
-        print(
-            f"Local release gate already passed for tree {tree} "
-            f"(version {version}); reusing receipt."
-        )
-        return
-
+    print(f"Selected {scope.kind} checks for {scope.base_tree} -> {tree}.", flush=True)
+    if scope.kind == "full":
+        _verify_code_review(review_arguments, expected_tree=tree)
+    # Version impact is task-relative even when full tree checks can be reused.
     _run(
         "Task version and dependency-audit policy",
         (sys.executable, "scripts/check-version.py", *version_arguments),
     )
-    _run("Bounded repository release gate", ("scripts/check-full.sh",))
+    if not refresh and _has_valid_receipt(tree, version, scope):
+        _assert_candidate_unchanged(tree, version)
+        _assert_scope_base_unchanged(scope, version_arguments)
+        print(
+            f"Local {scope.kind} gate already passed for tree {tree} "
+            f"(version {version}); reusing receipt."
+        )
+        return
+
+    if scope.kind == "documentation":
+        _run(
+            "Exact-candidate documentation checks",
+            (
+                sys.executable,
+                "scripts/check-docs.py",
+                "--base",
+                scope.base_tree,
+                "--candidate",
+                tree,
+            ),
+        )
+    else:
+        _run("Bounded repository release gate", ("scripts/check-full.sh",))
 
     _assert_candidate_unchanged(tree, version)
-    _verify_code_review(review_arguments, expected_tree=tree)
-    receipt = _write_receipt(tree, version)
-    print(f"\nLocal release gate passed; wrote {receipt}")
+    _assert_scope_base_unchanged(scope, version_arguments)
+    if scope.kind == "full":
+        _verify_code_review(review_arguments, expected_tree=tree)
+    receipt = _write_receipt(tree, version, scope)
+    print(f"\nLocal {scope.kind} gate passed; wrote {receipt}")
+
+
+def _assert_scope_base_unchanged(
+    scope: GateScope, version_arguments: tuple[str, ...]
+) -> None:
+    base = "HEAD" if "--index" in version_arguments else None
+    if "--base" in version_arguments:
+        base = version_arguments[version_arguments.index("--base") + 1]
+    if base is not None and resolve_tree(REPOSITORY_ROOT, base) != scope.base_tree:
+        raise ReleaseGateError("The comparison base changed during verification")
 
 
 def _pre_commit() -> None:
@@ -383,16 +452,33 @@ def _pre_push(document: str) -> None:
                 )
         tree = _git("rev-parse", f"{update.local_oid}^{{tree}}")
         review_arguments = ("--revision", update.local_oid)
+        # A version-increasing push includes release metadata/code changes,
+        # even if the final local merge happened to change only documentation.
+        # Version policy belongs to the final integrated task, not the entire
+        # unpublished history, which can contain several valid release bumps.
+        task_base = _revision_base(update.local_oid)
+        scope = GateScope(resolve_tree(REPOSITORY_ROOT, task_base), "full")
         _verify_code_review(review_arguments, expected_tree=tree)
-        if not _has_valid_receipt(tree, current):
+        version_arguments = (
+            "--base",
+            task_base,
+            "--candidate",
+            update.local_oid,
+        )
+        if _has_valid_receipt(tree, current, scope):
+            _run(
+                "Push version and dependency-audit policy",
+                (sys.executable, "scripts/check-version.py", *version_arguments),
+            )
+        else:
             head = _git("rev-parse", "HEAD")
             if update.local_oid != head:
                 raise ReleaseGateError(
                     f"Push would publish project.version {current}, but tree {tree} "
                     "has no valid local release receipt and is not the checked-out "
                     "HEAD. Check out the exact commit and run "
-                    "`uv run --no-sync python scripts/release-gate.py run "
-                    f"--base {update.remote_oid}`."
+                    "`.venv/bin/python scripts/release-gate.py run "
+                    f"--base {task_base}`."
                 )
             _assert_clean_head()
             print(
@@ -402,13 +488,9 @@ def _pre_push(document: str) -> None:
             _run_release_gate(
                 tree,
                 current,
+                scope=scope,
                 refresh=False,
-                version_arguments=(
-                    "--base",
-                    update.remote_oid,
-                    "--candidate",
-                    update.local_oid,
-                ),
+                version_arguments=version_arguments,
                 review_arguments=review_arguments,
             )
         print(f"Validated local release receipt for version {current} ({tree}).")
@@ -423,32 +505,53 @@ def _explicit_run(*, refresh: bool, index: bool, base: str | None) -> None:
         version = _version_from_spec(":pyproject.toml")
         version_arguments = ("--index",)
         review_arguments = ("--index",)
+        scope = _scope("HEAD", tree)
     else:
         _assert_clean_head()
         tree = _git("rev-parse", "HEAD^{tree}")
         version = _version_from_spec("HEAD:pyproject.toml")
         version_arguments = () if base is None else ("--base", base)
         review_arguments = ("--revision", "HEAD")
+        scope = _scope(base or _revision_base("HEAD"), tree)
     assert version is not None
     _run_release_gate(
         tree,
         version,
+        scope=scope,
         refresh=refresh,
         version_arguments=version_arguments,
         review_arguments=review_arguments,
     )
 
 
+def _revision_base(revision: str) -> str:
+    parents = _git("rev-list", "--parents", "-n", "1", revision).split()
+    if len(parents) < 2:
+        raise ReleaseGateError(
+            "An explicit comparison base is required for a root commit"
+        )
+    if len(parents) == 3:
+        return parents[1]
+    primary = _git("rev-parse", _detect_primary_branch())
+    if parents[0] == primary:
+        return parents[1]
+    return _git("merge-base", primary, parents[0])
+
+
 def _receipt_status(revision: str) -> None:
     tree = _git("rev-parse", f"{revision}^{{tree}}")
-    _verify_code_review(("--revision", revision), expected_tree=tree)
+    scope = _scope(_revision_base(revision), tree)
+    if scope.kind == "full":
+        _verify_code_review(("--revision", revision), expected_tree=tree)
     version = _version_from_spec(f"{revision}:pyproject.toml")
     assert version is not None
-    if not _has_valid_receipt(tree, version):
+    if not _has_valid_receipt(tree, version, scope):
         raise ReleaseGateError(
-            f"No valid {RELEASE_PROFILE} receipt for {revision} ({tree}, version {version})"
+            f"No valid {scope.profile} receipt for {revision} ({tree}, version {version})"
         )
-    print(f"Valid local release receipt for {revision} ({tree}, version {version}).")
+    print(
+        f"Valid local {scope.kind} receipt for {revision} ({tree}, version {version})."
+    )
 
 
 def _arguments() -> argparse.Namespace:
@@ -504,7 +607,7 @@ def main() -> None:
                 )
             case _:
                 _receipt_status(str(arguments.revision))
-    except (ReleaseGateError, subprocess.CalledProcessError) as error:
+    except (ReleaseGateError, ChangeScopeError, subprocess.CalledProcessError) as error:
         print(f"h2hdb release gate: {error}", file=sys.stderr)
         raise SystemExit(1) from error
 
