@@ -1959,6 +1959,7 @@ class _StaticDeleteSpec:
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None
     batch_exact_primary_keys: bool = False
+    selection_root_probe: str | None = None
 
     def __post_init__(self) -> None:
         for metadata in (
@@ -2130,6 +2131,7 @@ def _indirect_spec(
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None,
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None,
     batch_exact_primary_keys: bool = False,
+    selection_root_probe: str | None = None,
 ) -> _StaticDeleteSpec:
     safe_table = _identifier(table)
     return _StaticDeleteSpec(
@@ -2145,6 +2147,7 @@ def _indirect_spec(
         delete_parameter_indexes=delete_parameter_indexes,
         delete_allowed_affected=delete_allowed_affected,
         batch_exact_primary_keys=batch_exact_primary_keys,
+        selection_root_probe=selection_root_probe,
     )
 
 
@@ -2381,9 +2384,23 @@ def _static_select_sql(
     keyset_sql = ""
     if has_after:
         keyset_sql = f" AND ({_keyset_predicate(ordered)})"
+    selected = f"({eligible}) AND ({spec.extra_predicate})"
+    if spec.selection_root_probe is not None:
+        # An indexed child-existence check short-circuits global reachability
+        # work for empty roots. Both the probe and eligibility depend only on r:
+        # a child-dependent CASE would repeat eligibility for every dictionary
+        # row sharing a root. Exact locks and terminal responsibility checks
+        # retain their independent, fresh predicates.
+        # Eligibility stays a WHEN condition: an AND expression in THEN can
+        # evaluate every arm after an early retention blocker on SQLite.
+        selected = (
+            f"(CASE WHEN ({spec.selection_root_probe}) THEN "
+            f"CASE WHEN ({eligible}) THEN 1 ELSE 0 END "
+            f"ELSE 0 END) = 1 AND ({spec.extra_predicate})"
+        )
     return (
-        f"SELECT {select} FROM {spec.source} WHERE ({eligible}) "
-        f"AND ({spec.extra_predicate}) AND ({shard_sql}) "
+        f"SELECT {select} FROM {spec.source} WHERE {selected} "
+        f"AND ({shard_sql}) "
         f"AND ({frozen_root_predicate}) "
         f"{keyset_sql} ORDER BY {select} LIMIT %s"
     )
@@ -6557,29 +6574,52 @@ AND NOT EXISTS (
 """
 
 
+def _canonical_dictionary_spec(
+    table: str,
+    primary_key: tuple[str, ...],
+    digest_columns: tuple[str, ...],
+    *,
+    extra_predicate: str,
+) -> _StaticDeleteSpec:
+    """Share dictionary edges between the child join and indexed root probe."""
+
+    table = _identifier(table)
+    edges = tuple(_identifier(column) for column in digest_columns)
+
+    def references(alias: str) -> str:
+        return " OR ".join(f"r.value_sha256 = {alias}.{column}" for column in edges)
+
+    return _indirect_spec(
+        table,
+        primary_key,
+        f"{table} AS c JOIN catalog_canonical_value_allocation_anchors AS r "
+        f"ON {references('c')}",
+        extra_predicate=extra_predicate,
+        selection_root_probe=" OR ".join(
+            f"EXISTS (SELECT 1 FROM {table} AS probe_child "
+            f"WHERE r.value_sha256 = probe_child.{column})"
+            for column in edges
+        ),
+    )
+
+
 def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_canonical_value_allocation_anchors"
     key = ("value_sha256",)
-    display_title_choice = _indirect_spec(
+    display_title_choice = _canonical_dictionary_spec(
         "catalog_display_title_choices",
         (
             "display_title_policy_id",
             "source_title_sha256",
             "source_gallery_name",
         ),
-        "catalog_display_title_choices AS c "
-        "JOIN catalog_canonical_value_allocation_anchors AS r "
-        "ON r.value_sha256 = c.source_title_sha256 "
-        "OR r.value_sha256 = c.title_sha256",
+        ("source_title_sha256", "title_sha256"),
         extra_predicate=f"NOT ({_live_display_title_choice('c')})",
     )
-    title_sort = _indirect_spec(
+    title_sort = _canonical_dictionary_spec(
         "catalog_title_sorts",
         ("title_sort_policy_id", "title_sha256"),
-        "catalog_title_sorts AS c "
-        "JOIN catalog_canonical_value_allocation_anchors AS r "
-        "ON r.value_sha256 = c.title_sha256 "
-        "OR r.value_sha256 = c.sort_title_sha256",
+        ("title_sha256", "sort_title_sha256"),
         extra_predicate=f"NOT ({_live_title_sort('c')})",
     )
     source_scope = (
