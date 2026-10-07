@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-06T09:05:32+00:00",
+  "checked_at": "2026-10-07T15:21:12+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.4",
+  "project_version": "0.45.5",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Compared every build, runtime, optional development and Node registry candidate with the 0.45.3 receipt, including candidates outside upper bounds. Only Hypothesis changed, from 6.168.3 to 6.168.5. Reviewed official notes https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.4 (PyPy 3.12 support) and https://github.com/HypothesisWorks/hypothesis/releases/tag/v6.168.5 (Django from_field type annotation). Installed 6.168.5 in the repository-local Python 3.14 environment for validation; schema codec property tests and strict mypy pass. All latest candidates satisfy existing ranges and declare Python 3.14 support; runtime and Node candidates are unchanged. Core 0.45.4 preserves public signatures, outcomes and schema while scheduling fresh orphan releases before new database cleanup; four consumer ranges >=0.43.0,<0.46.0 accept it. Repository gates, candidate-wheel resolution and deployment acceptance are reported separately.",
+    "note": "Reviewed all direct build, runtime, optional, development and Node dependencies, including latest registry candidates outside declared upper bounds. Dependency manifests are unchanged from the reviewed 0.45.4 release and this task changes no dependency API usage. Core 0.45.5 uses existing durable assembly receipts for bounded source selection and existing packet-safe execute_many for authenticated changed-hash pages. The canonical dictionary CASE candidate was withdrawn after fixed MariaDB continuation budgets failed; cleanup runtime is byte-identical to committed primary. No public signature, configuration, schema or data-format migration is introduced. All four actual Compose Python roles declare >=0.43.0,<0.46.0. Final candidate resolution, exact artifact checks, dual-engine manual results, review and gates are separate evidence and are not certified by this dependency receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

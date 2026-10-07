@@ -4098,7 +4098,7 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
                 now=40,
             )
             with connector.read_transaction():
-                pending = SourceBuildRepository.get_pending_source_gallery(
+                pending = SourceBuildRepository.get_pending_assembly_gallery(
                     connector,
                     build_id=build_id,
                 )
@@ -4113,8 +4113,8 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
 
         query_plan = assert_indexed_query(
             connector,
-            source_build_module._PENDING_SOURCE_GALLERY_QUERY,
-            (build_id,),
+            source_build_module._PENDING_ASSEMBLY_GALLERY_QUERY,
+            (build_id, 0, 1),
         )
         assert query_plan
         if connector_backend(connector) == "mariadb":

@@ -1609,11 +1609,11 @@ class AnalysisRepository:
             _CURSOR_DIGEST, checkpoint.cursor, live=False
         )
         selected = preparation.keys
-        for digest in selected:
-            work.connector.execute(
+        if selected:
+            work.connector.execute_many(
                 "INSERT INTO catalog_analysis_changed_file_hashes "
                 "(analysis_id, file_sha256) VALUES (%s, %s)",
-                (authority.analysis_id, digest),
+                [(authority.analysis_id, digest) for digest in selected],
             )
         if not selected and checkpoint.processed_count != preparation.source_count:
             raise AnalysisCorruptionError(

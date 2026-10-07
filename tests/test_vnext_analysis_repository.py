@@ -1210,6 +1210,11 @@ def _run_prepared_gallery_stage(
                         "execute_affected",
                         side_effect=AssertionError("batch replay attempted DML"),
                     ),
+                    patch.object(
+                        connector,
+                        "execute_many",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
                 ):
                     replay = method(
                         VNextUnitOfWork(
@@ -1542,6 +1547,11 @@ def _run_stage(
                         patch.object(
                             connector,
                             "execute_affected",
+                            side_effect=AssertionError("batch replay attempted DML"),
+                        ),
+                        patch.object(
+                            connector,
+                            "execute_many",
                             side_effect=AssertionError("batch replay attempted DML"),
                         ),
                     ):
@@ -4069,6 +4079,11 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
                     patch.object(
                         connector,
                         "execute_affected",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
+                    patch.object(
+                        connector,
+                        "execute_many",
                         side_effect=AssertionError("batch replay attempted DML"),
                     ),
                 ):

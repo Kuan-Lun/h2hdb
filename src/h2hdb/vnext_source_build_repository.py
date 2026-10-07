@@ -161,7 +161,7 @@ _ANALYSIS_SNAPSHOT_MANIFEST_TABLE = "catalog_analysis_snapshot_manifest"
 _CATALOG_WORKING_CANDIDATE_TABLE = "operational_catalog_working_candidates"
 _OPERATIONAL_PREPARATION_TABLE = "operational_operational_preparations"
 _SOURCE_BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
-_PENDING_SOURCE_GALLERY_QUERY = (
+_PENDING_ASSEMBLY_GALLERY_QUERY = (
     "SELECT expected.position, expected.gallery_id, identity.locator_sha256 "
     "FROM catalog_source_build_expected_gallery AS expected "
     "LEFT JOIN catalog_gallery_identities AS identity "
@@ -169,7 +169,9 @@ _PENDING_SOURCE_GALLERY_QUERY = (
     "LEFT JOIN catalog_source_build_galleries AS member "
     "ON member.build_id = expected.build_id "
     "AND member.gallery_id = expected.gallery_id "
-    "WHERE expected.build_id = %s AND member.gallery_id IS NULL "
+    "WHERE expected.build_id = %s "
+    "AND expected.position >= %s AND expected.position < %s "
+    "AND member.gallery_id IS NULL "
     "ORDER BY expected.position LIMIT 1"
 )
 
@@ -1813,12 +1815,17 @@ class SourceBuildRepository:
         )
 
     @staticmethod
-    def get_pending_source_gallery(
+    def get_pending_assembly_gallery(
         connector: Any,
         *,
         build_id: bytes,
     ) -> PendingSourceGallery | None:
-        """Select at most one expected-minus-linked member by PK keyset order."""
+        """Find an unlinked member in the next durable assembly window.
+
+        None means this window can be independently assembled, not that source
+        work is complete. The caller first authorizes the live working build;
+        no process cursor or supplied position can skip an unassembled prefix.
+        """
 
         build = require_uuid16(build_id, field="build_id")
         family = _load_source_build_or_conflict(connector, build)
@@ -1826,25 +1833,67 @@ class SourceBuildRepository:
             raise SourceBuildNotReadyError(
                 "pending observation work requires an OPEN source build"
             )
-        checkpoint = connector.fetch_one(
-            "SELECT state FROM operational_source_build_discovery_checkpoints "
-            "WHERE build_id = %s",
+        discovery = connector.fetch_one(
+            "SELECT checkpoint.state, checkpoint.processed_count, discovery.gallery_count "
+            "FROM operational_source_build_discovery_checkpoints AS checkpoint "
+            "LEFT JOIN catalog_source_build_discoveries AS discovery "
+            "ON discovery.build_id = checkpoint.build_id WHERE checkpoint.build_id = %s",
             (build,),
         )
-        if checkpoint != ("COMPLETE",):
+        if len(discovery) != 3 or discovery[0] != "COMPLETE":
             raise SourceBuildNotReadyError(
                 "pending observation work requires complete discovery"
             )
-        row = connector.fetch_one(_PENDING_SOURCE_GALLERY_QUERY, (build,))
+        discovered = require_int63(discovery[2], field="discovered gallery count")
+        if discovery[1] != discovered:
+            raise SourceBuildConflictError("discovery checkpoint count differs")
+        checkpoint = connector.fetch_one(
+            "SELECT generation, cursor_bytes, processed_gallery_count, "
+            "processed_file_count, processed_byte_count, manifest_chain_sha256, "
+            "state, updated_at FROM operational_source_build_assembly_checkpoints "
+            "WHERE build_id = %s",
+            (build,),
+        )
+        generation, _cursor, start, _files, _bytes, _chain = (
+            _validate_assembly_checkpoint(checkpoint[:7], require_open=True)
+        )
+        if start > discovered:
+            raise SourceBuildConflictError("assembly checkpoint exceeds discovery")
+        if generation > 1:
+            stored = connector.fetch_one(
+                _ASSEMBLY_RECEIPT_SELECT
+                + " WHERE build_id = %s AND start_generation = %s",
+                (build, generation - 1),
+            )
+            if not stored:
+                raise SourceBuildConflictError(
+                    "assembly window lacks its latest receipt authority"
+                )
+            _validate_assembly_replay(
+                connector,
+                receipt=_assembly_receipt_from_row(stored, replayed=True),
+                checkpoint=checkpoint,
+                build_state=family.state,
+                scope=family.scope_key,
+                manifest_policy_id=family.manifest_policy_id,
+                created_at=family.created_at,
+            )
+        end = min(discovered, start + _BATCH_LIMIT)
+        row = connector.fetch_one(_PENDING_ASSEMBLY_GALLERY_QUERY, (build, start, end))
         if not row:
             return None
         if len(row) != 3 or any(value is None for value in row):
             raise SourceBuildConflictError(
                 "pending expected gallery lacks its sealed locator identity"
             )
+        position = require_int63(row[0], field="pending source position")
+        if not start <= position < end:
+            raise SourceBuildConflictError(
+                "pending gallery escaped its assembly window"
+            )
         return PendingSourceGallery(
             build,
-            require_int63(row[0], field="pending source position"),
+            position,
             require_positive_int63(row[1], field="pending source gallery_id"),
             require_digest32(row[2], field="pending source locator_sha256"),
         )

@@ -402,6 +402,86 @@ def _maintenance(
     )
 
 
+def test_availability_waits_only_for_typed_maintenance_and_records_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _clock(monkeypatch)
+    maintenance = _maintenance()
+    health, catalog = Response(b"{}"), Response(b"{}")
+    opener = _install(monkeypatch, [health, maintenance, catalog])
+    result = probe.probe_availability(BASE)
+    assert result["statuses"] == {"/health": 200, "/opds/v2": 200}
+    assert result["maintenance_events"][0]["phase"] == "catalog"
+    assert result["maintenance_events"][0]["waited_seconds"] == 1.0
+    assert result["total_seconds"] == 1.0 and clock.waits == [1]
+    assert [request.full_url for request in opener.requests] == [
+        BASE + "/health",
+        BASE + "/opds/v2",
+        BASE + "/opds/v2",
+    ]
+    assert health.closed and catalog.closed and maintenance.fp.closed
+
+
+def test_fenced_availability_requires_immediate_typed_maintenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _clock(monkeypatch)
+    error = _maintenance()
+    _install(monkeypatch, [Response(b"{}"), error])
+    result = probe.probe_availability(BASE, fenced=True)
+    assert result["statuses"] == {"/health": 200, "/opds/v2": 503}
+    assert result["maintenance_events"] == [] and clock.waits == []
+    assert error.fp.closed
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+@pytest.mark.parametrize("status", [404, 500, 503])
+def test_availability_does_not_retry_unknown_failure(
+    monkeypatch: pytest.MonkeyPatch, fenced: bool, status: int
+) -> None:
+    clock = _clock(monkeypatch)
+    error = _maintenance(status=status, body=b"{}")
+    opener = _install(monkeypatch, [Response(b"{}"), error])
+    with pytest.raises((HTTPError, probe.ProbeError)):
+        probe.probe_availability(BASE, fenced=fenced)
+    assert len(opener.requests) == 2 and clock.waits == []
+    assert error.fp.closed
+
+
+def test_availability_never_retries_health_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _clock(monkeypatch)
+    error = _maintenance()
+    opener = _install(monkeypatch, [error])
+    with pytest.raises(HTTPError):
+        probe.probe_availability(BASE)
+    assert len(opener.requests) == 1 and clock.waits == []
+    assert error.fp.closed
+
+
+def test_fenced_availability_rejects_visible_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = Response(b"{}")
+    _install(monkeypatch, [Response(b"{}"), catalog])
+    with pytest.raises(probe.ProbeError, match="fence state"):
+        probe.probe_availability(BASE, fenced=True)
+    assert catalog.closed
+
+
+def test_availability_maintenance_has_one_bounded_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _clock(monkeypatch)
+    opener = _install(monkeypatch, [Response(b"{}"), _maintenance(), _maintenance()])
+    with pytest.raises(probe.ProbeError, match="deadline") as caught:
+        probe.probe_availability(BASE, deadline_seconds=1.5)
+    assert len(opener.requests) == 3 and clock.waits == [1]
+    assert len(caught.value.maintenance_events) == 2
+    assert caught.value.maintenance_events[-1]["waited_seconds"] == 0
+
+
 @pytest.mark.parametrize(
     "position,phase", [(0, "search"), (1, "download"), (2, "range")]
 )

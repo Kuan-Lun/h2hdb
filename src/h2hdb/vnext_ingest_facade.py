@@ -1021,7 +1021,7 @@ class VNextIngestFacade:
                     )
                     if retirement is not None:
                         return retirement
-                    return SourceBuildRepository.get_pending_source_gallery(
+                    return SourceBuildRepository.get_pending_assembly_gallery(
                         work.connector,
                         build_id=machine.build_id,
                     )
@@ -3259,7 +3259,8 @@ def _apply_source_outcome(
             )
         machine.action = _SourceAction.STAGING_REUSE
     elif action is _SourceAction.STAGING_COMPLETE:
-        machine.staged_galleries = source._plan.gallery_count
+        # Only the next durable assembly window is linked. Global completion
+        # still requires the independent empty terminal assembly receipt.
         machine.action = _SourceAction.ASSEMBLY
     elif action is _SourceAction.STAGING_BEGIN:
         if not isinstance(outcome, GalleryStagingProgress):
@@ -3399,11 +3400,12 @@ def _apply_source_outcome(
             raise RuntimeError("source assembly returned an invalid receipt")
         processed_rows = outcome.row_count
         replayed = outcome.replayed
+        machine.staged_galleries = outcome.next_gallery_count
         if outcome.terminal:
             machine.sealed = True
             machine.action = _SourceAction.COMPLETE
         else:
-            machine.action = _SourceAction.ASSEMBLY
+            machine.action = _SourceAction.STAGING_FIND
     elif action is _SourceAction.COLLECTION_CHECKPOINT:
         if machine.staging_seal is None:
             _clear_current_gallery(machine)

@@ -496,16 +496,12 @@ class Acceptance:
         raise TimeoutError(f"Timed out waiting for {description}")
 
     def http(self, *, fenced: bool = False) -> dict[str, int]:
-        code = """import json, urllib.request, urllib.error
-result = {}
-for path in ('/health', '/opds/v2'):
-    try:
-        with urllib.request.urlopen('http://127.0.0.1:8000' + path, timeout=5) as response:
-            result[path] = response.status
-            response.read()
-    except urllib.error.HTTPError as error:
-        result[path] = error.code
-print(json.dumps(result))
+        code = """import json, sys
+from deployment_acceptance.http_probe import probe_availability
+print(json.dumps(probe_availability(
+    'http://127.0.0.1:8000', fenced=sys.argv[1] == 'fenced',
+    timeout=5, deadline_seconds=30,
+)))
 """
         response = self.compose(
             [
@@ -517,12 +513,17 @@ print(json.dumps(result))
                 "H2HDB_ACCEPTANCE_PROBE_DIR",
                 "-u",
                 "H2HDB_ACCEPTANCE_CONTROL_DIR",
+                "PYTHONPATH=/acceptance",
                 "python",
                 "-c",
                 code,
-            ]
+                "fenced" if fenced else "available",
+            ],
+            timeout=45,
         )
-        result: dict[str, int] = json.loads(response)
+        observation = json.loads(response)
+        self.report.setdefault("http_observations", []).append(observation)
+        result: dict[str, int] = observation["statuses"]
         if result != {"/health": 200, "/opds/v2": 503 if fenced else 200}:
             raise AssertionError(f"Unexpected OPDS responses: {result}")
         return result
