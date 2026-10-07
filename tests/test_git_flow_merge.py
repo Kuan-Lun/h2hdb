@@ -70,10 +70,13 @@ if not Path(git("rev-parse", "--git-path", "MERGE_HEAD")).exists():
     sys.exit(0)
 phase = sys.argv[1]
 log = Path(git("rev-parse", "--git-common-dir")) / "review-flow.jsonl"
-records = [json.loads(line) for line in log.read_text().splitlines()]
+records = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 tree = git("write-tree")
-assert records[0]["phase"] == "review"
-assert records[0]["tree"] == tree
+if os.environ.get("TEST_EXPECT_DOCS"):
+    assert not any(record["phase"] == "review" for record in records)
+else:
+    assert records[0]["phase"] == "review"
+    assert records[0]["tree"] == tree
 with log.open("a") as stream:
     stream.write(json.dumps({
         "phase": phase,
@@ -168,6 +171,8 @@ def _fixture(
     conflict: bool = False,
     reviewer: bool = True,
     interpreter: bool = True,
+    documentation: bool = False,
+    earlier_code: bool = False,
 ) -> MergeFixture:
     primary = tmp_path / "primary"
     primary.mkdir()
@@ -176,7 +181,12 @@ def _fixture(
     _git(primary, "config", "user.email", "review-flow@example.invalid")
     _write(primary / ".gitignore", ".venv/\n")
     _write(primary / "shared.txt", "base\n")
-    for name in ("git-flow-merge.sh", "detect-primary-branch.sh"):
+    _write(primary / "README.md", "# Base\n")
+    for name in (
+        "git-flow-merge.sh",
+        "detect-primary-branch.sh",
+        "check_change_scope.py",
+    ):
         path = primary / "scripts" / name
         path.parent.mkdir(exist_ok=True)
         shutil.copy2(ROOT / "scripts" / name, path)
@@ -205,7 +215,15 @@ def _fixture(
         _git(primary, "worktree", "add", str(task), TASK_BRANCH)
     else:
         _git(primary, "switch", TASK_BRANCH)
-    _write(task / ("shared.txt" if conflict else "task.txt"), "task\n")
+    if earlier_code:
+        _write(task / "feature.py", "enabled = True\n")
+        _git(task, "add", ".")
+        _git(task, "commit", "-m", "feat: add code before documentation")
+    task_file = "README.md" if documentation else "task.txt"
+    _write(
+        task / ("shared.txt" if conflict else task_file),
+        "# Task\n" if documentation else "task\n",
+    )
     _git(task, "add", ".")
     _git(task, "commit", "-m", "feat: update task")
     task_head = _git(task, "rev-parse", "HEAD")
@@ -349,3 +367,47 @@ def test_wrapper_forwards_signal_before_aborting_pending_review(
         "review",
         "review-terminated",
     ]
+
+
+@pytest.mark.parametrize("separate_worktree", [False, True])
+def test_documentation_merge_skips_missing_reviewer_and_cleans_task(
+    tmp_path: Path, separate_worktree: bool
+) -> None:
+    fixture = _fixture(
+        tmp_path,
+        documentation=True,
+        reviewer=False,
+        separate_worktree=separate_worktree,
+    )
+    result = fixture.run(TEST_EXPECT_DOCS="1")
+    assert result.returncode == 0, result.stdout
+    assert [record["phase"] for record in fixture.records()] == [
+        "gate",
+        "commit-message",
+    ]
+    assert _git(fixture.primary, "show", "HEAD:primary.txt") == "primary"
+    assert _git(fixture.primary, "show", "HEAD:README.md") == "# Task"
+    assert not _git(fixture.primary, "branch", "--list", TASK_BRANCH)
+    if separate_worktree:
+        assert not fixture.task.exists()
+
+
+def test_earlier_code_commit_cannot_hide_behind_final_documentation_commit(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path, documentation=True, earlier_code=True)
+    result = fixture.run()
+    assert result.returncode == 0, result.stdout
+    assert [record["phase"] for record in fixture.records()] == [
+        "review",
+        "gate",
+        "commit-message",
+    ]
+
+
+def test_failed_documentation_gate_aborts_and_retains_task(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path, documentation=True, reviewer=False)
+    result = fixture.run(TEST_EXPECT_DOCS="1", TEST_GATE_FAIL="1")
+    assert result.returncode != 0
+    fixture.assert_retained()
+    assert [record["phase"] for record in fixture.records()] == ["gate"]

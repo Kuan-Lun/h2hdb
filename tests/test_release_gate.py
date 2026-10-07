@@ -23,7 +23,17 @@ def _load_module(name: str, path: Path) -> ModuleType:
     return module
 
 
+sys.path.insert(0, str(ROOT / "scripts"))
 gate = _load_module("h2hdb_release_gate", RELEASE_GATE)
+
+
+@pytest.fixture(autouse=True)
+def full_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gate, "_scope", lambda base, tree: gate.GateScope("base-tree", "full")
+    )
+    monkeypatch.setattr(gate, "resolve_tree", lambda root, revision: "base-tree")
+    monkeypatch.setattr(gate, "_revision_base", lambda revision: "base-oid")
 
 
 @pytest.mark.parametrize(
@@ -66,21 +76,37 @@ def test_release_receipt_requires_the_exact_profile_tree_and_checks() -> None:
     document = {
         "schema_version": gate.RECEIPT_SCHEMA_VERSION,
         "profile": gate.RELEASE_PROFILE,
+        "base_tree": None,
         "tree": "tree-1",
         "project_version": "1.2.3",
         "checks": list(gate.REQUIRED_CHECKS),
         "result": "passed",
     }
-    assert gate._receipt_matches(document, tree="tree-1", version=Version("1.2.3"))
-    assert not gate._receipt_matches(
-        document, tree="different-tree", version=Version("1.2.3")
+    assert gate._receipt_matches(
+        document,
+        tree="tree-1",
+        version=Version("1.2.3"),
+        scope=gate.GateScope("base-tree", "full"),
     )
-    assert gate.RELEASE_PROFILE == "h2hdb-release-v5"
+    assert not gate._receipt_matches(
+        document,
+        tree="different-tree",
+        version=Version("1.2.3"),
+        scope=gate.GateScope("base-tree", "full"),
+    )
+    assert gate.RELEASE_PROFILE == "h2hdb-release-v6"
     assert "exact-candidate-code-review" in gate.REQUIRED_CHECKS
-    for previous_profile in ("h2hdb-release-v3", "h2hdb-release-v4"):
+    for previous_profile in (
+        "h2hdb-release-v3",
+        "h2hdb-release-v4",
+        "h2hdb-release-v5",
+    ):
         old_profile = dict(document, profile=previous_profile)
         assert not gate._receipt_matches(
-            old_profile, tree="tree-1", version=Version("1.2.3")
+            old_profile,
+            tree="tree-1",
+            version=Version("1.2.3"),
+            scope=gate.GateScope("base-tree", "full"),
         )
     old_budget = dict(
         document,
@@ -90,7 +116,10 @@ def test_release_receipt_requires_the_exact_profile_tree_and_checks() -> None:
         ],
     )
     assert not gate._receipt_matches(
-        old_budget, tree="tree-1", version=Version("1.2.3")
+        old_budget,
+        tree="tree-1",
+        version=Version("1.2.3"),
+        scope=gate.GateScope("base-tree", "full"),
     )
 
 
@@ -175,7 +204,7 @@ def test_version_increase_pre_push_runs_gate_when_exact_tree_lacks_receipt(
         ("rev-parse", "HEAD"): "local-oid",
     }
     monkeypatch.setattr(gate, "_git", lambda *arguments: git_values[arguments])
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: False)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: False)
     clean_checks: list[None] = []
     monkeypatch.setattr(gate, "_assert_clean_head", lambda: clean_checks.append(None))
     review_calls: list[tuple[str, ...]] = []
@@ -190,7 +219,7 @@ def test_version_increase_pre_push_runs_gate_when_exact_tree_lacks_receipt(
     monkeypatch.setattr(
         gate,
         "_run_release_gate",
-        lambda tree, version, refresh, version_arguments, review_arguments: (
+        lambda tree, version, scope, refresh, version_arguments, review_arguments: (
             calls.append((tree, version, refresh, version_arguments, review_arguments))
         ),
     )
@@ -226,7 +255,7 @@ def test_version_increase_pre_push_reuses_exact_tree_receipt(
         lambda specification, missing_ok=False: versions[specification],
     )
     monkeypatch.setattr(gate, "_git", lambda *arguments: "candidate-tree")
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: True)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: True)
     review_calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(
         gate,
@@ -255,7 +284,21 @@ def test_version_increase_pre_push_reuses_exact_tree_receipt(
         ),
     )
 
+    policy_commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        gate, "_run", lambda label, command: policy_commands.append(command)
+    )
     gate._pre_push("refs/heads/master local-oid refs/heads/master remote-oid\n")
+    assert policy_commands == [
+        (
+            sys.executable,
+            "scripts/check-version.py",
+            "--base",
+            "remote-oid",
+            "--candidate",
+            "local-oid",
+        )
+    ]
     assert review_calls == [
         ("--revision", "local-oid", "--expected-tree", "candidate-tree")
     ]
@@ -278,7 +321,7 @@ def test_version_increase_pre_push_rejects_unchecked_out_tree_without_receipt(
         ("rev-parse", "HEAD"): "other-oid",
     }
     monkeypatch.setattr(gate, "_git", lambda *arguments: git_values[arguments])
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: False)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: False)
     monkeypatch.setattr(
         gate, "_verify_code_review", lambda arguments, expected_tree: None
     )
@@ -335,7 +378,7 @@ def test_explicit_index_run_verifies_the_exact_staged_tree(
     monkeypatch.setattr(
         gate,
         "_run_release_gate",
-        lambda tree, version, refresh, version_arguments, review_arguments: (
+        lambda tree, version, scope, refresh, version_arguments, review_arguments: (
             calls.append((tree, version, refresh, version_arguments, review_arguments))
         ),
     )
@@ -370,7 +413,7 @@ def test_explicit_head_run_requires_a_clean_index(
     monkeypatch.setattr(
         gate,
         "_run_release_gate",
-        lambda tree, version, refresh, version_arguments, review_arguments: (
+        lambda tree, version, scope, refresh, version_arguments, review_arguments: (
             calls.append((tree, version, refresh, version_arguments, review_arguments))
         ),
     )
@@ -425,7 +468,7 @@ def test_cached_release_receipt_still_requires_a_current_code_review(
         lambda tree, version: events.append("candidate-recheck"),
     )
 
-    def has_valid_receipt(tree: str, version: Version) -> bool:
+    def has_valid_receipt(tree: str, version: Version, scope: object) -> bool:
         events.append("release-receipt")
         return True
 
@@ -433,20 +476,23 @@ def test_cached_release_receipt_still_requires_a_current_code_review(
     monkeypatch.setattr(
         gate,
         "_run",
-        lambda *arguments, **keywords: pytest.fail(
-            "valid release and review receipts must skip expensive checks"
+        lambda label, command: (
+            events.append("version")
+            if command[1] == "scripts/check-version.py"
+            else pytest.fail("cached receipts must skip expensive checks")
         ),
     )
 
     gate._run_release_gate(
         "candidate-tree",
         Version("1.2.3"),
+        scope=gate.GateScope("base-tree", "full"),
         refresh=False,
         version_arguments=("--index",),
         review_arguments=("--index",),
     )
 
-    assert events == ["review", "release-receipt", "candidate-recheck"]
+    assert events == ["review", "version", "release-receipt", "candidate-recheck"]
 
 
 @pytest.mark.parametrize(
@@ -463,7 +509,8 @@ def test_cached_release_receipt_rejects_candidate_changes_after_review(
     monkeypatch.setattr(
         gate, "_verify_code_review", lambda arguments, expected_tree: None
     )
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: True)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: True)
+    monkeypatch.setattr(gate, "_run", lambda label, command: None)
     monkeypatch.setattr(
         gate,
         "_git",
@@ -485,6 +532,7 @@ def test_cached_release_receipt_rejects_candidate_changes_after_review(
         gate._run_release_gate(
             "candidate-tree",
             Version("1.2.3"),
+            scope=gate.GateScope("base-tree", "full"),
             refresh=False,
             version_arguments=("--index",),
             review_arguments=("--index",),
@@ -500,7 +548,7 @@ def test_review_failure_rejects_even_a_cached_release_receipt(
 ) -> None:
     monkeypatch.setattr(gate, "_release_branch", lambda: "refs/heads/master")
     monkeypatch.setattr(gate, "_git", lambda *arguments: "candidate-tree")
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: True)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: True)
     monkeypatch.setattr(
         gate,
         "_version_from_spec",
@@ -519,6 +567,7 @@ def test_review_failure_rejects_even_a_cached_release_receipt(
                 gate._run_release_gate(
                     "candidate-tree",
                     Version("1.2.3"),
+                    scope=gate.GateScope("base-tree", "full"),
                     refresh=False,
                     version_arguments=("--index",),
                     review_arguments=("--index",),
@@ -555,7 +604,7 @@ def test_release_gate_rechecks_review_before_writing_the_release_receipt(
             raise subprocess.CalledProcessError(1, command)
 
     monkeypatch.setattr(gate, "_run", run)
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: False)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: False)
     monkeypatch.setattr(gate, "_git", lambda *arguments: "candidate-tree")
     monkeypatch.setattr(gate, "_assert_no_unstaged_or_untracked_files", lambda: None)
     monkeypatch.setattr(
@@ -563,7 +612,7 @@ def test_release_gate_rechecks_review_before_writing_the_release_receipt(
     )
     receipts: list[tuple[str, Version]] = []
 
-    def write_receipt(tree: str, version: Version) -> Path:
+    def write_receipt(tree: str, version: Version, scope: object) -> Path:
         receipts.append((tree, version))
         return Path("receipt.json")
 
@@ -573,6 +622,7 @@ def test_release_gate_rechecks_review_before_writing_the_release_receipt(
         gate._run_release_gate(
             "candidate-tree",
             Version("1.2.3"),
+            scope=gate.GateScope("base-tree", "full"),
             refresh=False,
             version_arguments=("--index",),
             review_arguments=("--index",),
@@ -608,7 +658,7 @@ def test_receipt_status_verifies_the_requested_revision(
     monkeypatch.setattr(
         gate, "_version_from_spec", lambda specification: Version("1.2.3")
     )
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: True)
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: True)
 
     gate._receipt_status("merge-oid")
 
@@ -633,3 +683,168 @@ def test_same_version_push_keeps_existing_release_eligibility(
     )
 
     gate._pre_push("refs/heads/master local-oid refs/heads/master remote-oid\n")
+
+
+def test_documentation_receipt_cannot_authorize_code_or_another_base() -> None:
+    scope = gate.GateScope("base-tree", "documentation")
+    document = {
+        "schema_version": gate.RECEIPT_SCHEMA_VERSION,
+        "profile": scope.profile,
+        "base_tree": scope.receipt_base,
+        "tree": "candidate-tree",
+        "project_version": "1.2.3",
+        "checks": list(scope.checks),
+        "result": "passed",
+    }
+    assert gate._receipt_matches(
+        document, tree="candidate-tree", version=Version("1.2.3"), scope=scope
+    )
+    for rejected_scope in (
+        gate.GateScope("base-tree", "full"),
+        gate.GateScope("different-base", "documentation"),
+    ):
+        assert not gate._receipt_matches(
+            document,
+            tree="candidate-tree",
+            version=Version("1.2.3"),
+            scope=rejected_scope,
+        )
+    assert "pytest-total-budget-600s" not in scope.checks
+    assert "exact-candidate-code-review" not in scope.checks
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_documentation_gate_runs_no_program_checks_or_code_review(
+    monkeypatch: pytest.MonkeyPatch, cached: bool
+) -> None:
+    scope = gate.GateScope("base-tree", "documentation")
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(gate, "_run", lambda label, command: commands.append(command))
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: cached)
+    monkeypatch.setattr(gate, "_assert_candidate_unchanged", lambda tree, version: None)
+    monkeypatch.setattr(
+        gate,
+        "_verify_code_review",
+        lambda *args, **kwargs: pytest.fail(
+            "documentation must not require code review"
+        ),
+    )
+    receipts: list[object] = []
+
+    def write_receipt(tree: str, version: Version, scope: object) -> Path:
+        receipts.append(scope)
+        return Path("receipt.json")
+
+    monkeypatch.setattr(gate, "_write_receipt", write_receipt)
+    gate._run_release_gate(
+        "candidate-tree",
+        Version("1.2.3"),
+        scope=scope,
+        refresh=False,
+        version_arguments=("--index",),
+        review_arguments=("--index",),
+    )
+    expected: list[tuple[str, ...]] = [
+        (sys.executable, "scripts/check-version.py", "--index")
+    ]
+    if not cached:
+        expected.append(
+            (
+                sys.executable,
+                "scripts/check-docs.py",
+                "--base",
+                "base-tree",
+                "--candidate",
+                "candidate-tree",
+            )
+        )
+    assert commands == expected
+    assert receipts == ([] if cached else [scope])
+
+
+def test_documentation_failure_cannot_write_a_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: False)
+
+    def run(label: str, command: tuple[str, ...]) -> None:
+        if command[1] == "scripts/check-docs.py":
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(gate, "_run", run)
+    monkeypatch.setattr(
+        gate,
+        "_write_receipt",
+        lambda *args: pytest.fail("failed documentation must not receive a receipt"),
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        gate._run_release_gate(
+            "candidate-tree",
+            Version("1.2.3"),
+            scope=gate.GateScope("base-tree", "documentation"),
+            refresh=False,
+            version_arguments=("--index",),
+            review_arguments=("--index",),
+        )
+
+
+def test_documentation_receipt_status_does_not_require_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gate, "_scope", lambda base, tree: gate.GateScope("base-tree", "documentation")
+    )
+    monkeypatch.setattr(gate, "_git", lambda *arguments: "candidate-tree")
+    monkeypatch.setattr(
+        gate, "_version_from_spec", lambda specification: Version("1.2.3")
+    )
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: True)
+    monkeypatch.setattr(
+        gate,
+        "_verify_code_review",
+        lambda *args, **kwargs: pytest.fail(
+            "documentation status must not require review"
+        ),
+    )
+    gate._receipt_status("merge-oid")
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_documentation_gate_rejects_changed_merge_parent(
+    monkeypatch: pytest.MonkeyPatch, cached: bool
+) -> None:
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version, scope: cached)
+    monkeypatch.setattr(gate, "_run", lambda label, command: None)
+    monkeypatch.setattr(gate, "_assert_candidate_unchanged", lambda tree, version: None)
+    monkeypatch.setattr(gate, "resolve_tree", lambda root, revision: "moved-base-tree")
+    monkeypatch.setattr(
+        gate,
+        "_write_receipt",
+        lambda *args: pytest.fail("a moved merge parent must not receive a receipt"),
+    )
+    with pytest.raises(gate.ReleaseGateError, match="comparison base changed"):
+        gate._run_release_gate(
+            "candidate-tree",
+            Version("1.2.3"),
+            scope=gate.GateScope("base-tree", "documentation"),
+            refresh=False,
+            version_arguments=("--index",),
+            review_arguments=("--index",),
+        )
+
+
+def test_receipts_for_different_scopes_do_not_replace_each_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "_receipt_directory", lambda: tmp_path)
+    scopes = (
+        gate.GateScope("base-one", "documentation"),
+        gate.GateScope("base-two", "documentation"),
+        gate.GateScope("base-one", "full"),
+    )
+    receipts = [
+        gate._write_receipt("same-tree", Version("1.2.3"), scope) for scope in scopes
+    ]
+    assert len(set(receipts)) == 3
+    for scope in scopes:
+        assert gate._has_valid_receipt("same-tree", Version("1.2.3"), scope)

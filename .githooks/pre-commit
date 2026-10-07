@@ -21,7 +21,20 @@ if [[ "$current" == "$primary" ]]; then
     exec "$repo_root/.githooks/run-release-gate" run --index
 fi
 
-scripts/check-fast.sh
+if [[ -x .venv/bin/python ]]; then
+    python=.venv/bin/python
+elif [[ -x .venv/Scripts/python.exe ]]; then
+    python=.venv/Scripts/python.exe
+else
+    printf 'Create the local environment with scripts/rebuild-env.sh\n' >&2
+    exit 1
+fi
+scope="$("$python" scripts/check_change_scope.py --index --base HEAD)"
+case "$scope" in
+    documentation) "$python" scripts/check-docs.py --index --base HEAD ;;
+    full) scripts/check-fast.sh ;;
+    *) printf 'Invalid check scope: %s\n' "$scope" >&2; exit 1 ;;
+esac
 
 # A pyproject.toml change receives the cheap staged-version policy here. The
 # exact integration candidate receives the complete release gate before merge.
