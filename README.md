@@ -1,51 +1,45 @@
 # h2hdb
 
-`h2hdb` stores the shared catalog and download coordination data for an H2HDB
-library. It supports SQLite and MariaDB and provides commands to initialize and
-check the database.
+`h2hdb` 是 H2HDB 書庫共用的資料庫套件，保存書目、匯入進度與下載工作，
+支援 SQLite 和 MariaDB。你可以用它建立、檢查資料庫，或從 Python 查詢書目。
 
-Use this package when administering the database or reading the catalog from
-Python. To import galleries, browse books, or run downloads, choose the
-application for that task:
+如果你想建立可閱讀的書庫，請依需求選擇應用程式：
 
-| Task | Application |
+| 你想做的事 | 使用的專案 |
 | --- | --- |
-| Import downloaded galleries and prepare a reading library | [h2hdb-ingest](https://github.com/Kuan-Lun/h2hdb-ingest) |
-| Browse and download books with an OPDS reader | [h2hdb-opds](https://github.com/Kuan-Lun/h2hdb-opds) |
-| Synchronize the published library with Komga | [h2hdb-komga](https://github.com/Kuan-Lun/h2hdb-komga) |
-| Process gallery download requests | [h2hdb-downloader](https://github.com/Kuan-Lun/h2hdb-downloader) |
+| 將已下載的圖庫匯入書庫，產生 CBZ、封面與縮圖 | [h2hdb-ingest](https://github.com/Kuan-Lun/h2hdb-ingest) |
+| 用 OPDS 閱讀器瀏覽、搜尋及下載書籍 | [h2hdb-opds](https://github.com/Kuan-Lun/h2hdb-opds) |
+| 將已發布書庫同步至 Komga | [h2hdb-komga](https://github.com/Kuan-Lun/h2hdb-komga) |
+| 處理圖庫下載工作 | [h2hdb-downloader](https://github.com/Kuan-Lun/h2hdb-downloader) |
 
-The applications share one database. Installing Core alone does not import
-files, produce CBZs, or start a web server.
+這些應用程式使用同一個資料庫。單獨安裝 `h2hdb` 不會匯入檔案、產生 CBZ
+或啟動網頁服務。若你只是要使用其中一項服務，先依該專案的 README 安裝；
+本頁適用於管理共用資料庫與撰寫 Python 整合程式。
 
-## Install
+## 安裝
 
-Requires Python 3.14 or later. SQLite support is included. For a MariaDB
-installation, the supported baseline is MariaDB 10.11.11, including Synology
-package build 10.11.11-1551.
+需要 Python 3.14 以上。SQLite 不需另裝資料庫伺服器；MariaDB 的驗證基準為
+10.11.11，包括 Synology 套件版本 10.11.11-1551。
 
-Install into a virtual environment:
+取得本專案原始碼後，在專案根目錄建立虛擬環境並安裝：
 
 ```bash
 python3.14 -m venv .venv
 source .venv/bin/activate
-python -m pip install h2hdb
+python -m pip install .
 python -m h2hdb --help
 ```
 
-On Windows, create the environment with `py -3.14 -m venv .venv` and activate
-it with `.venv\Scripts\Activate.ps1` in PowerShell. Run subsequent `python`
-commands in that environment.
+Windows PowerShell 使用 `py -3.14 -m venv .venv` 建立環境，
+再以 `.venv\Scripts\Activate.ps1` 啟用。下文的 `python` 指令都在此環境執行。
 
-If another H2HDB application manages your environment, use the Core version
-installed with that application. When upgrading a shared deployment, select
-application versions that support the same database schema.
+如果環境已由其他 H2HDB 應用程式管理，使用它安裝的 Core 版本即可。
+升級共用部署時，各應用程式的相依版本範圍必須能選出同一個 Core 版本，
+且該版本必須支援既有資料庫的 schema。
 
-## Set up a database
+## 快速開始：SQLite
 
-### SQLite
-
-Save this as `core-writer.json`:
+將以下內容存成 `core-writer.json`：
 
 ```json
 {
@@ -61,27 +55,25 @@ Save this as `core-writer.json`:
 }
 ```
 
-This example creates `catalog.sqlite3` in the current working directory. For a
-service, use an absolute path in a persistent directory. Create its parent
-directory first and ensure the process can write there.
-
-Initialize the empty database, then verify it:
+建立空白資料庫並檢查：
 
 ```bash
 python -m h2hdb migrate --config core-writer.json
 python -m h2hdb check --config core-writer.json
 ```
 
-A successful initialization reports `outcome=created` and `state=READY`. The
-database is ready for ingest; it does not yet contain a published library.
-Follow the ingest application's setup instructions to import your galleries.
+首次建立成功會顯示 `outcome=created`、`state=READY`。
+此時資料庫可供 ingest 使用，但還沒有已發布書目；接著依
+[ingest 使用說明](https://github.com/Kuan-Lun/h2hdb-ingest)匯入圖庫。
 
-### MariaDB
+範例將資料庫放在**執行指令時的工作目錄**。用於常駐服務時，請改成持久儲存
+目錄的絕對路徑，先建立父目錄，並讓執行帳號具有寫入權限。
 
-Create an empty database and a dedicated writer account on your MariaDB server.
-The account used for initialization needs permission to create the schema's
-tables, views, and indexes, as well as read and write its data. Save the
-connection settings as `core-writer.json`:
+## 改用 MariaDB
+
+先在 MariaDB 伺服器建立空白資料庫與專用帳號。
+初始化帳號需具備建立資料表、view、索引及讀寫資料所需的權限。
+將連線設定存成 `core-writer.json`：
 
 ```json
 {
@@ -101,476 +93,78 @@ connection settings as `core-writer.json`:
 }
 ```
 
-Provide `H2HDB_DB_PASSWORD` through the environment of the process running the
-command, then run the same `migrate` and `check` commands as for SQLite.
-Initialization creates tables inside the named database; it does not provision
-MariaDB, create the database itself, or create accounts.
+在執行環境設定 `H2HDB_DB_PASSWORD`，再執行同樣的 `migrate`、`check` 指令。
+`migrate` 只在指定資料庫內建立 schema，不會安裝 MariaDB、建立資料庫或帳號。
 
-### Reader configuration and secrets
+### 唯讀帳號與設定檔
 
-For catalog readers, create `core-reader.json` with the same database location
-and `"access_mode": "read-only"`. On MariaDB, also use a dedicated reader account
-with the read and metadata privileges required to inspect the schema. Keep the
-writer credentials in ingest, downloader, and administration environments.
+查詢書目或執行檢查時，可複製設定為 `core-reader.json`，
+將 `access_mode` 改成 `read-only`。MariaDB 也應改用具備讀取資料與檢查 schema
+所需權限的專用唯讀帳號；寫入帳號留給 ingest、downloader 與資料庫管理工作。
 
-A JSON string equal to `${ENV_NAME}` is replaced with that environment
-variable's value. Missing variables stop startup. Embedded placeholders such as
-`"library-${INSTANCE}"` are unsupported. Unknown configuration fields are
-rejected, so check spelling when a file fails validation.
+設定值若完整寫成 `${ENV_NAME}`，會以環境變數取代；變數不存在時會拒絕啟動。
+`"library-${INSTANCE}"` 這類字串內插不會展開。未知欄位也會被拒絕。
 
-Core configuration has `database`, optional `maintenance`, and optional `logger`
-sections. Application configuration files may wrap Core settings in another
-section; use the relevant application's example for those commands.
+Core 設定包含 `database`、可省略的 `logger` 與 `maintenance`。
+一般安裝可沿用 maintenance 預設值；完整欄位與預設值見
+[設定定義](src/h2hdb/config_loader.py)。其他應用程式可能把 Core 設定包在
+另一層 JSON 中，請使用該應用程式的範例，不要直接互換設定檔。
 
-## Check and maintain the installation
+## 日常檢查與紀錄
 
-| Command | When to use it | What success means |
+| 指令 | 適用時機 | 成功代表什麼 |
 | --- | --- | --- |
-| `python -m h2hdb migrate --config core-writer.json` | Initialize an empty database or resume an interrupted initialization | The database was created or resumed, or its existing READY marker was accepted |
-| `python -m h2hdb check --config core-reader.json` | Run a full database audit | The current schema and stored catalog/coordination facts passed validation |
-| `python -m h2hdb ready --config core-reader.json` | Run a frequent readiness probe | The database has the expected READY marker, schema version, and manifest |
+| `python -m h2hdb migrate --config core-writer.json` | 首次建立，或接續中斷的初始化 | 已建立或接續完成；若已初始化，只確認既有 READY 標記 |
+| `python -m h2hdb check --config core-reader.json` | 升級後、懷疑資料異常，或需要完整稽核 | schema、書目與工作狀態通過完整資料庫檢查 |
+| `python -m h2hdb ready --config core-reader.json` | 頻繁執行的服務就緒探測 | READY 標記、schema 版本與 manifest 符合目前套件 |
 
-`ready` is a quick, read-only check. It does not audit all stored data or verify
-that external media files are present. `check` performs the full database audit
-and may take substantially longer on a large library; it does not decode CBZs
-or images.
+`ready` 是快速唯讀探測，不代表已檢查全部資料。
+`check` 會完整稽核，大型書庫可能需要較久；兩者都不會驗證外部 CBZ 或圖片內容。
 
-Rerunning `migrate` on an already initialized database reports
-`outcome=already_ready` and `audit=not_performed`. Use `check` when you need a full
-audit. If initialization was interrupted, rerun `migrate` with the same software
-and configuration; it resumes only a matching unfinished initialization.
+對已初始化的資料庫重跑 `migrate` 會顯示 `outcome=already_ready`、
+`audit=not_performed`；需要完整檢查時仍應執行 `check`。
+初始化若中斷，使用相同版本與設定重跑 `migrate`，只能接續相符的未完成初始化。
 
-The ingest application manages its own startup and periodic audit schedule.
-After an unclean stop, a validator change, or a due audit, startup may require a
-full check. A quick restart result is not evidence of a new full audit.
-The validator identity includes the Core package version, so upgrading Core
-also requires a full check. An unfinished check is not recorded as successful.
+Ingest 自行安排啟動與定期稽核。非正常停止、升級 Core 或稽核到期後，
+啟動可能需要完整檢查；快速啟動不表示剛完成一次完整稽核。
 
-MariaDB runtimes reuse a bounded pool of physical sessions. If an idle session
-has disconnected when the driver creates its first buffered cursor, admission
-can discard it and open one fresh session before any initialization or business
-SQL is sent. Healthy admission uses the driver's existing connection check.
-The replacement is attempted only once; SQL, transaction and COMMIT failures
-are never replayed by the pool. This avoids treating a stale idle session as a
-failed ingest heartbeat while preserving recovery requirements for actual
-operation failures and previously interrupted audits.
+紀錄預設輸出至終端。設定 `logger.file` 可另存檔案；
+需要更詳細的診斷時，將 `logger.level` 改為 `DEBUG`。
+長時間工作的進度紀錄可幫助辨識目前階段，仍需等到成功結果才能認定工作完成。
+診斷中的 SQL 呼叫數、回傳列數與耗時，不能直接當成伺服器掃描列數或磁碟 I/O。
 
-Logs go to the console by default. Set `logger.file` to save them to a file and
-`logger.level` to `"DEBUG"` for more detailed timing and query statistics. During
-a long full audit, progress records identify the active phase. Timing records
-help diagnose a delay; they do not establish that the audit has finished.
+## 升級與還原
 
-INFO diagnostics cover source preparation and action costs, ingest claims,
-cleanup candidate selection and audit scans. Long-operation progress includes a
-pending connector call's category, fingerprint and age; completed counters do
-not include that call yet. Bounded slow-call samples retain expensive queries
-even after the detailed query-statistics capacity is reached. No query parameters
-or source payloads are logged. Phase totals expose repeated small costs that a
-list of the slowest individual phases can miss.
+目前使用 **epoch 3、schema 9**。`migrate` 是初始化指令，
+**不會自動升級舊資料庫，也不是損毀修復工具**。
+更換應用程式組合前，請備份資料庫及與它配套的 library 儲存內容。
 
-The initial `source_prepare` record reports inventory size with
-`observation_complete=false`; it does not yet know admitted file/gallery counts.
-The terminal `source_step` INFO record reports admitted files and galleries,
-discovered/staged galleries, deferred/waiting counts, and completed inventory
-observation. Its correlation ID matches the source preparation and stage summary.
+| 既有資料庫 | 處理方式 |
+| --- | --- |
+| schema 9 | 不需轉換 schema、清庫或重新產生 CBZ／artwork；確認應用程式版本相容並執行 `check` |
+| schema 8，或其歷史轉換工具留下的中斷狀態 | 使用 Core 0.43.0 歷史 checkout 與匹配環境的離線工具轉成 schema 9 |
+| schema 7 | 先使用 Core 0.41.2 歷史工具轉成 schema 8，再轉成 schema 9 |
+| schema 6 | 先使用 Core 0.40.0 歷史工具轉成 schema 7，再依序轉換 |
+| schema 5 或更早 | 沒有支援的原地轉換；保留原資料庫與原始下載圖庫，在新的空白資料庫和 library 重新匯入 |
 
-INFO query attribution retains at most 64 families by cumulative duration upper
-bound, including late expensive families. Database JSON diagnostics use schema 2
-and `query_attribution`; ingest text uses the same explicit bounds. Scope totals
-and the five slowest individual calls remain exact. Each retained family reports
-`observed_calls`, `observed_returned_rows`, `observed_max_seconds`, duration
-`seconds_lower`/`seconds_upper`, and `complete`. Observations are lower bounds
-unless `complete=true`; they are never estimated counts. The missing-key bound
-limits each unretained family's duration, not the sum of missing work. Retained
-lower seconds, replacement counts and unfingerprinted totals expose incomplete
-attribution. Bounded merges can widen intervals, so this is not a complete exact
-ranking. Ingest stage SQL totals remain exclusive; separately labeled nested
-SQL totals include every descendant even when detailed nested records are omitted.
+歷史轉換工具已從目前 checkout 移除。請使用對應歷史版本的 README、wheel
+與執行環境，不要混用工具檔案或手動更改 schema 標記：
 
-Pure placeholder `IN` lists share one family regardless of parameter count;
-quoted text, expressions and subqueries remain distinct. The
-`query_fingerprint_algorithm` label identifies this diagnostic normalization;
-execution SQL and parameters are unchanged. Transaction timings distinguish
-`begin`, `begin_read`, `commit` and `rollback`, including failed calls. They measure
-client elapsed time, not database lock waits or filesystem flush time separately.
+- schema 8 → 9：Core 0.43.0，commit
+  `70ca4a35d02a50e7d6f8fd294fccb0829321eaf4`；
+  其隔離 cleanup worker 另需該版本 README 指定的 Core 0.42.2 wheel。
+- schema 7 → 8：Core 0.41.2，commit
+  `64683c502caf108e8ed518e5c040cacaa91e7551`。
 
-Historical schema-1 database JSONL can be normalized offline without changing a
-database or overwriting the original log:
+轉換期間保持 consumers 停止，等完整稽核與 schema 9 啟用成功再恢復服務。
+這些歷史轉換可保留資料庫內容與外部媒體；中斷後依對應工具的恢復說明處理。
+若改用新庫重建，原本的下載請求與作業歷史不會自動恢復，仍需要的請求須重新加入。
+在新書庫驗證完成前，保留舊資料庫與 library 配對。需要退回舊軟體時，
+還原相應的升級前備份；沒有自動降版功能。
 
-```sh
-.venv/bin/python scripts/normalize-database-performance-log.py old.jsonl new.jsonl
-```
+## 從 Python 查詢書目
 
-The output path must be new. Complete raw JSON records or normal
-`database_performance` log lines are accepted; HTML fragments must first be
-reconstructed. This conversion preserves exact totals and displayed families,
-marks unidentified duration explicitly, and cannot recover `other` or undisplayed
-identities. It does not convert ingest's human-readable text or add a runtime
-compatibility reader. A failed conversion may leave a partial output file.
-
-Publication INFO summaries also attribute artifact input audits, source copying
-and revalidation, rendering, output verification and storage protection. Each
-operation reports completed calls, failures, inclusive/exclusive wall time and
-actual logical read/write bytes; cache lookup includes hits, misses and
-invalidations. Exclusive time subtracts nested local-work spans, but these spans
-can still contain SQL and adapter measurements. Do not add the different layers
-or interpret logical transfers as physical disk I/O. An unfinished step has no
-completed local-work summary yet; existing progress records identify its active
-operation. Ingest's adapter and image-worker summaries provide the filesystem
-and codec details that Core intentionally does not interpret.
-
-`sql_calls` counts connector method calls, not server statements or network
-round trips. `read_rows` counts returned rows, not examined rows. Client SQL time
-includes driver, transport, execution and waits. Use the manual cost probes to
-measure backend work across input sizes; a fixed page size or SQL-call count is
-not evidence of bounded database scanning.
-
-Current-only cleanup tests each canonical reverse reference with its own indexed
-equality and preserves the full live-publication checks. A no-work selection
-classifies DONE or BLOCKED in the same exclusive transaction; it avoids a second
-candidate scan only while that exact lease remains live. Final release still
-checks the lease, and the next ingest claim performs a fresh check. Reaching the
-cleanup batch budget still requires the final full state check.
-
-With artifact release adapters, each attempt first checks for interrupted cleanup
-and abandoned resource protections. An orphan hint schedules one resource release
-before new database cleanup, avoiding repeated catalog-wide empty probes for each
-resource. After claiming EXCLUSIVE it checks interrupted work again, then retains
-the exact issue/revalidate/external-I/O/acknowledge boundaries. The hint grants no
-authority and neither empty hints nor DONE are cached across calls. Once resources
-are drained, normal fresh eligibility checks still establish the fixed point.
-The release page remains one item; no longer I/O batch or schema change is needed.
-Telemetry adds `maintenance_artifact_hint` and the optimistic initial-state label
-`RESOURCE_PENDING` without changing public outcomes.
-
-`scripts/current_only_release_probe.py` constructs abandoned resources through
-public ingestion with foreign keys enabled. Its measured row-count vector N,
-outstanding resource count A and experimental page bound B separate retained
-data size from backlog and batching. It records SQL calls, SQLite VM estimates
-or MariaDB Handler reads, instrumented drain time, full READY, unchanged current
-catalog/library, and the next successful claim. The fixed selector budget rejects
-eligibility scans during pure resource release; it is not a production latency
-budget or evidence that the complete non-image workload meets 24 hours.
-
-Role audit pagination includes equivalent tuple and expanded seek predicates in
-one query so SQLite and MariaDB can use their composite indexes. Manual role and
-cleanup probes compare actual engine work with historical or deliberately slow
-queries while requiring identical results. The MariaDB cleanup diagnostic also
-compares three alternating executions of the current canonical candidate query
-and the historical test predicate. Its title-cache visit target applies to the
-probe's unique-title, single-policy fixture; it is not an arbitrary-data or NAS
-latency guarantee.
-
-For changes to analysis ancestry validation or unchanged artifact descriptors,
-run `python scripts/run-pytest.py performance-acceptance` explicitly with Docker
-available. It runs serial SQLite and MariaDB 10.11.11 experiments, including deep
-cases; it is separate from the bounded merge receipt. Do not run other tests or
-benchmarks concurrently when interpreting elapsed times. The matrix includes
-127/128/129 source-page boundaries across 19 actual publication/cleanup rounds,
-ancestry depth through compaction, descriptor copy boundaries through 4096 pages,
-and fixed additions of 100 galleries to different retained catalogs. Public-path
-experiments exercise the facade's issue/prepare/commit orchestration and verify
-publication, cleanup and READY; writer-only inputs are reported separately.
-
-Historical implementations serve as negative controls for operation-count
-regressions. JSON reports under pytest's temporary directory retain alternating
-baseline/candidate elapsed samples, exact-output checks and source hashes. An
-elapsed-time improvement is an experimental result, not a timing assertion in
-the merge gate. This profile does not exercise source filesystem bytes, real
-image encoding, OPDS HTTP reads or deployment mounts: use the ingest source
-snapshot probes and the separate instrumented deployment acceptance for those.
-Passing one phase or a small correctness case does not complete this matrix or
-establish NAS throughput.
-
-The development catch-up probe compares publication batch sizes on disposable
-databases while forbidding deep reads of unchanged source markers:
-
-```bash
-.venv/bin/python scripts/ingest_batch_scaling_probe.py \
-  --case 256:64:64 --case 256:256:64 --output /tmp/catchup-sqlite.json
-```
-
-Cases are `galleries:publication_batch:pages_per_gallery`. Each turn checks the
-public catalog and cleanup `DONE`; each case ends with a full READY audit. Use
-`--backend mariadb` explicitly for a local MariaDB 10.11.11 testcontainer, and
-`--artifacts` for neutral in-memory artifacts. These synthetic pages do not
-exercise image decoding or real archive I/O. The separate development-only
-`ingest_locator_reuse_probe.py --case 64:8:4 --output /tmp/locator-reuse.json`
-compares a scoped locator-reuse counterfactual with the actual implementation,
-restoring the original methods afterward. It is not installed runtime behavior.
-Query-count savings and small local timings do not establish a full-library
-completion target; input size, page distribution, duplicate patterns, retained
-history and storage latency all matter.
-
-Use the **manual cost acceptance** commands when deciding whether ingest work is
-efficient, rather than treating a successful diagnostic probe or pytest run as
-performance acceptance:
-
-```bash
-.venv/bin/python scripts/check-ingest-database-performance.py \
-  --backend sqlite --case 3:1:63 --case 3:1:64 --case 3:1:65 \
-  --case 3:1:127 --case 3:1:128 --case 3:1:129 \
-  --replacement-case 127:3 --replacement-case 128:3 \
-  --replacement-case 129:3 \
-  --output /tmp/ingest-cost-sqlite.json
-
-.venv/bin/python scripts/check-ingest-database-performance.py \
-  --backend mariadb --allow-mariadb --case 3:1:65 --replacement-case 129:3 \
-  --output /tmp/ingest-cost-mariadb.json
-```
-
-The MariaDB command starts only a disposable local MariaDB 10.11.11 testcontainer;
-it does not accept production connection settings. Run the commands serially,
-without concurrent benchmarks. Cases exercise real public database workflows,
-catalog results, publication and cleanup, using neutral synthetic source bytes.
-Replacement cases are `pages:cycles`; they retire previous observations and
-measure their cleanup, which append-only fixtures cannot exercise.
-They do not measure filesystem image qualification or CBZ production. In a
-separately supplied `h2hdb-ingest` checkout, run its
-`scripts/check-source-cost.py` with that checkout's Python environment for actual
-filesystem and image qualification measurements. Its
-`scripts/check-library-cleanup-cost.py --full-inventory --output /tmp/journal-cost.json`
-also measures the production journal cleanup queries with 264,092 retained
-tokens (two resources per 132,046 galleries). It counts SQLite VM instructions,
-checks exact returned rows, and compares the production query plan with indexed
-and forced-scan controls in disposable fixtures. This is engine-cost evidence,
-not a complete library lifecycle or a physical disk benchmark. Neither checkout
-discovers a fixed sibling path or needs a NAS deployment.
-
-These acceptance commands return **0 only for satisfied cost checks, 1 for a
-measured violation, and 2 for incomplete or invalid measurement**. A completed
-experiment can fail acceptance. Current code can therefore legitimately produce
-a failing report: preserve that result and fix the measured work, not the budget.
-Tool tests verify that known violations are rejected; their green result does
-not override a red performance report. These manual commands are separate from
-the bounded merge test profile and its release receipt.
-
-Budgets are declared before execution from input dimensions and intended work;
-they are not calculated from the average of the baseline and candidate. Reports
-retain actual operation counts, time, dimensions and provenance. The database
-acceptance CLI starts in a worker with a fresh private bytecode cache, preventing
-timestamp-valid stale bytecode from being attributed to newly edited source.
-Worker startup and report-storage failures return `2`; a failed final write
-cannot turn missing evidence into a measured cost violation.
-SQL attribution uses the development observer's complete bounded fingerprint
-set. Runtime duration intervals are useful diagnostics but do not satisfy this
-exact attribution contract. Observer overflow, omitted events or truncated
-details invalidate attribution. A late, frequently repeated query
-must remain identifiable even if no individual call is slow. Returned rows and
-client SQL time still do not establish server rows examined or physical disk traffic.
-
-The full-library objectives remain **132,046 galleries, at most 24 hours of
-non-CBZ work (12 hours desired), and at most seven days including CBZ production**.
-They are not automatically certified by these local cost checks. Initial import,
-unchanged input and interrupted recovery, realistic page/byte/pixel distributions,
-retained catalog size and the complete lifecycle must be covered before making
-a completion-time claim. Qualification remains non-CBZ work even though it
-decodes images. Keep exclusive wall time separate from overlapping SQL, I/O and
-worker measurements, and report unmeasured stages explicitly.
-
-The dev-only `scripts/source_catchup_cost_model.py` consumes a measured ledger
-exported by an explicitly supplied Ingest checkout's `probe-source-backlog.py
---ledger-output NEW_FILE`. It constructs each admission transition from fixed
-inventory, batch size, initial retained galleries and pages per gallery, then
-compares independently measured work against one inventory pass per round,
-one new PAGE byte pass, no retained PAGE rereads and one decode per newly
-admitted page. These are fixed engineering references, not a proof of the
-optimal implementation. SQL counts and history depth stay diagnostic; an unknown
-depth is not inferred from the round number. Cumulative inventory work is K*N,
-not an O(N) whole-catch-up claim. A satisfied prefix does not establish arbitrary
-scale or a complete import; `--require-complete` rejects unfinished catch-up.
-
-```bash
-.venv/bin/python scripts/source_catchup_cost_model.py \
-  --input /tmp/source-ledger.json --output /tmp/source-assessment.json
-```
-
-For hardware calibration without production data or existing containers,
-`scripts/build-source-performance-bundle.py` accepts explicit baseline/candidate
-Ingest checkouts and wheels, a Core wheel and a common probe checkout. It checks
-the exact runtime source bytes and exports a standalone Docker build context.
-The exported `sh run.sh NEW_RESULT_DIRECTORY` always builds its image before
-creating a fresh, network-disabled container. No database credentials, gallery
-mount, Docker socket or pytest are used. Both arms resolve dependencies normally
-in separate environments; wheel hashes, installed sources and common dependency
-versions must match the declared inputs. Alternating runs use identical synthetic
-JPEG/PNG/GIF/WEBP fixtures and report samples, not a NAS SLA verdict. This
-calibration does not replace Compose resolution and isolated workflow acceptance;
-candidate wheels also do not prove an index-backed deployment is available.
-
-Changed-file-hash analysis traverses the sealed changed-gallery set and its
-accepted current/baseline hash occurrences once per local preparation. It sorts
-and deduplicates them in a disk plan outside write transactions, then commits
-authenticated pages of at most 128 hashes. Restart rebuilds that disposable plan
-from database facts at the durable cursor; it does not hash source images.
-The isolated `scripts/analysis_changed_hash_probe.py` exercises dense changes and
-sparse changes among unrelated galleries, and records SQLite VM work or MariaDB
-handler counters and query plans. Its source-call totals cover changed-gallery
-member and occurrence reads, excluding the earlier change-detection stage and
-later commits. These query fixtures do not perform a full READY audit or measure
-whole-ingest throughput.
-
-For depth-zero duplicate-page decisions (initial analysis or compaction), Core
-also prepares the decision hash keys once in a disposable disk plan. It streams
-accepted current-source occurrences and sealed changed hashes, deduplicates and
-sorts outside write transactions, then serves authenticated pages of at most
-128 keys. Each source query combines at most 16 independent primary-key ranges
-with a total return limit of 128 rows. Previously, every page repeated a
-source-wide join and DISTINCT sort;
-limiting returned rows did not limit that database work. Overlay decisions keep
-their changed-hash primary-key seek. The page binding includes its stage,
-analysis/source authority and exact checkpoint; commits and response-loss replay
-revalidate those facts. Restart rebuilds the disposable plan at the durable
-cursor. The three source aggregates that compute decision values and the later
-independent validation remain separate work, so reducing key selection alone
-does not establish a complete analysis or full-library wall-time target.
-
-`VNextIngestFacade.prepare_source()` accepts `max_new_galleries=None` to admit
-all complete galleries before global analysis and publication. This changes
-publication frequency, not the bounded size of database or adapter operations.
-The caller owns any temporary source-byte storage and must account for its
-capacity independently of this admission limit.
-
-An exact fresh completion marker and the current qualification policy now allow
-reuse of any retained, sealed source observation, including an unpublished one
-after restart. This replaces the previous artifact-enabled rule that deeply
-observed every unpublished gallery again. Reuse preserves immutable hashes and
-qualification evidence; it does not prove that live files remain available.
-Artifact preparation still verifies the bytes it actually reads against the
-sealed observation. Source adapters must honor their completion-marker contract.
-
-After an artifact-source failure, callers can pass
-`reobserve_gallery_locators=(locator_a, locator_b)` to bypass reuse for up to 128
-distinct exact locators. Accumulate unresolved failed locators across retries so
-alternating failures do not reintroduce an earlier stale observation. These hints
-only request fresh observation and qualification; they cannot insert inventory
-members, bypass the new-gallery budget, or authorize publication. To refresh
-every admitted gallery, pass `reuse_sealed_observations=False` with an empty hint
-tuple. A resident may use that explicit fallback when its bounded retry hints
-overflow. A deferred gallery still uses only its currently published observation;
-unpublished cache entries cannot replace that fallback.
-
-`prepare_source_resume(adapter, policy=...)` requires the source adapter. It
-checks an unpublished sealed working source cut, including its qualification and
-policy authority, in read pages of at most 128 galleries. Outside the database
-transaction, it rereads each existing gallery's completion marker and requires
-an exact match. This is O(G + marker bytes) source work for G existing galleries;
-it performs SQL and marker I/O, without enumerating newly arrived galleries or
-deep-reading image files. Missing marker evidence, a marker mismatch, or a
-deferred source returns `None` and requires ordinary fresh source preparation.
-Other source or database errors still propagate. A successful check returns an
-opaque preparation. `commit_source_resume(session, prepared)`
-rechecks the current working cut and publication baseline in a short transaction
-and maps the renewed ingest generation to that same build. Preparation belongs
-outside the caller's heartbeat lock; only commit belongs inside it. A published
-head is never returned as pending work.
-
-This lets a consumer finish interrupted analysis and prepared artifacts before
-inventorying newly arrived galleries. It does not recover the original deferred
-or waiting counts; those were process-local inventory facts. The consumer must
-request a fresh inventory after publication and must not report catch-up complete
-from the resumed receipt alone. A source-byte failure or policy change requires
-fresh observation instead. Dropping a failed gallery after global analysis could
-change spam and duplicate selection for other galleries, so a changed cut can
-still require a new analysis and rendering of candidate-owned artifacts.
-
-`prepare_source()` prepares discovery and a lazy observation handle. Subsequent
-issue/prepare/commit steps observe one gallery outside the heartbeat lock and
-persist its canonical pages, qualification and sealed observation before
-observing the next gallery. An observation collection owns these checkpoints
-before the full source manifest exists. Source assembly then attaches those
-exact observations and atomically consumes the collection when the cut seals.
-It does not create intermediate analysis or publication batches.
-Each ingest session binds one source root and collection policy. Changing the
-root, manifest policy or qualification policy requires a new ingest session;
-attempting to replace them within the same generation fails closed.
-
-After an interrupted first scan, a fresh inventory rechecks completion markers
-and reuses matching durable observations. Changed markers or qualification
-policies require new checks. An unfinished gallery's old staging is retired in
-bounded steps before re-observation; completed observations remain protected.
-At most one gallery's unsealed deep checks are lost per interruption when the
-adapter supplies stable completion markers. An adapter without such evidence
-must observe its galleries again; a checkpoint alone cannot prove unchanged
-external bytes. Neither recovery contract establishes a full-library time budget.
-
-The prepared handle's `observation_complete` becomes true after the selected
-inventory is complete. Its `gallery_count`, `deferred_gallery_count` and
-`waiting_gallery_count` properties reject premature reads. This changes the
-public preparation contract; callers must drive the source steps before reading
-these counts. Existing source observations and artifact formats remain intact,
-but an older schema must be converted using its historical tooling first.
-
-A preparation error or cancellation permanently invalidates that prepared
-handle; a terminal manifest mismatch does the same. Leave its context or close
-it outside the session-renewal lock, then start a fresh scan. Its completed
-durable gallery checkpoints remain eligible for reuse. Retrying an invalidated
-handle cannot turn a partial inventory into a completed source cut.
-
-In the normal two-step artifact preparation, the initial live-source pass fills
-one gallery-local verified spool. Post-render source verification reads this
-spool, not the live source. The subsequent protection step reopens and verifies
-live sources when it reuses the prepared receipt. Consequently, a cache hit
-normally still involves two live reads of each executable source member overall.
-Receipts above the 256 MiB cache limit, restarts and retries can repeat rendering
-or add reads; logical read counts do not reveal physical HDD reads.
-
-## Upgrade or restore a database
-
-This release uses **epoch 3, schema version 9**. `migrate` initializes this
-schema; it does not automatically upgrade older databases. Back up the database
-and its matching library storage before changing the deployed application set.
-
-### Completed and historical conversions
-
-An already-converted schema-9 database needs no further conversion, database
-reset, CBZ/artwork regeneration, or library journal upgrade. Upload time belongs
-to each source observation and each published occurrence, so source corrections
-do not rewrite earlier observations or existing publications. Current runtime
-accepts only schema 9 and has no older-schema compatibility path.
-
-The one-time schema-8-to-9 converter, Docker bundle builder, isolated schema-8
-cleanup worker, and their dedicated fixtures and tests have been retired from
-this checkout after the conversion completed. Removing these documented
-offline commands is a breaking tooling change. Schema 9, the Core runtime, public
-facades, and `migrate`/`check`/`ready` CLI remain unchanged.
-
-For an exact schema-8 database or an interrupted conversion from that tool, use
-a separate historical Core **0.43.0** checkout at commit
-`70ca4a35d02a50e7d6f8fd294fccb0829321eaf4` and its matching wheel and environment.
-Follow that checkout's README to build and run the conversion bundle, including
-its explicitly required Core 0.42.2 wheel for the isolated cleanup worker. Keep
-consumers stopped until its full audit and schema-9 `READY` activation succeed.
-A committed `AUDITED` checkpoint is reused on retry; an audit interrupted before
-that checkpoint commits must run again. Do not mix historical converter files
-with a different checkout or wheel, edit markers, or use `migrate` to bypass a
-failed audit. Existing database contents and external media are retained.
-
-The earlier schema-7-to-8 converter and its dedicated audit writer also remain
-retired. An exact schema-7 database or that converter's interrupted state uses
-Core **0.41.2**, commit `64683c502caf108e8ed518e5c040cacaa91e7551`, and its matching
-environment to reach schema 8 before using the historical Core 0.43.0 tool.
-Schema 6 first requires the historical Core 0.40.0 converter to reach schema 7.
-Use the README from each historical checkout. To return to old software, restore
-the matching pre-upgrade database backup; there is no automatic downgrade.
-
-### Other old or incompatible databases
-
-Schema 5 and earlier have no supported in-place conversion. Preserve the old
-database and original downloaded source galleries, create a separate empty
-database, and use ingest to rebuild the catalog and a matching generated library.
-Keep the old database/library pair available until the replacement is verified.
-The rebuilt catalog does not automatically recover old download requests or
-operational history; re-enter any requests you still need.
-
-An unexpected schema mismatch can also mean an application is using the wrong
-Core version or database path. Confirm those settings before deciding a rebuild
-is necessary. Do not use `migrate` to repair a damaged database in place.
-
-## Read the catalog from Python
-
-For scripts that use the library directly, import the public API from `h2hdb`.
-This example searches a library already published by ingest:
+以下範例查詢已由 ingest 發布的書庫，使用前先準備 `core-reader.json`：
 
 ```python
 from contextlib import closing
@@ -588,49 +182,45 @@ with closing(open_database(load_config("core-reader.json"))) as catalog:
         print(publication.publication_id, publication.title)
 ```
 
-`open_database()` performs a full audit. Discovery pages contain at most 128
-publications. To continue, pass the returned `page.next_cursor` as `after` with
-the same query and revision; `None` means there is no next page. If ingest
-publishes a newer revision during browsing, fetch the current revision and
-restart pagination instead of reusing the old cursor.
+`open_database()` 會先完整稽核資料庫。每頁最多 128 筆；
+下一頁使用相同 query、revision，並傳入 `after=page.next_cursor`。
+`next_cursor` 為 `None` 時已到最後一頁。
+若 ingest 在分頁期間發布新版本，請重新取得 revision 並從第一頁開始查詢。
 
-The public entry points cover these tasks:
+搜尋詞與各篩選條件以 AND 組合。語言、貢獻者和標籤使用精確值；
+上傳／下載時間區間含起點、不含終點，頁數區間包含兩端，依已產生檔案的頁數篩選。
 
-| Entry point | Purpose |
+| 公開入口 | 用途 |
 | --- | --- |
-| `VNextDatabaseAdminFacade` | Initialize, audit, and probe the database |
-| `VNextCatalogFacade` | Read publications, search results, facets, tags, recent books, and image/acquisition descriptions |
-| `VNextDownloadQueueFacade` | Submit and manage download requests |
-| `VNextIngestFacade` | Coordinate an ingest integration |
+| `VNextDatabaseAdminFacade` | 初始化、完整檢查與就緒探測 |
+| `VNextCatalogFacade` | 查詢書目、搜尋、分類、標籤、最近書籍及檔案描述 |
+| `VNextDownloadQueueFacade` | 提交與管理下載請求 |
+| `VNextIngestFacade` | 整合匯入流程 |
 
-Search combines its words and supplied filters with AND. Language, contributor,
-and subject filters match exact values. Upload/download time ranges include
-the start and exclude the end; page-count ranges include both ends and use the
-prepared artifact's page count. Catalog results describe the current publication
-only, and image/acquisition descriptions must be resolved by the application's
-storage adapter.
+從 `h2hdb` 匯入公開 API；方法簽名可查閱
+[facade 定義](src/h2hdb/vnext_facade.py)與[資料型別](src/h2hdb/domain.py)。
+查詢回傳的圖片與下載項目是描述資料，實際檔案由應用程式的儲存 adapter 提供。
 
-## Troubleshooting
+## 常見問題
 
-| Symptom | What to check |
+| 狀況 | 建議檢查 |
 | --- | --- |
-| Configuration fails before connecting | Check JSON syntax, field names, environment variables, and that this is a Core configuration file |
-| SQLite cannot open or write the database | Check the absolute path, parent directory, and process permissions |
-| MariaDB connection or permission error | Check server availability, database name, credentials, and account privileges |
-| Database is not READY after interrupted setup | Resume `migrate` with the same version and configuration |
-| Schema or manifest mismatch | Check the installed application versions and the upgrade instructions above |
-| `ready` succeeds but the library is empty | Complete the first ingest publication; readiness alone does not populate the catalog |
-| Full `check` fails | Retain the error and backups; investigate the mismatch before restoring or rebuilding |
-| Python catalog revision or cursor becomes invalid | Reload the current revision and restart the query |
+| 設定檔讀取失敗 | JSON 語法、欄位名稱、環境變數是否存在，以及是否拿錯應用程式的設定檔 |
+| SQLite 無法開啟或寫入 | 資料庫絕對路徑、父目錄與執行帳號權限 |
+| MariaDB 連線或權限錯誤 | 伺服器、port、資料庫名稱、帳密與帳號權限 |
+| 初始化中斷，尚未 READY | 使用相同版本與設定重跑 `migrate` |
+| schema 或 manifest 不符 | 先確認套件版本與資料庫位置，再依升級說明處理 |
+| `ready` 成功但書庫是空的 | 確認 ingest 已完成第一次發布；初始化本身不會匯入圖庫 |
+| `check` 失敗 | 保留錯誤與備份，查明原因後再決定還原或重建 |
+| Python revision 或 cursor 失效 | 重新取得目前 revision，從頭執行查詢 |
 
-For support, include the installed package versions, database backend, command,
-and redacted error in the [issue tracker](https://github.com/Kuan-Lun/h2hdb/issues).
-Do not include credentials or an unredacted configuration file.
+回報問題時，請在 [issue tracker](https://github.com/Kuan-Lun/h2hdb/issues)
+提供套件版本、資料庫種類、執行指令與移除敏感資料後的錯誤訊息。
 
-For optional local assessment, see the [verification guide](verification/README.md)
-and [catalog benchmark guide](benchmarks/README.md). These tools are separate
-from checking your own database.
+需要重現軟體檢查時，見[驗證指南](verification/README.md)；
+需要量測查詢或匯入成本時，見[效能量測指南](benchmarks/README.md)。
+這些工具使用測試環境，其結果不能取代對實際書庫執行的檢查。
 
-## License
+## 授權
 
-[GNU General Public License version 3](LICENSE).
+[GNU General Public License version 3](LICENSE)。
