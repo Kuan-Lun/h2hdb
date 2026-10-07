@@ -236,7 +236,7 @@ def test_version_increase_pre_push_runs_gate_when_exact_tree_lacks_receipt(
             "candidate-tree",
             Version("1.1"),
             False,
-            ("--base", "remote-oid", "--candidate", "local-oid"),
+            ("--base", "base-oid", "--candidate", "local-oid"),
             ("--revision", "local-oid"),
         )
     ]
@@ -294,7 +294,7 @@ def test_version_increase_pre_push_reuses_exact_tree_receipt(
             sys.executable,
             "scripts/check-version.py",
             "--base",
-            "remote-oid",
+            "base-oid",
             "--candidate",
             "local-oid",
         )

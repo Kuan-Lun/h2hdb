@@ -457,3 +457,118 @@ def test_document_export_never_overwrites_colliding_git_paths(
     else:
         assert result.returncode == 0, result.stderr
         assert marker.read_text() == "checked"
+
+
+@pytest.mark.parametrize(
+    "readme",
+    (
+        '"README.md"',
+        '{file = "README.md", content-type = "text/markdown"}',
+    ),
+)
+def test_referenced_readme_deletion_blocks_before_lint(
+    documentation_repository: DocumentationRepository, readme: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f"[project]\nreadme = {readme}\n")
+    repository.git("commit", "-m", "test: reference package documentation")
+    repository.git("rm", "README.md")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "Missing project.readme file" in result.stderr
+    assert "lint must not run" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "readme",
+    (
+        '"README.md"',
+        '{file = "README.md", content-type = "text/markdown"}',
+        '{text = "Inline package description", content-type = "text/markdown"}',
+        '"docs/../README.md"',
+    ),
+)
+def test_readme_metadata_allows_unreferenced_document_deletion(
+    documentation_repository: DocumentationRepository, readme: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f"[project]\nreadme = {readme}\n")
+    repository.git("commit", "-m", "test: configure package documentation")
+    repository.git("rm", "docs/guide.md")
+    repository.lint_stub("pass\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode == 0, result.stderr
+
+
+def test_inline_readme_does_not_require_a_readme_file(
+    documentation_repository: DocumentationRepository,
+) -> None:
+    repository = documentation_repository
+    repository.stage(
+        "pyproject.toml",
+        '[project]\nreadme = {text = "", content-type = "text/markdown"}\n',
+    )
+    repository.git("commit", "-m", "test: use inline package description")
+    repository.git("rm", "README.md")
+    repository.lint_stub("pass\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("reference", ("docs", "linked-readme.md"))
+def test_nonregular_readme_reference_blocks_documentation_checks(
+    documentation_repository: DocumentationRepository, reference: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f'[project]\nreadme = "{reference}"\n')
+    if reference == "linked-readme.md":
+        object_id = repository.git("rev-parse", "HEAD:README.md")
+        repository.git(
+            "update-index", "--add", "--cacheinfo", f"120000,{object_id},{reference}"
+        )
+    repository.git("commit", "-m", "test: configure invalid readme reference")
+    repository.stage("README.md", "# Updated\n")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "requires a regular file" in result.stderr
+
+
+def test_readme_reference_uses_candidate_metadata_and_not_worktree(
+    documentation_repository: DocumentationRepository,
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", '[project]\nreadme = "README.md"\n')
+    repository.git("commit", "-m", "test: reference readme")
+    repository.git("rm", "README.md")
+    (repository.root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (repository.root / "README.md").write_text("# Unstaged\n", encoding="utf-8")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "Missing project.readme file" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "readme",
+    (
+        '{file = "README.md", text = "conflict", content-type = "text/markdown"}',
+        '{file = "README.md"}',
+        '{text = 123, content-type = "text/markdown"}',
+        '"../outside.md"',
+        '"/absolute.md"',
+    ),
+)
+def test_invalid_readme_metadata_fails_closed(
+    documentation_repository: DocumentationRepository, readme: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f"[project]\nreadme = {readme}\n")
+    repository.git("commit", "-m", "test: configure invalid readme metadata")
+    repository.stage("README.md", "# Updated\n")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "project.readme" in result.stderr
+    assert "lint must not run" not in result.stderr

@@ -249,3 +249,59 @@ def test_failed_selected_merge_profile_aborts_and_retains_task(
     )
     if failure == "documentation":
         assert "MD001" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("cached", (False, True))
+def test_push_after_multiple_releases_and_documentation_uses_task_version_policy(
+    tmp_path: Path, cached: bool
+) -> None:
+    repository = _repository(tmp_path, install_hooks=False)
+    remote = _git(repository, "rev-parse", "HEAD")
+    # Prior tasks have their own version checks. A later documentation merge
+    # cannot turn the entire unpublished history into a single release bump.
+    for patch in (1, 2):
+        _write(repository, "src/example.py", f"value = {patch}\n")
+        _write(
+            repository,
+            "pyproject.toml",
+            '[project]\nname = "workflow-fixture"\n'
+            f'version = "0.1.{patch}"\n'
+            '[tool.h2h.version]\nrelease-paths = ["src/**"]\n',
+        )
+        _commit(repository, f"fix: seed release {patch}")
+    _git(repository, "switch", "main")
+    _git(repository, "merge", "--no-ff", "docs/task", "-m", "Merge prior releases")
+    _git(repository, "branch", "-d", "docs/task")
+    _git(repository, "config", "core.hooksPath", ".githooks")
+    _git(repository, "switch", "-c", "docs/final")
+    _write(repository, "README.md", "# Final guide\n")
+    _commit(repository, "docs: update final guide")
+    result = _run(repository, "scripts/git-flow-merge.sh")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _checks(repository) == []
+    head = _git(repository, "rev-parse", "HEAD")
+    update = f"refs/heads/main {head} refs/heads/main {remote}\n"
+    # Feed the pre-push protocol without a remote or network operation. Keep
+    # input outside the checkout because uncached gates require a clean tree.
+    updates = repository.parent / "push-update.txt"
+    updates.write_text(update, encoding="utf-8")
+    command = (
+        "bash",
+        "-c",
+        'exec .venv/bin/python scripts/release-gate.py pre-push < "$1"',
+        "pre-push",
+        str(updates),
+    )
+    first = _run(repository, *command)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert _checks(repository) == [
+        "review-verify",
+        "review-verify",
+        "full",
+        "review-verify",
+    ]
+    if cached:
+        (repository.parent / "checks.log").write_text("", encoding="utf-8")
+        repeated = _run(repository, *command)
+        assert repeated.returncode == 0, repeated.stdout + repeated.stderr
+        assert _checks(repository) == ["review-verify"]

@@ -141,7 +141,7 @@
   或 mode變更均使用 full profile。Rename的兩端都須分類，Git或分類失敗
   必須阻止操作，空差異不得當成純文件豁免。
 - 純文件 commit與merge執行 `scripts/check-docs.py`，只驗證 exact candidate
-  的 whitespace與 repository-local Markdown規則，不啟動 Ruff、mypy、
+  的 whitespace、套件 README引用與 repository-local Markdown規則，不啟動 Ruff、mypy、
   pytest、Lean、TLC、build或 online code review。文件內容與設定從 Git tree
   匯出至隔離暫存目錄，不能拿 unstaged內容代替 candidate；檢查結束須確認
   candidate未變動。Branch、提交格式與task-level版本政策仍適用。

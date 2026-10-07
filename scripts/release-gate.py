@@ -23,7 +23,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 2
 RELEASE_PROFILE = "h2hdb-release-v6"
 DOCUMENTATION_PROFILE = "h2hdb-documentation-v1"
-DOCUMENTATION_CHECKS = ("candidate-whitespace", "markdownlint-cli2", "version-policy")
+DOCUMENTATION_CHECKS = (
+    "candidate-whitespace",
+    "project-readme-reference",
+    "markdownlint-cli2",
+    "version-policy",
+)
 REQUIRED_CHECKS = (
     "exact-candidate-code-review",
     "ruff-lint",
@@ -449,11 +454,14 @@ def _pre_push(document: str) -> None:
         review_arguments = ("--revision", update.local_oid)
         # A version-increasing push includes release metadata/code changes,
         # even if the final local merge happened to change only documentation.
-        scope = GateScope(resolve_tree(REPOSITORY_ROOT, update.remote_oid), "full")
+        # Version policy belongs to the final integrated task, not the entire
+        # unpublished history, which can contain several valid release bumps.
+        task_base = _revision_base(update.local_oid)
+        scope = GateScope(resolve_tree(REPOSITORY_ROOT, task_base), "full")
         _verify_code_review(review_arguments, expected_tree=tree)
         version_arguments = (
             "--base",
-            update.remote_oid,
+            task_base,
             "--candidate",
             update.local_oid,
         )
@@ -470,7 +478,7 @@ def _pre_push(document: str) -> None:
                     "has no valid local release receipt and is not the checked-out "
                     "HEAD. Check out the exact commit and run "
                     "`.venv/bin/python scripts/release-gate.py run "
-                    f"--base {update.remote_oid}`."
+                    f"--base {task_base}`."
                 )
             _assert_clean_head()
             print(
