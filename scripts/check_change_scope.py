@@ -71,7 +71,7 @@ def capture_candidate(root: Path, revision: str | None) -> str:
 
 def _is_document(path: str) -> bool:
     parts = PurePosixPath(path).parts
-    if parts and parts[-1] in {"AGENTS.md", "CLAUDE.md"}:
+    if parts and parts[-1].casefold() in {"agents.md", "claude.md"}:
         return False
     return path in _DOCUMENT_PATHS or (
         len(parts) >= 2 and parts[0] == "docs" and path.endswith(".md")

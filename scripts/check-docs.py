@@ -24,6 +24,7 @@ _CONFIG = ".markdownlint-cli2.jsonc"
 
 def _export_documents(root: Path, tree: str, destination: Path) -> None:
     config_found = False
+    directories: dict[tuple[int, int], tuple[str, ...]] = {}
     for entry in git_output(root, "ls-tree", "-r", "-z", tree).split(b"\0"):
         if not entry:
             continue
@@ -45,10 +46,26 @@ def _export_documents(root: Path, tree: str, destination: Path) -> None:
         if not parts or PurePosixPath(path).is_absolute() or ".." in parts:
             raise ChangeScopeError("Unsafe path in documentation tree")
         output = destination.joinpath(*parts)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(
-            git_output(root, "cat-file", "blob", object_id.decode("ascii"))
-        )
+        try:
+            parent = destination
+            for depth, component in enumerate(parts[:-1], start=1):
+                parent /= component
+                parent.mkdir(exist_ok=True)
+                metadata = parent.stat()
+                identity = (metadata.st_dev, metadata.st_ino)
+                previous = directories.setdefault(identity, parts[:depth])
+                if previous != parts[:depth]:
+                    raise ChangeScopeError(
+                        f"Colliding documentation directories: {path!r}"
+                    )
+            with output.open("xb") as stream:
+                stream.write(
+                    git_output(root, "cat-file", "blob", object_id.decode("ascii"))
+                )
+        except (FileExistsError, IsADirectoryError, NotADirectoryError) as error:
+            raise ChangeScopeError(
+                f"Colliding documentation paths on this filesystem: {path!r}"
+            ) from error
         config_found |= path == _CONFIG
     if not config_found:
         raise ChangeScopeError(f"Candidate has no regular {_CONFIG}")

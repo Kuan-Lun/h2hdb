@@ -131,6 +131,8 @@ def test_newline_in_git_filename_is_not_a_second_path(
         "CLAUDE.md",
         "docs/nested/AGENTS.md",
         "docs/CLAUDE.md",
+        "docs/agents.md",
+        "docs/Claude.md",
     ),
 )
 def test_control_code_and_unknown_paths_require_full_profile(
@@ -400,3 +402,58 @@ def test_base_change_during_lint_blocks_acceptance(
     assert result.returncode != 0
     assert "Base changed" in result.stderr
     assert "Documentation checks passed" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("docs/Case.md", "docs/case.md"),
+        ("docs/Case.md", "docs/case.md/nested.md"),
+        ("docs/caf\u00e9.md", "docs/cafe\u0301.md"),
+        ("docs/Case/first.md", "docs/case/second.md"),
+        ("docs/caf\u00e9/first.md", "docs/cafe\u0301/second.md"),
+    ),
+)
+def test_document_export_never_overwrites_colliding_git_paths(
+    documentation_repository: DocumentationRepository, first: str, second: str
+) -> None:
+    repository = documentation_repository
+    for variable in ("TMPDIR", "TEMP", "TMP"):
+        repository.environment[variable] = str(repository.root)
+    repository.git("config", "core.precomposeUnicode", "false")
+    repository.stage("docs/seed.md", "# First\n")
+    first_object = repository.git("rev-parse", ":docs/seed.md")
+    repository.stage("docs/seed.md", "# Second\n")
+    second_object = repository.git("rev-parse", ":docs/seed.md")
+    repository.git(
+        "update-index", "--add", "--cacheinfo", f"100644,{first_object},{first}"
+    )
+    repository.git(
+        "update-index", "--add", "--cacheinfo", f"100644,{second_object},{second}"
+    )
+    tracked_paths = set(repository.git("ls-files", "-z").split("\0"))
+    assert first in tracked_paths and second in tracked_paths
+    probe = repository.root / "filesystem-probe"
+    probe.mkdir()
+    aliases = next(
+        (left, right)
+        for left, right in zip(Path(first).parts, Path(second).parts, strict=False)
+        if left != right
+    )
+    (probe / aliases[0]).write_text("probe", encoding="utf-8")
+    collides = (probe / aliases[1]).exists()
+    marker = repository.root / "lint-started"
+    repository.lint_stub(
+        "from pathlib import Path\n"
+        f"assert Path({first!r}).read_text() == '# First\\n'\n"
+        f"assert Path({second!r}).read_text() == '# Second\\n'\n"
+        f"Path({str(marker)!r}).write_text('checked')\n"
+    )
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    if collides:
+        assert result.returncode != 0
+        assert "Colliding documentation" in result.stderr
+        assert not marker.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert marker.read_text() == "checked"
