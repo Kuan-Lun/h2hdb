@@ -36,6 +36,30 @@ def _load_runner() -> ModuleType:
 runner = _load_runner()
 
 
+@pytest.mark.parametrize("fenced", [False, True])
+def test_availability_observation_preserves_typed_maintenance_evidence(
+    fenced: bool,
+) -> None:
+    acceptance = runner.Acceptance.__new__(runner.Acceptance)
+    acceptance.report = {}
+    observation = {
+        "statuses": {"/health": 200, "/opds/v2": 503 if fenced else 200},
+        "fenced": fenced,
+        "maintenance_events": [] if fenced else [{"waited_seconds": 1}],
+    }
+
+    def compose(command: list[str], *, timeout: int) -> str:
+        assert "PYTHONPATH=/acceptance" in command
+        assert "probe_availability" in command[-2]
+        assert command[-1] == ("fenced" if fenced else "available")
+        assert timeout == 45
+        return json.dumps(observation)
+
+    acceptance.compose = compose
+    assert acceptance.http(fenced=fenced) == observation["statuses"]
+    assert acceptance.report["http_observations"] == [observation]
+
+
 def test_ingest_log_scan_includes_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

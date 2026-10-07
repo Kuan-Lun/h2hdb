@@ -271,6 +271,75 @@ def _link(document: object, gid: int, size: int) -> Mapping[str, Any]:
     return result
 
 
+def probe_availability(
+    base_url: str,
+    *,
+    fenced: bool = False,
+    timeout: float = 5.0,
+    deadline_seconds: float = 30.0,
+) -> dict[str, object]:
+    """Require healthy OPDS and its expected publication fence state.
+
+    An unfenced read may meet a later resident maintenance lock even after
+    catalog cleanup DONE. Only the existing typed activation response permits
+    waiting; an intentionally fenced observation must see that response now.
+    """
+    base = urlunsplit(_base(base_url))
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ProbeError("HTTP socket timeout must be finite and positive")
+    if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+        raise ProbeError("HTTP probe deadline must be finite and positive")
+    budget = _ProbeBudget(timeout, deadline_seconds, perf_counter())
+    opener = build_opener(ProxyHandler({}), _NoRedirect())
+    headers = {"Accept-Encoding": "identity"}
+    try:
+        with closing(
+            opener.open(
+                Request(base + "/health", headers=headers), timeout=budget.timeout()
+            )
+        ) as health:
+            if health.status != 200:
+                raise ProbeError("OPDS health is not HTTP 200")
+            _bounded_read(health, _JSON_LIMIT, budget)
+        try:
+            response = (
+                opener.open(
+                    Request(base + "/opds/v2", headers=headers),
+                    timeout=budget.timeout(),
+                )
+                if fenced
+                else _request(opener, base + "/opds/v2", budget=budget, phase="catalog")
+            )
+        except HTTPError as error:
+            with closing(error):
+                if not fenced or error.code != 503:
+                    raise
+                _require_maintenance_response(error, budget)
+            status = 503
+        else:
+            with closing(response):
+                if fenced or response.status != 200:
+                    raise ProbeError("OPDS catalog has an unexpected fence state")
+                _bounded_read(response, _JSON_LIMIT, budget)
+            status = 200
+    except Exception as error:
+        if isinstance(error, HTTPError):
+            error.close()
+        if not budget.maintenance_events:
+            raise
+        raise ProbeError(
+            f"{type(error).__name__}: {error}",
+            maintenance_events=budget.maintenance_events,
+        ) from error
+    return {
+        "statuses": {"/health": 200, "/opds/v2": status},
+        "fenced": fenced,
+        "maintenance_events": budget.maintenance_events,
+        "total_seconds": perf_counter() - budget.started,
+        "deadline_seconds": budget.duration,
+    }
+
+
 def probe(
     base_url: str,
     gid: int,
