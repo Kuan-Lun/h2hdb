@@ -58,6 +58,9 @@ from h2hdb import (  # noqa: E402 - measured source path.
 from h2hdb import (  # noqa: E402 - measured source path.
     vnext_ingest_facade as ingest,
 )
+from h2hdb.domain import (  # noqa: E402 - measured source path.
+    CurrentOnlyCleanupTerminalState,
+)
 from h2hdb.mariadb_connector import (  # noqa: E402 - measured source path.
     MariaDBConnector,
 )
@@ -75,12 +78,12 @@ from h2hdb.sqlite_connector import (  # noqa: E402 - measured source path.
 # additional NATIVE_BUDGET was fixed after the candidate existed, before paired
 # measurements with matching native instrumentation. Neither is a wall-time
 # budget or evidence for the 24-hour production goal.
-MEASUREMENT_SCHEMA = 2
+MEASUREMENT_SCHEMA = 3
 MAX_DRAIN_CALLS = 2048
 NATIVE_BUDGET = {"pure_release_ratio_max": 0.5, "whole_drain_ratio_max": 1.1}
 COST_CONTRACT = {
     "pure_release_eligibility_probes_per_call_max": 0,
-    "terminal_fresh_eligibility_passes_min": 1,
+    "terminal_freshly_fenced_eligibility_passes_min": 1,
     "release_calls_per_resource_max": 1,
     "max_drain_calls": MAX_DRAIN_CALLS,
     "definition": "A pure release call acknowledges resources and performs no database cleanup batches.",
@@ -99,6 +102,219 @@ PROBES = (
     "_next_file_name_candidate_shard",
     "_next_content_blob_candidate_shard",
 )
+_REUSABLE_ABSENCES = frozenset({"CONTENT_BLOB", "FILE_NAME_IDENTITY"})
+_FACADE_PREFIX = "_VNextIngestFacade__"
+
+
+def _proof_record(proof: Any) -> dict[str, Any] | None:
+    if proof is None:
+        return None
+    return {
+        "owner_token": proof.owner_token.hex(),
+        "gate_generation": proof.gate_generation,
+        "cycle_cutoff_at": proof.cycle_cutoff_at,
+        "absent_targets": sorted(proof.absent_targets),
+    }
+
+
+@contextmanager
+def terminal_authority() -> Iterator[list[dict[str, Any]]]:
+    """Observe committed private transactions without changing shipped telemetry.
+
+    Each measurement owns a new ledger: absence cannot cross public calls. The
+    original fence and candidate functions run unchanged. Failed transactions
+    append no committed event; the facade helpers return only after COMMIT.
+    """
+
+    events: list[dict[str, Any]] = []
+    active: dict[str, Any] | None = None
+    original_fence = cleanup._require_exclusive_gate
+
+    def fence(*args: Any, **kwargs: Any) -> int:
+        timestamp = original_fence(*args, **kwargs)
+        if active is not None:
+            lease = args[1]
+            active["fences"].append(
+                {
+                    "owner_token": lease.owner_token.hex(),
+                    "gate_generation": lease.gate_generation,
+                    "mode": lease.mode.value,
+                    "slots": list(lease.slots),
+                    "validated_at": timestamp,
+                    "lease_expires_at": lease.lease_expires_at,
+                }
+            )
+        return timestamp
+
+    def probe(original: Callable[..., Any], name: str) -> Callable[..., Any]:
+        def observed(*args: Any, **kwargs: Any) -> Any:
+            result = original(*args, **kwargs)
+            if active is not None:
+                target = {
+                    "_next_artifact_blob_candidate_shard": "ARTIFACT_BLOB",
+                    "_next_publication_identity_candidate_shard": "PUBLICATION_IDENTITY",
+                    "_next_file_name_candidate_shard": "FILE_NAME_IDENTITY",
+                    "_next_content_blob_candidate_shard": "CONTENT_BLOB",
+                }.get(name)
+                if target is None:
+                    plan = args[1] if len(args) > 1 else kwargs["plan"]
+                    target = plan.kind.value
+                active["queries"].append(
+                    {"target": target, "candidate_found": result is not None}
+                )
+            return result
+
+        return observed
+
+    def transaction(original: Callable[..., Any], kind: str) -> Callable[..., Any]:
+        def observed(*args: Any, **kwargs: Any) -> Any:
+            nonlocal active
+            if active is not None:
+                raise RuntimeError("nested terminal-authority instrumentation")
+            event: dict[str, Any] = {
+                "kind": kind,
+                "fences": [],
+                "queries": [],
+            }
+            if kind in {"selection", "state"}:
+                event["cycle_cutoff_at"] = kwargs["cycle_cutoff_at"]
+                event["proof_in"] = _proof_record(kwargs["eligibility_proof"])
+            active = event
+            try:
+                result = original(*args, **kwargs)
+            finally:
+                active = None
+            # Appending after the private facade helper returns records COMMIT,
+            # not merely a repository result from a still-open transaction.
+            if kind == "selection":
+                event["proof_out"] = _proof_record(result.eligibility_proof)
+                event["state"] = (
+                    result.cycle.value
+                    if isinstance(result.cycle, CurrentOnlyCleanupTerminalState)
+                    else "ACTIONABLE"
+                )
+            elif kind == "state":
+                event["state"] = result.value
+            elif kind == "advance":
+                event["target"] = kwargs["cycle"].target_kind.value
+            elif kind == "release":
+                lease = args[2]
+                event["owner_token"] = lease.owner_token.hex()
+                event["gate_generation"] = lease.gate_generation
+            events.append(event)
+            return result
+
+        return observed
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(cleanup, "_require_exclusive_gate", fence))
+        for name in PROBES:
+            stack.enter_context(
+                patch.object(cleanup, name, probe(getattr(cleanup, name), name))
+            )
+        for name, kind in (
+            ("next_current_only_cycle", "selection"),
+            ("current_only_state", "state"),
+            ("advance_current_only_shard", "advance"),
+            ("release_current_only_lease", "release"),
+        ):
+            attribute = _FACADE_PREFIX + name
+            stack.enter_context(
+                patch.object(
+                    VNextIngestFacade,
+                    attribute,
+                    transaction(getattr(VNextIngestFacade, attribute), kind),
+                )
+            )
+        yield events
+
+
+def terminal_evidence(events: list[dict[str, Any]]) -> dict[str, bool]:
+    """Independently reconstruct absence from queries, fences and invalidation.
+
+    A serialized proof is never sufficient by itself. Its complete contents must
+    equal observations committed earlier in this same ledger. No performance
+    budget is relaxed: skipped SQL remains skipped work, not a synthetic probe.
+    """
+
+    priority = [target.value for target in cleanup._CURRENT_ONLY_TARGET_PRIORITY]
+    known: set[str] = set()
+    identity: tuple[Any, ...] | None = None
+    terminal = False
+    fresh_scan = False
+    try:
+        for event in events:
+            kind = event["kind"]
+            if kind not in {"selection", "state", "advance", "release"}:
+                raise ValueError("unknown authority event")
+            if kind == "release":
+                if (
+                    event is not events[-1]
+                    or identity is None
+                    or (event["owner_token"], event["gate_generation"]) != identity[:2]
+                ):
+                    raise ValueError("missing terminal owner release")
+                continue
+            fences = event["fences"]
+            if len(fences) != 1:
+                raise ValueError("missing exact fresh fence")
+            fence = fences[0]
+            if (
+                fence["mode"] != "EXCLUSIVE"
+                or fence["slots"] != list(range(64))
+                or not 0 <= fence["validated_at"] < fence["lease_expires_at"]
+            ):
+                raise ValueError("invalid exclusive authority")
+            gate = (fence["owner_token"], fence["gate_generation"])
+            if kind == "advance":
+                if identity is None or gate != identity[:2]:
+                    raise ValueError("cleanup changed proof owner")
+                if event["target"] != "CANONICAL_VALUE":
+                    known.clear()
+                terminal = False
+                continue
+            key = (*gate, event["cycle_cutoff_at"])
+            incoming = event["proof_in"]
+            if incoming is None:
+                known.clear()
+            elif identity != key or incoming != {
+                "owner_token": key[0],
+                "gate_generation": key[1],
+                "cycle_cutoff_at": key[2],
+                "absent_targets": sorted(known),
+            }:
+                raise ValueError("unproven or invalidated absence")
+            identity = key
+            reused = set(known)
+            queries = event["queries"]
+            expected = [target for target in priority if target not in reused]
+            if [query["target"] for query in queries] != expected[: len(queries)]:
+                raise ValueError("candidate priority or evidence mismatch")
+            if any(query["candidate_found"] for query in queries[:-1]):
+                raise ValueError("candidate search continued after match")
+            for query in queries:
+                if (
+                    not query["candidate_found"]
+                    and query["target"] in _REUSABLE_ABSENCES
+                ):
+                    known.add(query["target"])
+            if kind == "selection" and event["proof_out"] != {
+                "owner_token": key[0],
+                "gate_generation": key[1],
+                "cycle_cutoff_at": key[2],
+                "absent_targets": sorted(known),
+            }:
+                raise ValueError("returned proof differs from committed observations")
+            terminal = (
+                event["state"] == "DONE"
+                and len(queries) == len(expected)
+                and not any(query["candidate_found"] for query in queries)
+            )
+            fresh_scan = terminal and not reused
+        valid = terminal and bool(events) and events[-1]["kind"] == "release"
+    except KeyError, TypeError, ValueError:
+        valid, fresh_scan = False, False
+    return {"valid": valid, "fresh_scan": fresh_scan}
 
 
 class FixtureBoundary(RuntimeError):
@@ -305,9 +521,14 @@ def native_operation(backend: str) -> Iterator[dict[str, Any]]:
 def measured_call(
     action: Callable[[], Any], backend: str
 ) -> tuple[Any, dict[str, Any]]:
-    with native_operation(backend) as whole, native_candidates(backend) as native:
+    with (
+        native_operation(backend) as whole,
+        native_candidates(backend) as native,
+        terminal_authority() as authority,
+    ):
         outcome, result = growth.measure(action)
     result["whole_operation_native_work"] = whole
+    result["terminal_authority"] = authority
     if backend == "mariadb":
         if len(native) != len(result["candidate_probes"]):
             raise RuntimeError("native counter attribution did not match candidates")
@@ -356,20 +577,26 @@ def evaluate(operations: list[dict[str, Any]], actual_a: int) -> dict[str, Any]:
         if row["candidate_probes"]:
             violations.append("pure_release_repeats_eligibility")
     last = operations[-1]
-    expected = {target.value for target in cleanup._CURRENT_ONLY_TARGET_PRIORITY}
-    terminal_probes = last["candidate_probes"][-len(expected) :]
+    events = last.get("terminal_authority", [])
+    terminal = terminal_evidence(events)
+    observed = [query for event in events for query in event.get("queries", [])]
+    measured = [
+        {"target": probe["target"], "candidate_found": probe["candidate_found"]}
+        for probe in last["candidate_probes"][-len(observed) :]
+    ]
     fresh = (
         last["outcome"] == "DONE"
-        and {probe["target"] for probe in terminal_probes} == expected
-        and not any(probe["candidate_found"] for probe in terminal_probes)
+        and terminal["valid"]
+        and bool(observed)
+        and observed == measured
     )
     if not fresh:
-        violations.append("terminal_fresh_scan_missing")
+        violations.append("terminal_fresh_authority_missing")
     if sum(row["released"] for row in operations) != actual_a:
         violations.append("release_resource_count_mismatch")
     return {
         "passed": not violations,
-        "evidence_complete": True,
+        "evidence_complete": fresh,
         "violations": sorted(set(violations)),
         "pure_release_calls": len(release),
         "pure_release_eligibility_probes": sum(
@@ -377,7 +604,8 @@ def evaluate(operations: list[dict[str, Any]], actual_a: int) -> dict[str, Any]:
         ),
         "pure_release_native_work": sum(native_total(row) for row in release),
         "whole_drain_native_work": sum(native_total(row) for row in operations),
-        "terminal_fresh_scan": fresh,
+        "terminal_fresh_scan": fresh and terminal["fresh_scan"],
+        "terminal_fresh_authority": fresh,
     }
 
 
