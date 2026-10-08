@@ -34,6 +34,7 @@ from h2hdb import vnext_cleanup_repository as cleanup_repository
 from h2hdb.domain import ArtifactReleaseStorageEvidence, StorageObjectKey
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_artifact_release_repository import ArtifactReleaseRepository
+from h2hdb.vnext_cleanup_eligibility import CurrentOnlyEligibilityProof
 from h2hdb.vnext_cleanup_repository import (
     CleanupCycle,
     CleanupTargetKind,
@@ -148,11 +149,20 @@ def test_restarted_cleanup_finds_new_orphans_after_done(
     select_candidate = cleanup_repository._next_current_only_candidate
 
     def counted_candidate(
-        work: VNextUnitOfWork, *, cycle_cutoff_at: int
-    ) -> tuple[CleanupTargetKind, int] | None:
+        work: VNextUnitOfWork,
+        *,
+        cycle_cutoff_at: int,
+        eligibility_proof: CurrentOnlyEligibilityProof | None = None,
+    ) -> tuple[
+        tuple[CleanupTargetKind, int] | None, CurrentOnlyEligibilityProof | None
+    ]:
         nonlocal selector_calls
         selector_calls += 1
-        return select_candidate(work, cycle_cutoff_at=cycle_cutoff_at)
+        return select_candidate(
+            work,
+            cycle_cutoff_at=cycle_cutoff_at,
+            eligibility_proof=eligibility_proof,
+        )
 
     monkeypatch.setattr(
         cleanup_repository, "_next_current_only_candidate", counted_candidate
@@ -280,11 +290,20 @@ def test_stale_positive_hint_requires_empty_issue_and_fresh_done_proof(
             return page
 
         def counted_candidate(
-            work: VNextUnitOfWork, *, cycle_cutoff_at: int
-        ) -> tuple[CleanupTargetKind, int] | None:
+            work: VNextUnitOfWork,
+            *,
+            cycle_cutoff_at: int,
+            eligibility_proof: CurrentOnlyEligibilityProof | None = None,
+        ) -> tuple[
+            tuple[CleanupTargetKind, int] | None, CurrentOnlyEligibilityProof | None
+        ]:
             nonlocal selector_calls
             selector_calls += 1
-            return select(work, cycle_cutoff_at=cycle_cutoff_at)
+            return select(
+                work,
+                cycle_cutoff_at=cycle_cutoff_at,
+                eligibility_proof=eligibility_proof,
+            )
 
         monkeypatch.setattr(
             ArtifactReleaseRepository, "has_pending_release", staticmethod(stale_hint)

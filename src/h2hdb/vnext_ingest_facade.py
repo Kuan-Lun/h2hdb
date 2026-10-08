@@ -72,10 +72,12 @@ from .vnext_canonical_value_repository import (
     CanonicalValueUploadPlan,
     PreparedCanonicalPage,
 )
+from .vnext_cleanup_eligibility import CurrentOnlyEligibilityProof
 from .vnext_cleanup_repository import (
     CatalogPublicationMaintenanceState,
     CleanupBatchResult,
     CleanupCycle,
+    CurrentOnlyCleanupSelection,
     VNextCleanupRepository,
 )
 from .vnext_domains import require_int63, require_positive_int63
@@ -2190,15 +2192,22 @@ class VNextIngestFacade:
                 else:
                     advanced_batches = 0
                     remaining: CatalogPublicationMaintenanceState | None = None
+                    eligibility_proof: CurrentOnlyEligibilityProof | None = None
                     while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
                         lease = self.__renew_current_only_lease(
                             connector, lease, duration=duration
                         )
-                        cycle = self.__next_current_only_cycle(
+                        selection = self.__next_current_only_cycle(
                             connector,
                             lease,
                             cycle_cutoff_at=cycle_cutoff_at,
+                            eligibility_proof=eligibility_proof,
                         )
+                        # The helper returns only after its selection transaction
+                        # commits. Rollback or lost COMMIT response cannot publish
+                        # new absence evidence into this attempt's local state.
+                        eligibility_proof = selection.eligibility_proof
+                        cycle = selection.cycle
                         if isinstance(cycle, CurrentOnlyCleanupTerminalState):
                             remaining = CatalogPublicationMaintenanceState(cycle.value)
                             break
@@ -2208,6 +2217,11 @@ class VNextIngestFacade:
                             )
                             results = self.__advance_current_only_shard(
                                 connector, lease, cycle=cycle
+                            )
+                            eligibility_proof = (
+                                eligibility_proof.after_committed_cleanup(
+                                    cycle.target_kind.value
+                                )
                             )
                             advanced_batches += 1
                             progressed = True
@@ -2240,6 +2254,7 @@ class VNextIngestFacade:
                             connector,
                             lease,
                             cycle_cutoff_at=cycle_cutoff_at,
+                            eligibility_proof=eligibility_proof,
                         )
                     if remaining is CatalogPublicationMaintenanceState.DONE:
                         outcome = VNextCurrentOnlyMaintenanceOutcome.DONE
@@ -2334,6 +2349,7 @@ class VNextIngestFacade:
         lease: GateLease,
         *,
         cycle_cutoff_at: int,
+        eligibility_proof: CurrentOnlyEligibilityProof | None,
     ) -> CatalogPublicationMaintenanceState:
         with database_phase("final_state", transaction_outcome="unconfirmed") as step:
             with connector.transaction():
@@ -2343,6 +2359,7 @@ class VNextIngestFacade:
                     cycle_cutoff_at=cycle_cutoff_at,
                     gate_lease=lease,
                     now=self.__clock,
+                    eligibility_proof=eligibility_proof,
                 )
             step.describe(transaction_outcome="committed", state=state.value)
         return state
@@ -2353,16 +2370,19 @@ class VNextIngestFacade:
         lease: GateLease,
         *,
         cycle_cutoff_at: int,
-    ) -> CleanupCycle | CurrentOnlyCleanupTerminalState:
+        eligibility_proof: CurrentOnlyEligibilityProof | None,
+    ) -> CurrentOnlyCleanupSelection:
         with database_phase("next_cycle", transaction_outcome="unconfirmed") as step:
             with connector.transaction():
                 work = VNextUnitOfWork(connector, backend=self.__backend)
-                cycle = VNextCleanupRepository.next_current_only_cycle(
+                selection = VNextCleanupRepository.next_current_only_cycle(
                     work,
                     gate_lease=lease,
                     cycle_cutoff_at=cycle_cutoff_at,
                     now=self.__clock,
+                    eligibility_proof=eligibility_proof,
                 )
+            cycle = selection.cycle
             step.describe(
                 transaction_outcome="committed", found=isinstance(cycle, CleanupCycle)
             )
@@ -2370,7 +2390,7 @@ class VNextIngestFacade:
                 step.describe(target=cycle.target_kind.value, shard=cycle.shard_no)
             else:
                 step.describe(state=cycle.value)
-        return cycle
+        return selection
 
     def __advance_current_only_shard(
         self,

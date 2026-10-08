@@ -34,6 +34,7 @@ from enum import StrEnum
 
 from .database_performance import database_phase
 from .domain import CurrentOnlyCleanupTerminalState
+from .vnext_cleanup_eligibility import CurrentOnlyEligibilityProof
 from .vnext_domains import (
     INT63_MAX,
     require_bounded_bytes,
@@ -221,6 +222,12 @@ class CleanupBatchCommand:
         require_positive_int63(
             self.expected_generation, field="cleanup expected_generation"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentOnlyCleanupSelection:
+    cycle: CleanupCycle | CurrentOnlyCleanupTerminalState
+    eligibility_proof: CurrentOnlyEligibilityProof
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,6 +461,7 @@ class VNextCleanupRepository:
         cycle_cutoff_at: int,
         gate_lease: GateLease | None = None,
         now: int | Callable[[], int] | None = None,
+        eligibility_proof: CurrentOnlyEligibilityProof | None = None,
     ) -> CatalogPublicationMaintenanceState:
         """Classify the catalog/resource fixed point across 22 of 23 targets.
 
@@ -475,15 +483,23 @@ class VNextCleanupRepository:
         )
         if (gate_lease is None) != (now is None):
             raise TypeError("gate_lease and now must be supplied together")
+        if eligibility_proof is not None and gate_lease is None:
+            raise TypeError("eligibility evidence requires a freshly fenced call")
         if gate_lease is not None:
             assert now is not None
             _require_exclusive_gate(work, gate_lease, now=now)
+            eligibility_proof = CurrentOnlyEligibilityProof.under_validated_gate(
+                gate_lease, cutoff, eligibility_proof
+            )
 
         with database_phase("maintenance_open_cycle"):
             open_cycle = _load_open_current_only_cycle(work)
         if open_cycle is not None:
             return CatalogPublicationMaintenanceState.ACTIONABLE
-        if _next_current_only_candidate(work, cycle_cutoff_at=cutoff) is not None:
+        candidate, _proof = _next_current_only_candidate(
+            work, cycle_cutoff_at=cutoff, eligibility_proof=eligibility_proof
+        )
+        if candidate is not None:
             return CatalogPublicationMaintenanceState.ACTIONABLE
         return CatalogPublicationMaintenanceState(
             _current_only_terminal_state(work).value
@@ -496,7 +512,8 @@ class VNextCleanupRepository:
         gate_lease: GateLease,
         cycle_cutoff_at: int,
         now: int | Callable[[], int],
-    ) -> CleanupCycle | CurrentOnlyCleanupTerminalState:
+        eligibility_proof: CurrentOnlyEligibilityProof | None = None,
+    ) -> CurrentOnlyCleanupSelection:
         """Select work or classify its absence in the same fenced transaction.
 
         The exact candidate probe and cycle creation share the EXCLUSIVE
@@ -515,17 +532,25 @@ class VNextCleanupRepository:
             cycle_cutoff_at, field="current-only maintenance cycle_cutoff_at"
         )
         timestamp = _require_exclusive_gate(work, gate_lease, now=now)
+        proof = CurrentOnlyEligibilityProof.under_validated_gate(
+            gate_lease, cutoff, eligibility_proof
+        )
 
         interrupted = _load_open_current_only_cycle(work)
         if interrupted is not None:
             _validate_strategy_seeds(work, interrupted.target_kind)
-            return interrupted
+            return CurrentOnlyCleanupSelection(interrupted, proof)
 
-        candidate = _next_current_only_candidate(work, cycle_cutoff_at=cutoff)
+        candidate, selected_proof = _next_current_only_candidate(
+            work, cycle_cutoff_at=cutoff, eligibility_proof=proof
+        )
+        assert selected_proof is not None
         if candidate is None:
-            return _current_only_terminal_state(work)
+            return CurrentOnlyCleanupSelection(
+                _current_only_terminal_state(work), selected_proof
+            )
         kind, shard = candidate
-        return _begin_cycle_under_exclusive(
+        cycle = _begin_cycle_under_exclusive(
             work,
             kind=kind,
             shard=shard,
@@ -534,6 +559,7 @@ class VNextCleanupRepository:
             max_age=0,
             now=timestamp,
         )
+        return CurrentOnlyCleanupSelection(cycle, selected_proof)
 
     @staticmethod
     def begin_cycle(
@@ -7481,8 +7507,11 @@ def _digest_candidate_shard(
 
 
 def _next_current_only_candidate(
-    work: VNextUnitOfWork, *, cycle_cutoff_at: int
-) -> tuple[CleanupTargetKind, int] | None:
+    work: VNextUnitOfWork,
+    *,
+    cycle_cutoff_at: int,
+    eligibility_proof: CurrentOnlyEligibilityProof | None = None,
+) -> tuple[tuple[CleanupTargetKind, int] | None, CurrentOnlyEligibilityProof | None]:
     dynamic = {
         CleanupTargetKind.ARTIFACT_BLOB: _next_artifact_blob_candidate_shard,
         CleanupTargetKind.PUBLICATION_IDENTITY: (
@@ -7493,6 +7522,12 @@ def _next_current_only_candidate(
     }
     for kind in _CURRENT_ONLY_TARGET_PRIORITY:
         with database_phase("maintenance_eligibility", target=kind.value) as phase:
+            if (
+                eligibility_proof is not None
+                and kind.value in eligibility_proof.absent_targets
+            ):
+                phase.describe(candidate_found=False, reused_absence=True)
+                continue
             plan = _STATIC_PLANS.get(kind)
             if plan is not None:
                 shard = _next_static_candidate_shard(
@@ -7502,8 +7537,10 @@ def _next_current_only_candidate(
                 shard = dynamic[kind](work)
             phase.describe(candidate_found=shard is not None)
         if shard is not None:
-            return kind, shard
-    return None
+            return (kind, shard), eligibility_proof
+        if eligibility_proof is not None:
+            eligibility_proof = eligibility_proof.observes_absence(kind.value)
+    return None, eligibility_proof
 
 
 def _catalog_publication_payload_is_blocked(work: VNextUnitOfWork) -> bool:

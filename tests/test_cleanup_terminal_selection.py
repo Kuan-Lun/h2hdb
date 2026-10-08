@@ -15,7 +15,11 @@ import h2hdb.vnext_ingest_facade as facade_module
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
 from h2hdb.domain import CurrentOnlyCleanupTerminalState
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import CleanupTargetKind, VNextCleanupRepository
+from h2hdb.vnext_cleanup_repository import (
+    CleanupTargetKind,
+    CurrentOnlyCleanupSelection,
+    VNextCleanupRepository,
+)
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -109,8 +113,16 @@ def test_terminal_scan_budget_rejects_duplicate_scan_negative_control(
 
         def repeated(self: VNextIngestFacade, *args: Any, **kwargs: Any) -> Any:
             result = select(self, *args, **kwargs)
-            if isinstance(result, CurrentOnlyCleanupTerminalState):
-                getattr(self, _STATE)(*args, **kwargs)
+            assert isinstance(result, CurrentOnlyCleanupSelection)
+            if isinstance(result.cycle, CurrentOnlyCleanupTerminalState):
+                # Carry the just-committed selection evidence, exactly as the
+                # facade does. CANONICAL_VALUE has no reusable absence fact,
+                # so this deliberately redundant state call must still issue
+                # its second canonical candidate query and fail the budget.
+                state_arguments = dict(
+                    kwargs, eligibility_proof=result.eligibility_proof
+                )
+                getattr(self, _STATE)(*args, **state_arguments)
             return result
 
         monkeypatch.setattr(VNextIngestFacade, _NEXT, repeated)
@@ -178,8 +190,9 @@ def test_expiry_or_takeover_after_terminal_selection_never_returns_done(
 
     def expire(*args: Any, **kwargs: Any) -> Any:
         result = select(*args, **kwargs)
-        if isinstance(result, CurrentOnlyCleanupTerminalState):
-            terminals.append(result)
+        assert isinstance(result, CurrentOnlyCleanupSelection)
+        if isinstance(result.cycle, CurrentOnlyCleanupTerminalState):
+            terminals.append(result.cycle)
             clock.now += _DURATION
             if replace_owner:
                 with (
