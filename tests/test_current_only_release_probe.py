@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from vnext_test_database import DatabaseFactory, database_connector
@@ -71,6 +72,7 @@ def _operations(probe: ModuleType) -> list[dict[str, Any]]:
             "gate_generation": 1,
         },
     ]
+    authority[-1]["fences"] = copy.deepcopy(authority[0]["fences"])
     return [
         {
             "released": 1,
@@ -129,6 +131,11 @@ def test_missing_evidence_cannot_pass(release_probe: ModuleType, failure: str) -
         "invalidation",
         "release",
         "release_owner",
+        "release_fence_missing",
+        "release_fence_expired",
+        "release_fence_replaced",
+        "release_fence_shared",
+        "release_fence_slots",
         "unknown",
     ),
 )
@@ -176,6 +183,16 @@ def test_terminal_reuse_requires_complete_same_attempt_evidence(
         events.pop()
     elif failure == "release_owner":
         events[-1]["owner_token"] = "34" * 16
+    elif failure == "release_fence_missing":
+        events[-1]["fences"].clear()
+    elif failure == "release_fence_expired":
+        events[-1]["fences"][0]["validated_at"] = 200
+    elif failure == "release_fence_replaced":
+        events[-1]["fences"][0]["gate_generation"] += 1
+    elif failure == "release_fence_shared":
+        events[-1]["fences"][0]["mode"] = "SHARED"
+    elif failure == "release_fence_slots":
+        events[-1]["fences"][0]["slots"].pop()
     elif failure == "unknown":
         repeated["kind"] = "unclassified"
     result = release_probe.evaluate(operations, 1)
@@ -236,27 +253,47 @@ def test_native_operation_counts_queries_and_restores_connections(
 
 @pytest.mark.deep
 @pytest.mark.cleanup_acceptance
-@pytest.mark.parametrize("degraded", (False, True), ids=("candidate", "repeated-scan"))
+@pytest.mark.parametrize(
+    "variant", ("candidate", "repeated-scan", "missing-release-fence")
+)
 def test_real_release_cost_rejects_a_result_equivalent_degradation(
     release_probe: ModuleType,
     db_config: CoreConfig,
     monkeypatch: pytest.MonkeyPatch,
-    degraded: bool,
+    variant: str,
 ) -> None:
     """Execute the real slower path; do not manufacture measurement records.
 
-    Both variants generate the same one-gallery public graph, settle database
+    All variants generate the same one-gallery public graph, settle database
     cleanup to BLOCKED without adapters, then release its two orphan resources
     with B=1. Suppressing the fresh hint deliberately restores the repeated
     eligibility scan without changing release correctness or terminal cleanup.
+    Bypassing the release live check preserves these live fixtures' final data
+    but must fail the independently recorded terminal authorization contract.
     """
 
+    degraded = variant == "repeated-scan"
     if degraded:
         monkeypatch.setattr(
             release_probe.artifact_release.ArtifactReleaseRepository,
             "has_pending_release",
             staticmethod(lambda _work: False),
         )
+    elif variant == "missing-release-fence":
+        locked_type = release_probe.gate.LockedGateRenewal
+        original_release = locked_type.release
+
+        def bypass_live(locked: Any, *, now: int) -> None:
+            # Execute the real exact-lock/delete/commit path, but deliberately
+            # bypass require_live while release runs. The already-live fixture
+            # retains identical final data, so only real authorization evidence
+            # can reject this degradation; caller lease fields are insufficient.
+            with patch.object(
+                locked_type, "require_live", lambda self, **_: self.lease
+            ):
+                original_release(locked, now=now)
+
+        monkeypatch.setattr(locked_type, "release", bypass_live)
     result = release_probe.run_case(
         db_config, galleries=1, backlog=2, capacity=1, unique_filenames=True
     )
@@ -269,6 +306,15 @@ def test_real_release_cost_rejects_a_result_equivalent_degradation(
         "next_claim_completed": True,
     }
     cost = result["cost_result"]
+    if variant == "missing-release-fence":
+        assert not cost["evidence_complete"]
+        assert not cost["terminal_fresh_authority"]
+        assert not cost["passed"]
+        assert cost["violations"] == ["terminal_fresh_authority_missing"]
+        terminal = result["operations"][-1]["terminal_authority"]
+        assert terminal[-1]["kind"] == "release"
+        assert terminal[-1]["fences"] == []
+        return
     assert cost["evidence_complete"]
     assert cost["pure_release_calls"] == 2
     assert cost["terminal_fresh_authority"]
@@ -283,7 +329,15 @@ def test_real_release_cost_rejects_a_result_equivalent_degradation(
     # Corrupt only the recorded evidence from this actual backend execution.
     # Identical DONE/native/correctness results cannot hide a missing or invalid
     # proof, fence, or source observation in the performance acceptance report.
-    for failure in ("proof", "fence", "identity", "origin"):
+    for failure in (
+        "proof",
+        "fence",
+        "identity",
+        "origin",
+        "release_fence_missing",
+        "release_fence_expired",
+        "release_fence_replaced",
+    ):
         operations = copy.deepcopy(result["operations"])
         events = operations[-1]["terminal_authority"]
         reused = next(
@@ -298,8 +352,15 @@ def test_real_release_cost_rejects_a_result_equivalent_degradation(
             reused["fences"].clear()
         elif failure == "identity":
             reused["proof_in"]["gate_generation"] += 1
-        else:
+        elif failure == "origin":
             del events[: events.index(reused)]
+        elif failure == "release_fence_missing":
+            events[-1]["fences"].clear()
+        elif failure == "release_fence_expired":
+            fence = events[-1]["fences"][0]
+            fence["validated_at"] = fence["lease_expires_at"]
+        else:
+            events[-1]["fences"][0]["gate_generation"] += 1
         invalid = release_probe.evaluate(operations, result["actual_A"])
         assert not invalid["passed"]
         assert not invalid["evidence_complete"]

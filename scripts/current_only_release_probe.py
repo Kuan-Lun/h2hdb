@@ -58,6 +58,9 @@ from h2hdb import (  # noqa: E402 - measured source path.
 from h2hdb import (  # noqa: E402 - measured source path.
     vnext_ingest_facade as ingest,
 )
+from h2hdb import (  # noqa: E402 - measured source path.
+    vnext_maintenance_gate_repository as gate,
+)
 from h2hdb.domain import (  # noqa: E402 - measured source path.
     CurrentOnlyCleanupTerminalState,
 )
@@ -128,23 +131,49 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
 
     events: list[dict[str, Any]] = []
     active: dict[str, Any] | None = None
+    release_locks: list[gate.LockedGateRenewal] = []
     original_fence = cleanup._require_exclusive_gate
+    original_lock = gate.MaintenanceGateRepository.lock_for_renewal
+    original_live = gate.LockedGateRenewal.require_live
+
+    def record_fence(lease: gate.GateLease, timestamp: int) -> None:
+        assert active is not None
+        active["fences"].append(
+            {
+                "owner_token": lease.owner_token.hex(),
+                "gate_generation": lease.gate_generation,
+                "mode": lease.mode.value,
+                "slots": list(lease.slots),
+                "validated_at": timestamp,
+                "lease_expires_at": lease.lease_expires_at,
+            }
+        )
 
     def fence(*args: Any, **kwargs: Any) -> int:
         timestamp = original_fence(*args, **kwargs)
         if active is not None:
-            lease = args[1]
-            active["fences"].append(
-                {
-                    "owner_token": lease.owner_token.hex(),
-                    "gate_generation": lease.gate_generation,
-                    "mode": lease.mode.value,
-                    "slots": list(lease.slots),
-                    "validated_at": timestamp,
-                    "lease_expires_at": lease.lease_expires_at,
-                }
-            )
+            record_fence(args[1], timestamp)
         return timestamp
+
+    def lock(*args: Any, **kwargs: Any) -> gate.LockedGateRenewal:
+        locked = original_lock(*args, **kwargs)
+        if active is not None and active["kind"] == "release":
+            release_locks.append(locked)
+        return locked
+
+    def live(locked: gate.LockedGateRenewal, *, now: int) -> gate.GateLease:
+        current = original_live(locked, now=now)
+        if (
+            active is not None
+            and active["kind"] == "release"
+            and any(locked is observed for observed in release_locks)
+        ):
+            # Only a successful live check of an object freshly loaded and
+            # exact-matched by the native locking repository in this release
+            # transaction can supply release authority. Caller lease fields
+            # alone, or a live check on a previously locked object, cannot.
+            record_fence(current, now)
+        return current
 
     def probe(original: Callable[..., Any], name: str) -> Callable[..., Any]:
         def observed(*args: Any, **kwargs: Any) -> Any:
@@ -171,6 +200,7 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
             nonlocal active
             if active is not None:
                 raise RuntimeError("nested terminal-authority instrumentation")
+            release_locks.clear()
             event: dict[str, Any] = {
                 "kind": kind,
                 "fences": [],
@@ -184,6 +214,7 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
                 result = original(*args, **kwargs)
             finally:
                 active = None
+                release_locks.clear()
             # Appending after the private facade helper returns records COMMIT,
             # not merely a repository result from a still-open transaction.
             if kind == "selection":
@@ -208,6 +239,10 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(cleanup, "_require_exclusive_gate", fence))
+        stack.enter_context(
+            patch.object(gate.MaintenanceGateRepository, "lock_for_renewal", lock)
+        )
+        stack.enter_context(patch.object(gate.LockedGateRenewal, "require_live", live))
         for name in PROBES:
             stack.enter_context(
                 patch.object(cleanup, name, probe(getattr(cleanup, name), name))
@@ -247,14 +282,6 @@ def terminal_evidence(events: list[dict[str, Any]]) -> dict[str, bool]:
             kind = event["kind"]
             if kind not in {"selection", "state", "advance", "release"}:
                 raise ValueError("unknown authority event")
-            if kind == "release":
-                if (
-                    event is not events[-1]
-                    or identity is None
-                    or (event["owner_token"], event["gate_generation"]) != identity[:2]
-                ):
-                    raise ValueError("missing terminal owner release")
-                continue
             fences = event["fences"]
             if len(fences) != 1:
                 raise ValueError("missing exact fresh fence")
@@ -266,6 +293,15 @@ def terminal_evidence(events: list[dict[str, Any]]) -> dict[str, bool]:
             ):
                 raise ValueError("invalid exclusive authority")
             gate = (fence["owner_token"], fence["gate_generation"])
+            if kind == "release":
+                if (
+                    event is not events[-1]
+                    or identity is None
+                    or gate != identity[:2]
+                    or gate != (event["owner_token"], event["gate_generation"])
+                ):
+                    raise ValueError("missing terminal owner release")
+                continue
             if kind == "advance":
                 if identity is None or gate != identity[:2]:
                     raise ValueError("cleanup changed proof owner")
@@ -818,7 +854,7 @@ def main() -> int:
             "path": str(module.__file__),
             "sha256": sha256(Path(str(module.__file__)).read_bytes()).hexdigest(),
         }
-        for module in (cleanup, ingest, artifact_release)
+        for module in (cleanup, ingest, artifact_release, gate)
     }
     if any(
         not Path(value["path"]).is_relative_to(SOURCE_ROOT / "src")
