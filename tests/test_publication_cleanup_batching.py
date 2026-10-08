@@ -134,28 +134,136 @@ def test_batch_opt_in_refuses_partial_key_or_compound_delete_contracts(
         replace(spec, **change)
 
 
-def test_every_batch_opt_in_matches_the_complete_manifest_primary_key() -> None:
+def _physical_cleanup_relations() -> dict[str, dict[str, Any]]:
     manifest_path = (
         Path(__file__).resolve().parents[1] / "verification/schema/physical.toml"
     )
     manifest = tomllib.loads(manifest_path.read_text())
-    primary_keys = {
-        relation["table"]: tuple(relation["primary_key"])
+    return {
+        relation["table"]: relation
         for relation in manifest["relation"]
         if "table" in relation and "view" not in relation
     }
+
+
+def _assert_complete_physical_key(
+    relation: dict[str, Any], columns: tuple[str, ...]
+) -> tuple[str, ...]:
+    names = {column["attribute"]: column["name"] for column in relation["column"]}
+    primary_key = tuple(names[attribute] for attribute in relation["primary_key"])
+    assert len(columns) == len(set(columns)), "repeated projected column"
+    assert set(columns) <= set(names.values()), "unknown physical column"
+    # Every current family includes its complete physical PK. In particular,
+    # runtime_unique_keys (such as page_bytes) are not SQL uniqueness evidence.
+    assert set(primary_key) <= set(columns), "incomplete physical primary key"
+    return primary_key
+
+
+def _assert_batch_manifest_keys(
+    spec: cleanup._StaticDeleteSpec,
+    relations: dict[str, dict[str, Any]],
+) -> None:
+    primary_key = _assert_complete_physical_key(relations[spec.table], spec.primary_key)
+    if spec.batch_delete_keys is None:
+        assert spec.primary_key == primary_key
+        return
+    assert spec.delete_parameter_indexes is not None
+    for (table, columns), indexes in zip(
+        spec.batch_delete_keys, spec.delete_parameter_indexes, strict=True
+    ):
+        _assert_complete_physical_key(relations[table], columns)
+        assert tuple(spec.primary_key[index] for index in indexes) == columns, (
+            "projected values must identify their declared physical columns"
+        )
+
+
+def test_every_batch_opt_in_matches_the_complete_manifest_primary_key() -> None:
+    relations = _physical_cleanup_relations()
     targets: set[cleanup.CleanupTargetKind] = set()
     for plan in cleanup._STATIC_PLANS.values():
         for specs in plan.phases.values():
             for spec in specs:
                 if spec.batch_exact_primary_keys:
                     targets.add(plan.kind)
-                    assert spec.primary_key == primary_keys[spec.table]
+                    _assert_batch_manifest_keys(spec, relations)
     assert targets == {
         cleanup.CleanupTargetKind.ANALYSIS_RUN,
         cleanup.CleanupTargetKind.CATALOG_PUBLICATION,
         cleanup.CleanupTargetKind.GALLERY_OBSERVATION,
+        cleanup.CleanupTargetKind.CANONICAL_VALUE,
     }
+
+
+@pytest.mark.parametrize(
+    ("table", "columns", "reason"),
+    (
+        (
+            "catalog_canonical_value_page_coordinates",
+            ("value_sha256", "level"),
+            "incomplete physical primary key",
+        ),
+        (
+            "catalog_canonical_value_page_coordinates",
+            ("level", "page_position"),
+            "incomplete physical primary key",
+        ),
+        (
+            "catalog_canonical_value_page_payloads",
+            ("page_bytes",),
+            "incomplete physical primary key",
+        ),
+        (
+            "catalog_canonical_value_page_anchors",
+            ("page_sha256", "unknown"),
+            "unknown physical column",
+        ),
+        (
+            "catalog_canonical_value_page_anchors",
+            ("page_sha256", "page_sha256"),
+            "repeated projected column",
+        ),
+    ),
+)
+def test_batch_manifest_oracle_rejects_nonunique_or_invalid_projected_keys(
+    table: str, columns: tuple[str, ...], reason: str
+) -> None:
+    with pytest.raises(AssertionError, match=reason):
+        _assert_complete_physical_key(_physical_cleanup_relations()[table], columns)
+
+
+def test_compound_manifest_oracle_rejects_wrong_selected_value_projection() -> None:
+    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+    spec = replace(
+        plan.phases["CV_PAGE"][0],
+        delete_parameter_indexes=((0, 1, 2, 3), (0,), (3,), (3,)),
+    )
+    with pytest.raises(AssertionError, match="projected values must identify"):
+        _assert_batch_manifest_keys(spec, _physical_cleanup_relations())
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    (
+        ({"batch_exact_primary_keys": False}, "complete key metadata"),
+        ({"delete_parameter_indexes": None}, "complete key metadata"),
+        ({"delete_allowed_affected": None}, "complete key metadata"),
+        ({"batch_delete_keys": ()}, "complete key metadata"),
+        (
+            {"delete_parameter_indexes": ((0, 1, 2, 3), (-1,), (3,), (3,))},
+            "exact unique-key deletes",
+        ),
+        (
+            {"delete_parameter_indexes": ((0, 1, 2, 3), (4,), (3,), (3,))},
+            "exact unique-key deletes",
+        ),
+    ),
+)
+def test_compound_batch_opt_in_refuses_incomplete_metadata_or_invalid_indexes(
+    change: dict[str, Any], reason: str
+) -> None:
+    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+    with pytest.raises(RuntimeError, match=reason):
+        replace(plan.phases["CV_PAGE"][0], **change)
 
 
 def test_indirect_namespace_grid_preserves_empty_nul_and_variable_width_keys(
