@@ -29,7 +29,7 @@ __all__ = [
 import hashlib
 import secrets
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from .database_performance import database_phase
@@ -1959,8 +1959,31 @@ class _StaticDeleteSpec:
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None
     batch_exact_primary_keys: bool = False
+    batch_delete_keys: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+    owner_key: tuple[str, ...] | None = None
+    canonical_dictionary_columns: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
+        if self.canonical_dictionary_columns is not None:
+            dictionaries = {
+                "catalog_display_title_choices": (
+                    (
+                        "display_title_policy_id",
+                        "source_title_sha256",
+                        "source_gallery_name",
+                    ),
+                    ("source_title_sha256", "title_sha256"),
+                ),
+                "catalog_title_sorts": (
+                    ("title_sort_policy_id", "title_sha256"),
+                    ("title_sha256", "sort_title_sha256"),
+                ),
+            }
+            if dictionaries.get(self.table) != (
+                self.primary_key,
+                self.canonical_dictionary_columns,
+            ):
+                raise RuntimeError("canonical dictionary selection metadata is invalid")
         for metadata in (
             self.delete_parameter_indexes,
             self.delete_allowed_affected,
@@ -1969,7 +1992,36 @@ class _StaticDeleteSpec:
                 raise RuntimeError(
                     "cleanup compound-delete metadata must cover every statement"
                 )
-        if self.batch_exact_primary_keys and (
+        if self.batch_delete_keys is not None:
+            if (
+                not self.batch_exact_primary_keys
+                or self.delete_parameter_indexes is None
+                or self.delete_allowed_affected is None
+                or len(self.batch_delete_keys) != len(self.delete_sql)
+            ):
+                raise RuntimeError(
+                    "batched compound cleanup requires complete key metadata"
+                )
+            for (table, columns), statement, indexes, allowed in zip(
+                self.batch_delete_keys,
+                self.delete_sql,
+                self.delete_parameter_indexes,
+                self.delete_allowed_affected,
+                strict=True,
+            ):
+                if (
+                    not columns
+                    or len(columns) != len(indexes)
+                    or any(
+                        index < 0 or index >= len(self.primary_key) for index in indexes
+                    )
+                    or statement != _delete_sql(table, columns)
+                    or allowed not in (frozenset((1,)), frozenset((0, 1)))
+                ):
+                    raise RuntimeError(
+                        "batched compound cleanup requires exact unique-key deletes"
+                    )
+        elif self.batch_exact_primary_keys and (
             self.delete_sql != (_delete_sql(self.table, self.primary_key),)
             or self.delete_parameter_indexes is not None
             or self.delete_allowed_affected is not None
@@ -2117,6 +2169,7 @@ def _owned_spec(
         delete_parameter_indexes=delete_parameter_indexes,
         delete_allowed_affected=delete_allowed_affected,
         batch_exact_primary_keys=batch_exact_primary_keys,
+        owner_key=owner_key,
     )
 
 
@@ -2130,6 +2183,8 @@ def _indirect_spec(
     delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None,
     delete_allowed_affected: tuple[frozenset[int], ...] | None = None,
     batch_exact_primary_keys: bool = False,
+    batch_delete_keys: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+    canonical_dictionary_columns: tuple[str, str] | None = None,
 ) -> _StaticDeleteSpec:
     safe_table = _identifier(table)
     return _StaticDeleteSpec(
@@ -2145,6 +2200,8 @@ def _indirect_spec(
         delete_parameter_indexes=delete_parameter_indexes,
         delete_allowed_affected=delete_allowed_affected,
         batch_exact_primary_keys=batch_exact_primary_keys,
+        batch_delete_keys=batch_delete_keys,
+        canonical_dictionary_columns=canonical_dictionary_columns,
     )
 
 
@@ -2389,6 +2446,212 @@ def _static_select_sql(
     )
 
 
+def _analysis_owned_suffix(
+    plan: _StaticTargetPlan, spec: _StaticDeleteSpec
+) -> tuple[str, ...] | None:
+    """Use the declared owner prefix, without changing durable cursor tuples."""
+
+    if (
+        plan.kind is not CleanupTargetKind.ANALYSIS_RUN
+        or plan.root_key != ("analysis_id",)
+        or spec.owner_key != ("analysis_id",)
+        or spec.primary_key[:1] != spec.owner_key
+    ):
+        return None
+    return tuple(f"c.{column}" for column in spec.primary_key[1:])
+
+
+def _analysis_cursor_suffix(
+    values: tuple[_StaticScalar, ...], spec: _StaticDeleteSpec
+) -> tuple[_StaticScalar, ...]:
+    if len(values) != 1 + len(spec.primary_key) or values[0] != values[1]:
+        raise CleanupCorruptionError("analysis cleanup cursor owner prefix drifted")
+    require_uuid16(values[0], field="analysis cleanup cursor root")
+    return values[2:]
+
+
+def _select_static_candidates(
+    operation: _CleanupOperation,
+    *,
+    plan: _StaticTargetPlan,
+    spec: _StaticDeleteSpec,
+    after: tuple[_StaticScalar, ...] | None,
+    eligibility: str | None,
+    policy: tuple[object, ...],
+    shard: tuple[object, ...],
+    remaining: int,
+) -> list[tuple[object, ...]]:
+    if spec.canonical_dictionary_columns is not None:
+        return _select_canonical_dictionary_candidates(
+            operation,
+            plan=plan,
+            spec=spec,
+            after=after,
+            eligibility=eligibility,
+            policy=policy,
+            shard=shard,
+            remaining=remaining,
+        )
+    suffix = _analysis_owned_suffix(plan, spec)
+    if suffix is None:
+        frozen, bindings = _frozen_root_predicate(plan, operation.frozen_roots)
+        query = _static_select_sql(
+            plan,
+            spec,
+            exact=False,
+            frozen_root_predicate=frozen,
+            has_after=after is not None,
+            eligibility=eligibility,
+        )
+        parameters = policy + shard + bindings
+        if after is not None:
+            parameters += _keyset_parameters(after)
+        return operation.work.connector.fetch_all(query, (*parameters, remaining))
+
+    boundary = None if after is None else _analysis_cursor_suffix(after, spec)
+    after_root = (
+        None
+        if after is None
+        else require_uuid16(after[0], field="analysis cleanup cursor root")
+    )
+    roots = sorted(
+        require_uuid16(root[0], field="analysis cleanup frozen root")
+        for root in operation.frozen_roots
+    )
+    columns = ("r.analysis_id",) + tuple(f"c.{key}" for key in spec.primary_key)
+    eligible = plan.eligibility if eligibility is None else eligibility
+    selected: list[tuple[object, ...]] = []
+    for root in roots:
+        if after_root is not None and root < after_root:
+            continue
+        if after_root is not None and root == after_root and not suffix:
+            continue
+        frozen, bindings = _frozen_root_predicate(plan, ((root,),))
+        parameters = policy + shard + bindings
+        keyset = ""
+        if after_root is not None and root == after_root:
+            assert boundary is not None
+            keyset = f" AND ({_keyset_predicate(suffix)})"
+            parameters += _keyset_parameters(boundary)
+        ordering = " ORDER BY " + ", ".join(suffix) if suffix else ""
+        query = (
+            f"SELECT {', '.join(columns)} FROM {spec.source} "
+            f"WHERE ({eligible}) AND ({spec.extra_predicate}) "
+            f"AND ({_static_shard_sql(plan)}) AND ({frozen})"
+            f"{keyset}{ordering} LIMIT %s"
+        )
+        selected.extend(
+            operation.work.connector.fetch_all(
+                query, (*parameters, remaining - len(selected))
+            )
+        )
+        if len(selected) == remaining:
+            break
+    return selected
+
+
+def _select_canonical_dictionary_candidates(
+    operation: _CleanupOperation,
+    *,
+    plan: _StaticTargetPlan,
+    spec: _StaticDeleteSpec,
+    after: tuple[_StaticScalar, ...] | None,
+    eligibility: str | None,
+    policy: tuple[object, ...],
+    shard: tuple[object, ...],
+    remaining: int,
+) -> list[tuple[object, ...]]:
+    """Admit roots once, then merge two bounded indexed dictionary pages.
+
+    An OR join can scan the entire retained dictionary before returning an
+    empty page. The two equality joins use its existing reverse indexes. Their
+    root admission belongs only to this selection in the current transaction;
+    exact locking, cursor-covered responsibility, and terminal checks retain
+    their independent predicates. Each arm returns at most ``remaining`` rows,
+    so their merged prefix needs at most twice the transaction's hard cap.
+    """
+    references = spec.canonical_dictionary_columns
+    if (
+        references is None
+        or plan.kind is not CleanupTargetKind.CANONICAL_VALUE
+        or plan.root_key != ("value_sha256",)
+        or not 1 <= remaining <= _MAX_BATCH_ROWS
+        or len(operation.frozen_roots) > _MAX_BATCH_ROWS
+        or (after is not None and len(after) != 1 + len(spec.primary_key))
+    ):
+        raise CleanupCorruptionError("canonical dictionary selection shape is invalid")
+    if not operation.frozen_roots:
+        return []
+    frozen, bindings = _frozen_root_predicate(plan, operation.frozen_roots)
+    probes = " OR ".join(
+        f"EXISTS (SELECT 1 FROM {spec.table} present_child "
+        f"WHERE present_child.{_identifier(column)} = r.value_sha256)"
+        for column in references
+    )
+    boundary = ""
+    parameters: tuple[object, ...] = shard + bindings
+    if after is not None:
+        boundary = " AND r.value_sha256 >= %s"
+        parameters += (
+            require_digest32(after[0], field="canonical dictionary cursor root"),
+        )
+    eligible = plan.eligibility if eligibility is None else eligibility
+    # CASE prevents expensive reachability from running for roots with no raw
+    # dictionary reference. This standalone root query has no child fanout.
+    query = (
+        f"SELECT r.value_sha256 FROM {plan.root_table} r "
+        f"WHERE ({_static_shard_sql(plan)}) AND ({frozen}){boundary} "
+        f"AND (CASE WHEN ({probes}) THEN ({eligible}) ELSE 0 END) "
+        f"ORDER BY r.value_sha256 LIMIT {_MAX_BATCH_ROWS}"
+    )
+    roots = tuple(
+        _static_values(row)
+        for row in operation.work.connector.fetch_all(query, parameters + policy)
+    )
+    frozen_membership = set(operation.frozen_roots)
+    if (
+        len(roots) > _MAX_BATCH_ROWS
+        or len(set(roots)) != len(roots)
+        or any(root not in frozen_membership for root in roots)
+    ):
+        raise CleanupCorruptionError("canonical dictionary root admission drifted")
+    if not roots:
+        return []
+    admitted, admitted_parameters = _frozen_root_predicate(plan, roots)
+    selected: set[tuple[_StaticScalar, ...]] = set()
+    for column in references:
+        branch = replace(
+            spec,
+            source=(
+                f"{spec.table} AS c JOIN {plan.root_table} AS r "
+                f"ON r.value_sha256 = c.{_identifier(column)}"
+            ),
+        )
+        statement = _static_select_sql(
+            plan,
+            branch,
+            exact=False,
+            frozen_root_predicate=admitted,
+            has_after=after is not None,
+            eligibility="1 = 1",
+        )
+        branch_parameters: tuple[object, ...] = shard + admitted_parameters
+        if after is not None:
+            branch_parameters += _keyset_parameters(after)
+        rows = operation.work.connector.fetch_all(
+            statement, (*branch_parameters, remaining)
+        )
+        if len(rows) > remaining:
+            raise CleanupCorruptionError("canonical dictionary page exceeds its bound")
+        selected.update(_static_values(row) for row in rows)
+    # These two registered dictionaries order fixed-position integer and binary
+    # keys; Python tuple order agrees with both engines' SQL order. Keep the
+    # root in the key: the same child may belong to two distinct frozen roots.
+    result: list[tuple[object, ...]] = []
+    result.extend(sorted(selected)[:remaining])
+    return result
+
+
 def _static_shard_parameters(
     plan: _StaticTargetPlan, cycle: CleanupCycle
 ) -> tuple[object, ...]:
@@ -2416,6 +2679,32 @@ def _static_raw_responsibility_query(
     shard_parameters: tuple[object, ...],
     through: tuple[_StaticScalar, ...] | None = None,
 ) -> tuple[str, tuple[object, ...]]:
+    suffix = _analysis_owned_suffix(plan, spec)
+    if through is not None and suffix is not None:
+        boundary = _analysis_cursor_suffix(through, spec)
+        base = (
+            f"SELECT 1 FROM {spec.source} WHERE ({spec.extra_predicate}) "
+            f"AND ({_static_shard_sql(plan)}) AND ({frozen_root_predicate})"
+        )
+        bindings: tuple[object, ...] = shard_parameters + frozen_root_parameters
+        before = base + " AND r.analysis_id < %s LIMIT 1"
+        current = base + " AND r.analysis_id = %s"
+        current_bindings = bindings + (through[0],)
+        if suffix:
+            branches = []
+            for index, column in enumerate(suffix):
+                equal = " AND ".join(f"{prior} = %s" for prior in suffix[:index])
+                comparison = "<=" if index == len(suffix) - 1 else "<"
+                branches.append(
+                    f"({equal + ' AND ' if equal else ''}{column} {comparison} %s)"
+                )
+            current += " AND (" + " OR ".join(branches) + ")"
+            current_bindings += _keyset_parameters(boundary)
+        current += " LIMIT 1"
+        return (
+            f"SELECT 1 WHERE EXISTS ({before}) OR EXISTS ({current})",
+            bindings + (through[0],) + current_bindings,
+        )
     ordered = tuple(f"r.{column}" for column in plan.root_key) + tuple(
         f"c.{column}" for column in spec.primary_key
     )
@@ -2777,14 +3066,16 @@ def _delete_static_key_page(
     fixed_parameters: tuple[object, ...],
     eligibility: str | None,
 ) -> None:
-    """Revalidate and lock one exact set before one primary-key DELETE.
+    """Revalidate one exact set before bounded child-first unique-key deletes.
 
     The exclusive maintenance gate already excludes supported writers. The
     locking read still repeats every eligibility, shard, frozen-root and spec
     predicate; its complete result must equal the selected keys. A derived
     ordinal preserves result and logical lock-key order for variable-length
     keys; it does not assert an optimizer's physical lock acquisition order.
-    Only single-table, one-row-per-primary-key specs opt into this contract.
+    Compound families explicitly register each unique key and its projection
+    from the selected tuple. Every statement preserves the original family
+    order, and the enclosing transaction owns the entire family plus checkpoint.
     """
 
     root_arity = len(plan.root_key)
@@ -2844,19 +3135,49 @@ def _delete_static_key_page(
             f"{plan.kind.value} cleanup batch changed or gained a retention root"
         )
 
-    predicate = " AND ".join(f"{column} = %s" for column in spec.primary_key)
-    statement = f"DELETE FROM {spec.table} WHERE " + " OR ".join(
-        f"({predicate})" for _ in primary_keys
-    )
-    affected = work.connector.execute_affected(
-        statement,
-        tuple(value for primary in primary_keys for value in primary),
-    )
-    # A complete PK matches at most one row. After exact set validation, this
-    # equality establishes that every selected row was removed; any short or
-    # unexpected count aborts the enclosing transaction and its checkpoint.
-    if affected != len(primary_keys):
-        raise CleanupUnavailableError(f"{plan.kind.value} cleanup batch changed")
+    families = spec.batch_delete_keys or ((spec.table, spec.primary_key),)
+    projected_pages: list[tuple[tuple[_StaticScalar, ...], ...]] = []
+    for index, (_table, columns) in enumerate(families):
+        indexes = (
+            tuple(range(len(spec.primary_key)))
+            if spec.delete_parameter_indexes is None
+            else spec.delete_parameter_indexes[index]
+        )
+        projected = tuple(
+            tuple(primary[position] for position in indexes) for primary in primary_keys
+        )
+        if (
+            len(set(projected)) != len(projected)
+            or len(columns) * len(projected) > _MAX_STATIC_DELETE_BINDS
+        ):
+            raise CleanupCorruptionError(
+                "cleanup compound page repeats or exceeds unique keys"
+            )
+        projected_pages.append(projected)
+    for index, ((table, columns), projected) in enumerate(
+        zip(families, projected_pages, strict=True)
+    ):
+        predicate = " AND ".join(f"{column} = %s" for column in columns)
+        statement = f"DELETE FROM {table} WHERE " + " OR ".join(
+            f"({predicate})" for _ in projected
+        )
+        affected = work.connector.execute_affected(
+            statement, tuple(value for primary in projected for value in primary)
+        )
+        allowed = (
+            frozenset((1,))
+            if spec.delete_allowed_affected is None
+            else spec.delete_allowed_affected[index]
+        )
+        # Every registered key is unique and every projected key is distinct:
+        # required children must all be removed, optional children may each
+        # contribute zero or one row, exactly as in the original scalar path.
+        if (
+            not min(allowed) * len(projected)
+            <= affected
+            <= max(allowed) * len(projected)
+        ):
+            raise CleanupUnavailableError(f"{plan.kind.value} cleanup batch changed")
 
 
 def _run_static_phase(
@@ -2905,6 +3226,7 @@ def _run_static_phase(
         frozen_root_parameters=frozen_parameters,
         shard_parameters=shard,
     )
+    continue_in_next_transaction = False
     for index in range(start_index, len(specs)):
         spec = specs[index]
         deleted_primary_keys: set[tuple[_StaticScalar, ...]] = set()
@@ -2914,22 +3236,23 @@ def _run_static_phase(
             raise CleanupCorruptionError("cleanup cursor does not match relation key")
         while len(deleted) < cycle.max_rows_per_transaction:
             remaining = cycle.max_rows_per_transaction - len(deleted)
-            query = _static_select_sql(
-                plan,
-                spec,
-                exact=False,
-                frozen_root_predicate=frozen_predicate,
-                has_after=after is not None,
+            rows = _select_static_candidates(
+                operation,
+                plan=plan,
+                spec=spec,
+                after=after,
                 eligibility=eligibility,
+                policy=policy,
+                shard=shard,
+                remaining=remaining,
             )
-            parameters: tuple[object, ...] = policy + shard + frozen_parameters
-            if after is not None:
-                parameters += _keyset_parameters(after)
-            parameters += (remaining,)
-            rows = work.connector.fetch_all(query, parameters)
             if not rows:
                 break
             candidates = tuple(_static_values(row) for row in rows)
+            if len(candidates) > remaining or (
+                after is not None and candidates[-1] <= after
+            ):
+                raise CleanupCorruptionError("cleanup candidate page did not advance")
             deleted_before_page = len(deleted)
             candidates_by_lock = tuple(
                 sorted(
@@ -2968,11 +3291,21 @@ def _run_static_phase(
                         eligibility=eligibility,
                     )
                     deleted.extend(_encode_static_cursor(index, key) for key in page)
+                if len(deleted) == deleted_before_page:
+                    raise CleanupCorruptionError(
+                        "cleanup candidate page made no progress"
+                    )
                 after = candidates[-1]
                 next_cursor = _encode_static_cursor(index, after)
-                if len(candidates) < remaining or len(
+                if len(candidates) == remaining and len(
                     deleted
                 ) - deleted_before_page < len(candidates):
+                    # Keep this spec's cursor for the next transaction. SQL
+                    # tuple order and encoded lock-key order can differ for
+                    # variable-width keys, so do not lock another joined page.
+                    continue_in_next_transaction = True
+                    break
+                if len(candidates) < remaining:
                     break
                 continue
             for candidate in candidates_by_lock:
@@ -3033,12 +3366,21 @@ def _run_static_phase(
                 deleted.append(_encode_static_cursor(index, candidate))
             # Cursor order is SQL root/PK order, independent of the unsigned
             # encoded lock-key order used above inside this bounded page.
+            if len(deleted) == deleted_before_page:
+                raise CleanupCorruptionError("cleanup candidate page made no progress")
             after = candidates[-1]
             next_cursor = _encode_static_cursor(index, after)
-            if len(candidates) < remaining or len(deleted) - deleted_before_page < len(
-                candidates
-            ):
+            # A duplicate reference does not exhaust this spec. Continue from
+            # its exact tuple in a new transaction, with fresh lock ordering.
+            if len(candidates) == remaining and len(
+                deleted
+            ) - deleted_before_page < len(candidates):
+                continue_in_next_transaction = True
                 break
+            if len(candidates) < remaining:
+                break
+        if continue_in_next_transaction:
+            break
     if request_budget_retained is not None and deleted:
         try:
             release_gallery_staging_request_budget(
@@ -6572,6 +6914,7 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "ON r.value_sha256 = c.source_title_sha256 "
         "OR r.value_sha256 = c.title_sha256",
         extra_predicate=f"NOT ({_live_display_title_choice('c')})",
+        canonical_dictionary_columns=("source_title_sha256", "title_sha256"),
     )
     title_sort = _indirect_spec(
         "catalog_title_sorts",
@@ -6581,6 +6924,7 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "ON r.value_sha256 = c.title_sha256 "
         "OR r.value_sha256 = c.sort_title_sha256",
         extra_predicate=f"NOT ({_live_title_sort('c')})",
+        canonical_dictionary_columns=("title_sha256", "sort_title_sha256"),
     )
     source_scope = (
         _indirect_spec(
@@ -6686,6 +7030,16 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             frozenset((0, 1)),
             frozenset((0, 1)),
         ),
+        batch_exact_primary_keys=True,
+        batch_delete_keys=(
+            (
+                "catalog_canonical_value_page_coordinates",
+                ("value_sha256", "level", "page_position", "page_sha256"),
+            ),
+            ("catalog_canonical_value_page_payloads", ("page_sha256",)),
+            ("catalog_canonical_value_page_subtree_item_counts", ("page_sha256",)),
+            ("catalog_canonical_value_page_anchors", ("page_sha256",)),
+        ),
     )
     return {
         "CV_DICTIONARY": (
@@ -6719,24 +7073,28 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("value_sha256",),
                 root,
                 key,
+                batch_exact_primary_keys=True,
             ),
             _owned_spec(
                 "catalog_canonical_value_allocation_allocated_ats",
                 ("value_sha256",),
                 root,
                 key,
+                batch_exact_primary_keys=True,
             ),
             _owned_spec(
                 "catalog_canonical_value_allocation_byte_counts",
                 ("value_sha256",),
                 root,
                 key,
+                batch_exact_primary_keys=True,
             ),
             _owned_spec(
                 "catalog_canonical_value_allocation_digest_domains",
                 ("value_sha256",),
                 root,
                 key,
+                batch_exact_primary_keys=True,
             ),
         ),
         "CV_ROOT": (_owned_spec(root, key, root, key),),
