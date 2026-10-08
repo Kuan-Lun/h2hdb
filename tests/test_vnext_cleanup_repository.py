@@ -1830,7 +1830,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
             )
         # A retained build without historical publication/artifact payload is
         # a quiescent fixed point, not a blocked publication cleanup.
-        assert first is CurrentOnlyCleanupTerminalState.DONE
+        assert first.cycle is CurrentOnlyCleanupTerminalState.DONE
         assert inspect_one(
             connector,
             "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
@@ -1854,7 +1854,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=100,
-            )
+            ).cycle
         assert isinstance(second, CleanupCycle)
         assert second.target_kind is CleanupTargetKind.PUBLICATION_CANDIDATE
         _drain(connector, gate, second, now=101)
@@ -1866,7 +1866,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=200,
-            )
+            ).cycle
         assert isinstance(third, CleanupCycle)
         assert third.target_kind is CleanupTargetKind.SOURCE_BUILD
         _drain(connector, gate, third, now=201)
@@ -2999,7 +2999,7 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
                 gate_lease=gate,
                 cycle_cutoff_at=100,
                 now=3,
-            )
+            ).cycle
         assert resumed == opened
         assert isinstance(resumed, CleanupCycle)
         _drain(connector, gate, resumed, now=4)
