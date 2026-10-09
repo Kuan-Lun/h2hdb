@@ -606,8 +606,8 @@ def _exercise_production_page(connector: SQLConnector, backend: str) -> None:
     with connector.read_transaction():
         expected = _independent_file_oracle(cast(Any, connector), build)
         with patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetched:
-            evidence = analysis_module._load_file_decision_evidence(
-                work(), run.analysis_id, (first, second)
+            (evidence,) = analysis_module._load_file_decision_evidence(
+                work(), (run.analysis_id,), (first, second)
             )
         actual = evidence.resolved
         assert evidence.own_shadows == actual
@@ -723,3 +723,195 @@ def test_incremental_page_loads_parent_policy_once_and_preserves_overlay(
         assert actual == _independent_file_oracle(connector, build)
     finally:
         connector.close()
+
+
+def _seed_decision_layout(
+    connector: SQLConnector, root: bytes, ancestry: tuple[bytes, ...]
+) -> None:
+    connector.execute_many(
+        "INSERT INTO catalog_analysis_state_ancestry "
+        "(analysis_id, ancestor_depth, ancestor_analysis_id) VALUES (%s, %s, %s)",
+        [(root, depth, ancestor) for depth, ancestor in enumerate(ancestry)],
+    )
+
+
+def _seed_shadow(
+    connector: SQLConnector, analysis: bytes, key: bytes, count: int
+) -> None:
+    ensure_analysis_file_hash_decision_shadow_family(
+        connector,
+        AnalysisFileHashDecisionShadowFamily(analysis, key, count, 2, 1),
+    )
+
+
+@pytest.mark.parametrize(
+    "shape", ("genesis", "overlay", "policy", "compaction", "disjoint")
+)
+@pytest.mark.parametrize("corruption", ("partial_family", "shadow_tombstone"))
+def test_paired_evidence_preserves_each_roots_independent_resolution(
+    database_factory: DatabaseFactory, tmp_path: Path, shape: str, corruption: str
+) -> None:
+    import h2hdb.vnext_analysis_repository as analysis_module
+    from h2hdb.vnext_transaction import VNextUnitOfWork
+
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "paired-evidence.sqlite3"))
+    )
+    try:
+        set_foreign_key_checks(connector, enabled=False)
+        current, parent = b"c" * 16, b"p" * 16
+        older = tuple(index.to_bytes(16, "big") for index in range(1, 17))
+        parent_ancestry = (
+            (parent, *older)
+            if shape in {"compaction", "disjoint"}
+            else (parent, older[0])
+        )
+        current_ancestry = (
+            (current, *parent_ancestry) if shape == "overlay" else (current,)
+        )
+        if shape == "disjoint":
+            current_ancestry = (
+                current,
+                *(index.to_bytes(16, "big") for index in range(17, 33)),
+            )
+            assert len({*parent_ancestry, *current_ancestry}) == 34
+        keys = tuple(index.to_bytes(32, "big") for index in range(128))
+        with connector.transaction():
+            _seed_decision_layout(connector, current, current_ancestry)
+            if shape != "genesis":
+                _seed_decision_layout(connector, parent, parent_ancestry)
+                for key in keys[:3]:
+                    _seed_shadow(connector, parent_ancestry[-1], key, 10)
+                _seed_shadow(connector, parent, keys[1], 20)
+            if shape != "overlay":
+                _seed_shadow(connector, current_ancestry[-1], keys[0], 10)
+            _seed_shadow(connector, current, keys[1], 30)
+            connector.execute(
+                f"INSERT INTO {_TOMBSTONE} (analysis_id, file_sha256) VALUES (%s, %s)",
+                (current, keys[2]),
+            )
+        with connector.read_transaction():
+            baseline, actual = analysis_module._load_file_decision_evidence(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                (None if shape == "genesis" else parent, current),
+                keys,
+            )
+        assert {
+            key: value.occurrence_count for key, value in baseline.resolved.items()
+        } == ({} if shape == "genesis" else {keys[0]: 10, keys[1]: 20, keys[2]: 10})
+        assert {
+            key: value.occurrence_count for key, value in actual.resolved.items()
+        } == {
+            keys[0]: 10,
+            keys[1]: 30,
+        }
+        assert set(actual.own_shadows) == (
+            {keys[1]} if shape in {"overlay", "disjoint"} else {keys[0], keys[1]}
+        )
+        assert actual.own_tombstones == {keys[2]}
+        assert keys[3] not in actual.resolved
+        # A fresh transaction must validate the complete family again, even if
+        # this ancestor's value is hidden by a newer shadow in both roots.
+        damaged_owner = current if shape == "genesis" else parent_ancestry[-1]
+        with connector.transaction():
+            if corruption == "partial_family":
+                connector.execute(
+                    f"DELETE FROM {_SHADOWS[2]} WHERE analysis_id = %s AND file_sha256 = %s",
+                    (damaged_owner, keys[1]),
+                )
+            else:
+                connector.execute(
+                    f"INSERT INTO {_TOMBSTONE} (analysis_id, file_sha256) VALUES (%s, %s)",
+                    (damaged_owner, keys[1]),
+                )
+        with (
+            connector.read_transaction(),
+            pytest.raises(analysis_module.AnalysisCorruptionError),
+        ):
+            analysis_module._load_file_decision_evidence(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                (None if shape == "genesis" else parent, current),
+                keys,
+            )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("corruption", ("missing", "gap"))
+@pytest.mark.parametrize("malformed_root", ("baseline", "current"))
+def test_paired_evidence_rejects_each_malformed_layout_before_loading_families(
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    corruption: str,
+    malformed_root: str,
+) -> None:
+    import h2hdb.vnext_analysis_repository as analysis_module
+    from h2hdb.vnext_transaction import VNextUnitOfWork
+
+    connector = open_generated_database(
+        database_factory.config(str(tmp_path / "malformed-layout.sqlite3"))
+    )
+    baseline, current = b"b" * 16, b"c" * 16
+    damaged = baseline if malformed_root == "baseline" else current
+    try:
+        set_foreign_key_checks(connector, enabled=False)
+        with connector.transaction():
+            for root in (baseline, current):
+                if root != damaged or corruption != "missing":
+                    _seed_decision_layout(connector, root, (root,))
+            if corruption == "gap":
+                connector.execute(
+                    "INSERT INTO catalog_analysis_state_ancestry "
+                    "(analysis_id, ancestor_depth, ancestor_analysis_id) VALUES (%s, 2, %s)",
+                    (damaged, b"a" * 16),
+                )
+        with (
+            connector.read_transaction(),
+            patch.object(
+                analysis_module,
+                "load_file_decision_shadow_layers",
+                side_effect=AssertionError("invalid layout reached family reads"),
+            ),
+            pytest.raises(analysis_module.AnalysisCorruptionError, match="ancestry"),
+        ):
+            analysis_module._load_file_decision_evidence(
+                VNextUnitOfWork(connector, backend=connector_backend(connector)),
+                (baseline, current),
+                (b"k" * 32,),
+            )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    ("roots", "keys"),
+    (
+        ((), (b"k" * 32,)),
+        ((b"a" * 16,) * 3, (b"k" * 32,)),
+        ((b"a" * 16,), tuple(index.to_bytes(32, "big") for index in range(129))),
+    ),
+)
+def test_paired_evidence_rejects_unbounded_inputs_before_sql(
+    roots: tuple[bytes, ...], keys: tuple[bytes, ...]
+) -> None:
+    import h2hdb.vnext_analysis_repository as analysis_module
+    from h2hdb.vnext_transaction import VNextUnitOfWork
+
+    with pytest.raises(ValueError):
+        analysis_module._load_file_decision_evidence(
+            cast(VNextUnitOfWork, object()), roots, keys
+        )
+
+
+def test_empty_evidence_keys_need_no_database_authority() -> None:
+    import h2hdb.vnext_analysis_repository as analysis_module
+    from h2hdb.vnext_transaction import VNextUnitOfWork
+
+    evidence = analysis_module._load_file_decision_evidence(
+        cast(VNextUnitOfWork, object()), (None, b"a" * 16), ()
+    )
+    assert len(evidence) == 2
+    assert all(
+        not item.resolved and not item.own_shadows and not item.own_tombstones
+        for item in evidence
+    )

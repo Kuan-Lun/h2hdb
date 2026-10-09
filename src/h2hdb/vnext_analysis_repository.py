@@ -6979,6 +6979,8 @@ def _require_file_validation_binding(
     *,
     replay: AnalysisBatchResult | None,
 ) -> None:
+    # The owning plan may have closed or changed while batch authority waited
+    # on database locks; the entry check cannot establish its state here.
     page.verify()
     _validate_authority_receipt(
         work, run, _file_validation_receipt(page.authority, replay)
@@ -7102,8 +7104,10 @@ def _require_file_decision_targets(
     keys = require_file_decision_page_keys(digests)
     if not keys:
         return 0
-    parents = _load_resolved_decision_page(work, authority.baseline_analysis_id, keys)
-    current = _load_file_decision_evidence(work, authority.analysis_id, keys)
+    baseline, current = _load_file_decision_evidence(
+        work, (authority.baseline_analysis_id, authority.analysis_id), keys
+    )
+    parents = baseline.resolved
     try:
         deltas = (
             load_analysis_exclusion_delta_families(
@@ -9545,7 +9549,10 @@ def _materialize_decision_page(
     keys = require_file_decision_page_keys(digests)
     if not keys:
         return
-    parents = _load_resolved_decision_page(work, authority.baseline_analysis_id, keys)
+    (baseline,) = _load_file_decision_evidence(
+        work, (authority.baseline_analysis_id,), keys
+    )
+    parents = baseline.resolved
     parent_policy = (
         authority.policy
         if authority.baseline_analysis_id is None
@@ -9721,64 +9728,87 @@ def _analysis_policy(work: VNextUnitOfWork, analysis_id: bytes) -> _Policy:
     return _load_policy(work, family.policy_id)
 
 
-def _load_resolved_decision_page(
-    work: VNextUnitOfWork,
-    analysis_id: bytes | None,
-    digests: Sequence[bytes],
-) -> dict[bytes, _Decision]:
-    return _load_file_decision_evidence(work, analysis_id, digests).resolved
-
-
 def _load_file_decision_evidence(
     work: VNextUnitOfWork,
-    analysis_id: bytes | None,
+    analysis_ids: Sequence[bytes | None],
     digests: Sequence[bytes],
-) -> _FileDecisionEvidence:
+) -> tuple[_FileDecisionEvidence, ...]:
+    """Read one or two layouts, sharing each physical family in this call only."""
+
+    if not 1 <= len(analysis_ids) <= 2:
+        raise ValueError("file-decision evidence requires one or two analyses")
     keys = require_file_decision_page_keys(digests)
-    if analysis_id is None or not keys:
-        return _FileDecisionEvidence({}, {}, frozenset())
-    analysis = require_uuid16(analysis_id, field="resolved decision analysis")
-    _baseline, _anchor, _depth, ancestry = _load_layout(work, analysis)
+    analyses = tuple(
+        None
+        if analysis_id is None
+        else require_uuid16(analysis_id, field="resolved decision analysis")
+        for analysis_id in analysis_ids
+    )
+    if not keys:
+        return tuple(_FileDecisionEvidence({}, {}, frozenset()) for _ in analyses)
+    ancestries = tuple(
+        () if analysis is None else _load_layout(work, analysis)[3]
+        for analysis in analyses
+    )
+    layers = tuple(
+        dict.fromkeys(layer for ancestry in ancestries for layer in ancestry)
+    )
+    shadows: dict[tuple[bytes, bytes], AnalysisFileHashDecisionShadowFamily] = {}
+    tombstones: set[tuple[bytes, bytes]] = set()
+    layer_limit = _MAX_OVERLAY_DEPTH + 1
     try:
-        shadows = load_file_decision_shadow_layers(
-            work.connector, analysis_ids=ancestry, digests=keys
-        )
-        tombstones = load_file_decision_tombstone_layers(
-            work.connector, analysis_ids=ancestry, digests=keys
-        )
+        # Compaction has a self-only current layout but retains its baseline;
+        # their union may exceed the existing per-query seventeen-layer cap.
+        for offset in range(0, len(layers), layer_limit):
+            page = layers[offset : offset + layer_limit]
+            shadows.update(
+                load_file_decision_shadow_layers(
+                    work.connector, analysis_ids=page, digests=keys
+                )
+            )
+            tombstones.update(
+                load_file_decision_tombstone_layers(
+                    work.connector, analysis_ids=page, digests=keys
+                )
+            )
     except AnalysisFamilyCollisionError as error:
         raise AnalysisCorruptionError(str(error)) from error
     if shadows.keys() & tombstones:
         raise AnalysisCorruptionError(
             "resolved decision layer has a shadow and tombstone"
         )
-    decisions: dict[bytes, _Decision] = {}
-    for digest in keys:
-        for ancestor in ancestry:
-            coordinate = (ancestor, digest)
-            if coordinate in tombstones:
-                break
-            family = shadows.get(coordinate)
-            if family is not None:
-                decisions[digest] = _Decision(
-                    family.occurrence_count,
-                    family.artist_count,
-                    family.maximum_gallery_artist_count,
-                )
-                break
-    return _FileDecisionEvidence(
-        decisions,
-        {
-            digest: _Decision(
-                family.occurrence_count,
-                family.artist_count,
-                family.maximum_gallery_artist_count,
+    results: list[_FileDecisionEvidence] = []
+    for analysis, ancestry in zip(analyses, ancestries, strict=True):
+        decisions: dict[bytes, _Decision] = {}
+        for digest in keys:
+            for ancestor in ancestry:
+                coordinate = (ancestor, digest)
+                if coordinate in tombstones:
+                    break
+                family = shadows.get(coordinate)
+                if family is not None:
+                    decisions[digest] = _Decision(
+                        family.occurrence_count,
+                        family.artist_count,
+                        family.maximum_gallery_artist_count,
+                    )
+                    break
+        results.append(
+            _FileDecisionEvidence(
+                decisions,
+                {
+                    digest: _Decision(
+                        family.occurrence_count,
+                        family.artist_count,
+                        family.maximum_gallery_artist_count,
+                    )
+                    for (owner, digest), family in shadows.items()
+                    if owner == analysis
+                },
+                frozenset(digest for owner, digest in tombstones if owner == analysis),
             )
-            for (owner, digest), family in shadows.items()
-            if owner == analysis
-        },
-        frozenset(digest for owner, digest in tombstones if owner == analysis),
-    )
+        )
+    return tuple(results)
 
 
 def _decision_from_row(row: tuple[Any, ...], *, field: str) -> _Decision | None:

@@ -5,8 +5,8 @@
 目標是六個自有程式 repository 與部署 workspace 的整體精簡：先檢查功能必要性、
 責任、狀態與重複工作，再決定是否拆包；LOC 減幅不是目標。
 2026-10-09 使用者將原 Core／Ingest 計畫擴至整套系統，其他 workspace 也需主動審核。
-範圍擴充已整合；目前完成 R01 一個 bounded step 的來源調查，
-尚未採用 runtime 精簡或拆包。
+範圍擴充已整合；R01 同交易 family 重讀已完成實驗並採用，正進行本輪整合。
+第二次 page verification 經故障反例確認保留；全系統審核與拆包決策仍未完成。
 
 ## 已核對基線
 
@@ -58,9 +58,12 @@ Ingest 另有乾淨的 `feat/page-worker-decision-log` worktree（`d7c8ef7b`，�
 - 已知：codecs 有純函式邊界；schema、cleanup、fencing 有跨表與交易耦合。
 - 已知：R01 file validation 的 local plan 已跨頁重用；issue／prepare／commit
   分別擁有 durable coordinates、local preparation 與 fresh commit authority。
-- 未證實：任何候選可安全移除、整體狀態數可減少、拆包有淨收益或達成成本目標。
+- 已知：R01 同呼叫 ancestry 去重可保留 family 拒絕契約，且在下述本機中大型
+  重疊案例降低局部 SQL 工作與時間；移除第二次 page verification 的反例失敗。
+- 未證實：整體狀態數可減少、拆包有淨收益或整個 ingest／部署達成成本目標。
 - 先前聊天與暫存 logs 只提供線索；量化結論須重新取得有來源版本的持久報告。
-- 尚未執行本計畫的 runtime 實驗、正確性測試、效能驗收或完成範圍複查。
+- R01 實驗、受影響 Core／Ingest 測試及局部範圍複查結果見下方；不可外推為
+  全系統 runtime 審核或 production 驗收。
 
 ## 系統邊界與階段
 
@@ -83,7 +86,7 @@ Komga Java server、H@H、galleryinfo parser 及其他第三方套件是外部�
 | 階段 | 工作範圍 | 目前狀態 |
 | --- | --- | --- |
 | S0 | 七個 workspace 的來源與依賴盤點 | 本次建立基線；功能必要性仍未審核 |
-| S1 | Core／Ingest 的責任、狀態與重複工作 | R01 file validation step 已調查；其餘範圍與候選驗證未完成 |
+| S1 | Core／Ingest 的責任、狀態與重複工作 | R01 family 共讀採用、第二次 verify 保留；本輪待整合，其餘範圍未完成 |
 | S2 | OPDS、Komga sync、Downloader、hbrowser 的自身設計 | 待審核；不以 S1 是否碰到它們作為啟動條件 |
 | S3 | 部署控制流程與跨 repository 工程工具重複責任 | 待審核；按實際契約和維護成本選單元 |
 | S4 | 全系統重查與逐項拆包決定 | 待 S1–S3 的證據；不是自動發布套件 |
@@ -171,13 +174,14 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
 
 狀態區分待審核、調查中、待實驗、待決策、採用待驗收、完成、拒絕、延期。
 拒絕與延期不是實作完成；保留理由及新證據下的重開條件。
-R01 已完成下述調查單元，候選整體及其他項目仍未完成。
+R01 下述兩個局部候選已取得採用／拒絕依據，本輪待整合；其他 analysis stages
+與其餘範圍仍未完成。正式整合狀態由 Git ancestry 與 exact-tree receipt 核對。
 
 | ID | 候選／狀態 | 持久證據入口 | 結案或重開條件 |
 | --- | --- | --- | --- |
-| R01 | File validation step 調查完成；保留三階段邊界，局部重複候選待驗證 | C02／C04、I04；下方 R01 調查結果及來源／測試索引 | 同交易 baseline/current 重讀先固定成本契約與反例再實驗；其他 analysis stages 仍待審核 |
+| R01 | 同交易 family 共讀採用待整合；第二次 verify 保留，移除候選拒絕 | C02／C04、I04；下方實驗、故障反例與持久報告 | 相關 authority／plan ownership 改變或新工作負載違反局部契約時重開；其他 analysis stages 待審核 |
 | R02 | 相同 session／page predicates；待審核 | `vnext_ingest_facade.py`、`vnext_ingest_analysis.py`、`vnext_ingest_publication.py` 的 session identity；facade／source spool 的 named/tag page validators | 證明可共用規則且各信任邊界仍驗證；若語意不同則拒絕，日後語意收斂再開 |
-| R03 | READY audit／cleanup 重複工作；待重新量測 | C05、C07；`catalog_refinement.py`、`vnext_cleanup_repository.py`；既有成本工具 | 先固定工作量契約與反例再量測；缺可靠 provenance 時不判達標 |
+| R03 | READY audit／cleanup 重複工作；cleanup 已重現既有成本超標、待定位 | C05、C07；`catalog_refinement.py`、`vnext_cleanup_repository.py`；R01 全流程回歸報告 | 沿用既有預算定位可省工作；不得以 READY audit 通過覆蓋 cleanup 失敗 |
 | R04 | 純 codecs distribution；延期至邊界審核 | C08；`vnext_identity.py`、`catalog_search.py`、`catalog_writer.py`、`database_audit.py` | 先確認 byte／Unicode／guard ownership／audit 失效契約；邊界與收益成立後再決定拆包 |
 | R05 | Media distribution；待審核 | I02 與 I01／I03 使用點；Ingest `AGENTS.md` 的 ownership boundary | 先證明與 source authority、storage、journal 的可分離性及驗收範圍 |
 | R06 | Transport／telemetry／contracts；延期 | C08、C10、C11、I05；實際 import 與 consumer 使用點 | 有獨立使用需求、可減少依賴或發布耦合的證據再開；檔案大小不是理由 |
@@ -188,8 +192,12 @@ R01 已完成下述調查單元，候選整體及其他項目仍未完成。
 | R11 | OPDS 協定與 catalog mapping；待審核 | O01–O05；`opds12.py`、`opds2.py`、`atom.py`、`serialization.py` | 分清協定差異與重複映射責任，再決定可共用部分；協定差異本身不是冗碼 |
 | R12 | 部署解析／啟動／驗收／操作責任；待審核 | P01–P07，包含全部 profile jobs 與共用 build stage | 驗證 resolver、啟動 probes、隔離驗收與 deploy 各自的責任；不得以讀過來源宣稱可部署 |
 | R13 | 跨庫工程工具收斂；待逐檔盤點 | E01–E02；既有 scripts、hooks、workflow 與驗收 fixture | 先比較執行語意與 ownership，列出真正重複者；不能以抽共用套件取代各庫應有驗收 |
+| R14 | Source append SQL 成本；已重現超標、待定位 | C01／C04；R01 完整流程的 source attribution | 沿用既有 source 預算，固定代表形狀與退化反例，驗證重複工作後採用或拒絕 |
 
-## R01：file decision validation step 調查
+## R01：file decision validation step 調查（歷史紀錄）
+
+本節為 `413d06a` 的調查快照，已經 `041f707` 整合；其中「待驗證」與
+「未執行」是該輪狀態，後續實驗及處置以下方 2026-10-09 結果為準。
 
 來源為上表 Core `b8e3a06`／Ingest `c5a6967`；本輪只更新紀錄，待 task branch
 `docs/simplification-r01-validation` 整合。問題是三階段是否重複維護同一權威，
@@ -270,23 +278,194 @@ Core `git diff --stat 13e9277 HEAD` 僅有本紀錄，
 及 exact candidate receipt 核對，不預寫通過。未執行 runtime、MariaDB、deep、成本、
 跨套件 wheel resolution、Compose build／隔離流程或 production 驗收。
 
+## R01：同交易 family 讀取實驗（2026-10-09）
+
+實驗前基線為 Core `041f707`／Ingest `c5a6967`。候選只合併同一次呼叫內
+baseline/current ancestry 的 family 讀取；兩個 fresh layout 檢查、各自解析順序及
+既有 17-layer／128-key 上限保留，不跨交易或 issue／prepare／commit 快取。
+公開 facade、schema、telemetry 與部署介面預期不變；若採用 runtime 修改，
+候選 Core 為 `0.45.7`，四個 role 的 `>=0.43.0,<0.46.0` 皆容納它。
+Ingest 是直接 analysis consumer，需驗證既有 orchestration/session 契約；OPDS、
+Komga sync、Downloader 與 hbrowser 的介面未預定修改。部署共用 build 仍包含四個
+role；本局部實驗不宣稱 index-backed Compose 或 production 已驗收。
+
+事前固定的局部成本契約如下，不依候選測得平均調高預算：
+
+- 每頁 K ≤ 128；每個 root ancestry ≤ 17，兩個 root 的去重聯集 U ≤ 34。
+  非空 root 各保留 2 個 layout SQL；family SQL 為 `2 * ceil(U / 17)`，
+  返回的 requested-grid rows 為 `2 * K * U`，singleton probes 至多 `6 * K * U`。
+  同一次 pair 讀取不得重讀相同 ancestry/key coordinate；恢復原雙讀作退化反例。
+- 小型涵蓋 1／127／128／129（跨頁）／257 keys；主要局部規模為 4,096／32,768
+  retained decision keys，當輪完整驗證同等 key 數。另以固定 128 keys 比較兩種
+  retained 規模，檢查無關資料成長不增加 point-read 工作。
+- 涵蓋 genesis、baseline 1／8／16 layers 的 overlay、policy-change self-only、
+  baseline 17 layers 的 depth-16 compaction；34-layer 非 suffix 邊界只作有界
+  正確性案例。Inherited-value reuse 分別 0%／95%，不得混稱跨 gallery hash 重用率。
+  本 fixture 使用已聚合 artist scalar 分布，並不冒充完整 source artist 分布；
+  故結果只支持 family 讀取熱點，public pipeline 正確性另由既有測試驗證。
+- SQLite／MariaDB 分開量測，在同資料上交替 baseline/candidate，各至少三次完整循環。
+  報告固定 SQL/native work、K=1 的固定加單筆成本、逐 key 正規化 local CPU／elapsed，
+  以及 Python peak memory；不從三次計時推定獨立的固定 CPU 截距。
+  本機新增的回歸預算為每次 pair Python peak ≤ 8 MiB、CPU ≤ 1 ms/key、
+  elapsed ≤ 5 ms/key；它們是本候選的固定驗收預算，不是既有全管線 SLO。
+  中大型重疊形狀的 candidate median wall 必須低於 baseline，才能宣稱本機淨收益。
+  非重疊案例記錄新增成本，不能以漸近改善或小型查詢減少代替主要規模實測。
+
+本節建立時尚未量測或採用實作；結果與持久證據於同一任務內補入。
+
+補充形狀（執行前固定，原預算不變）：原 fixture 每 key 在 baseline ancestry
+只存一份 family，另量測 4,096 retained／requested keys、8 個 baseline layers
+每層每 key 都有完整 shadow 的高歷史改寫密度，current inherited reuse 為 95%／0%。
+另以兩個不重疊的 17-layer roots、128 keys、每層完整 family 檢查最大聯集的
+Python peak 與局部 CPU 成本。此補充只支持已測密度／規模，不冒稱 32,768 dense
+keys 或完整 source 分布已驗證；仍用三循環及同一原始 baseline 比較。
+
+### 實驗結果與處置
+
+採用同呼叫 family 共讀：`_load_file_decision_evidence` 接受一或兩個 roots，
+各自 fresh 讀 layout，將 ancestry 去重後以既有 17-layer loader 分批讀取，
+再按每個 root 的順序獨立解析。Policy self-only、compaction 與不相交 34-layer
+聯集不假設 suffix；hidden ancestors 的 partial/orphan family、shadow/tombstone
+衝突仍 fail closed。呼叫結束即丟棄共用資料，不新增 durable state 或跨交易快取。
+兩個直接呼叫點共用同一 helper，刪除只轉傳 `.resolved` 的 wrapper；runtime 淨增
+30 行，換得消除重複 I/O 及單一有界讀取實作，不宣稱 LOC 減少或完成拆包。
+
+歷史 baseline 為 `041f707` 的精確 helper AST，實驗與 candidate 使用相同共用
+dependency source；報告另附 `_load_layout`／value types／loader module 的來源
+比對。這不是整個歷史部署映像的 wall-time 比較。計時只含 pair helper 的 layout、
+family SQL、解析及結果建構，不含 transaction 進出、獨立 oracle 或圖片處理。
+
+| Backend／95% inherited shape | Baseline median | Candidate median | 減少 |
+| --- | --- | --- | --- |
+| SQLite，4,096 keys／baseline 8 layers | 0.28031 s | 0.15145 s | 46.0% |
+| SQLite，32,768 keys／baseline 16 layers | 4.45069 s | 2.29836 s | 48.4% |
+| MariaDB，4,096 keys／baseline 8 layers | 0.64048 s | 0.34832 s | 45.6% |
+| MariaDB，32,768 keys／baseline 16 layers | 8.33179 s | 4.32066 s | 48.1% |
+
+0% inherited 的主要案例也降低約 44–48%；高歷史改寫密度的 4,096-key 案例
+SQLite 為 0.39631→0.20961 s，MariaDB 為 0.74238→0.41571 s（95% inherited）。
+4,096／32,768 keys 的 family SQL 各由 128→64／1,024→512；grid rows 各由
+139,264→73,728／2,162,688→1,114,112。固定 128 keys 在兩種 retained 規模的
+native work 相同。最大 34-layer dense pair 的 Python peak 為 1,891,484 bytes，
+未超過 8 MiB 預算；所有採用案例的固定 CPU／elapsed 預算及主要重疊收益通過。
+Peak 是當次 `tracemalloc` Python allocations，不是 process RSS 或 MariaDB server
+memory；baseline 為獨立 oracle 保留兩份完整 evidence，歷史 caller 僅保留
+`parent.resolved`，因此不是精確的歷史 commit 記憶體比較。
+非重疊不保證加速：MariaDB compaction 129 keys 為 19.085→19.327 ms，增加
+0.242 ms，仍在預算內；此處沒有可省的重複 family coordinates。
+
+在此讀取契約下，family coordinate 工作由 `K*(B+C)` 降為 `K*U`；例如
+16／17 layers 重疊時剩下 `17/33`，不是宣稱所有 SQL 演算法的絕對理論下限。
+實測重疊案例從 B=1、K=1 已有淨收益，但未推論 NAS 的損益平衡點或整個 ingest
+速度；未測 32,768 dense keys、完整 source artist 分布或正式部署資料。
+
+持久證據為 [摘要](../benchmarks/r01-file-validation.json) 與
+[原始報告及精確 runner snapshots](../benchmarks/evidence/r01-file-validation.tar.gz)。
+Archive SHA-256：`20d727189e616a44c6f3af7f4224a9b0622339eb21bf546a8810dbdc32892f14`。
+包含 9 reports、4 runners、34 採用成本案例及 2 個強化 oracle smoke；摘要列明
+每份來源 hash、採用 case index 與排除理由。早期 pilot 不用於上述結論；混合報告
+中已替換的邊界案例保留原始資料但不採用。可重跑工具為
+`scripts/ingest_file_validation_cost_probe.py --help`，預設歷史 ref 綁定本次 baseline；
+它是開發期 R01 成本實驗，不是 production compatibility path。
+退化反例包含恢復舊 double-read 及讀取錯誤 owner set；後者即使 rows／owners
+數量相同也必須被獨立 oracle 拒絕。
+新增成本工具及其測試歸 E02；沒有新增 runtime module。實作 commit `d99f5c9`，
+成本工具／證據 commit `bbb4d2d`；本節及手動驗收報告在後續提交保存。
+
+**拒絕移除第二次 `page.verify()`**：兩次呼叫之間 `_prepare_batch` 可能等待 DB
+authority，owner plan 可被關閉或 metadata 改變。新增 SQLite／MariaDB fault test
+在該間隙注入變動，要求拒絕且 checkpoint 不前進。只 bypass binding helper 的
+第二次 verify、保留其他驗證的 negative control，兩個 SQLite 案例都以
+`DID NOT RAISE` 失敗，證明目前重複檢查有必要。若未來 plan ownership／immutability
+能覆蓋這段等待，才重開此候選；本輪保留 issue／prepare／commit 邊界。
+
+### 驗收與影響範圍
+
+Core targeted 命令以 `.venv/bin/python -m pytest` 執行；非 MariaDB 與 MariaDB
+均指定 `-n 0 --check-backend-pairs`，後者另外設定 `H2HDB_TEST_MARIADB=1`。
+
+- `tests/test_vnext_analysis_decision_batch.py tests/test_vnext_ingest_analysis_validation.py`
+  配 `-m 'not mariadb' -q`：58 passed；配 `-m mariadb -q`：53 passed。
+- 加強 genesis／next-transaction fresh evidence 後，decision batch 檔配
+  `-m '' -k paired_evidence_preserves -q`：16 passed；新增最大聯集／空 keys 後，
+  配 `-m '' -k 'disjoint or empty_evidence_keys' -q`：5 passed。
+- `tests/test_ingest_file_validation_cost_probe.py -n 0 -q`：1 passed，驗證錯誤
+  owner-set negative control；targeted strict mypy、Ruff／format 通過。
+- Negative control 為暫時 monkeypatch class verify，僅當 caller 是
+  `_require_file_validation_binding` 才 bypass；analysis validation 檔配
+  `-n 0 -m 'not mariadb' -k test_commit_rechecks_plan_after_database_authority_wait -q`
+  取得預期的 2 failures；沒有將退化實作寫入 runtime。
+
+候選 wheel 為 Core `0.45.7`，SHA-256
+`929de5c18be464c67feeca59df7b916b510dd3672f3486e3bd87bf90c939c94a`；
+Ingest `0.30.3` wheel 的 49 package files 與 `c5a6967` source 一致，SHA-256
+`a26e81530f7e2017c9e97bf0db194d0fc05428e266ebae40050515f4c5436ba7`。
+乾淨 venv 以正常 dependency resolution 安裝兩個明確 wheels 與 Pydantic `2.14.0`，
+`uv pip check` 通過；實際 imports、METADATA 與 installed payload 分別比對 wheel
+96／49 files。`direct_url.json` 未提供 archive hash，另以實際 bytes 計算核對。
+Ingest 以此環境執行 `tests/test_service_vnext.py tests/test_session_vnext.py
+tests/test_config.py`（`-p no:cacheprovider -o addopts= -n 0`）：242 passed、無 skip。
+Service／session 使用 fakes，不能當作 live DB 證據；Core 的雙 backend 測試另列。
+
+完整 pipeline 成本另以 `scripts/check-ingest-database-performance.py`，在兩個
+backend 各跑舊版 `041f707` 及 candidate。參數為 `--backend sqlite` 或
+`--backend mariadb --allow-mariadb`，均配 `--case 128:128:1 --replacement-case 4:2
+--output REPORT.json`。四次均完成量測、READY audit 成本通過，但 pipeline 成本
+**失敗、exit 1**：source append SQL 都為 160,432，超過既有上限 137,216；
+replacement cycle 2 cleanup 上限 3,152，舊版兩個 backend 及 candidate MariaDB
+均為 3,182，candidate SQLite 為 3,184。沒有調高預算或將工具成功量測當成達標。
+
+SQLite cleanup 的額外兩次 SQL 精確來自多重開一個 COMPLETE shard job 的
+frozen-root SELECT 與 job DELETE；READY audit 也觀察到 33 而非 34 個 job rows。
+此 fixture 的 random analysis ID 會影響 shard 分布，是與程式一致的原因解釋；
+報告未保存 SQL parameters，無法指認確切 target。R01 修改只讀取 family，沒有
+改變 cleanup 寫入／shard 規則；上述超標已在 baseline 重現，保留為 R14／R03。
+這些 pipeline 與手動清理曾併行執行，只比較 SQL 工作及既有契約，不據 wall time
+宣稱端到端加速。128-gallery 回歸也不取代下一候選應有的中大型效能驗收。
+
+手動 `.venv/bin/python scripts/run-pytest.py cleanup-acceptance` 完成，exit 0：
+SQLite 259 passed（331.6 s）、MariaDB 10.11.11 242 passed（1,833.5 s），
+涵蓋真實 compaction、深度邊界與清理／稽核恢復契約。它不是完整 deep suite，也
+不屬於 bounded merge receipt。四份完整 pipeline 報告、來源與 SQL 差異核對、
+手動清理 stdout、consumer 的解析／metadata／測試紀錄及本輪 installed skill
+snapshots 保存於 [手動驗收索引](../benchmarks/r01-manual-validation.json) 與
+[原始證據 archive](../benchmarks/evidence/r01-manual-validation.tar.gz)，SHA-256：
+`f694e42601b6714738111f4efedaa8abdf1bdf753e547e78a59f33ae4870808c`。
+每個 archived input 另有 byte size／hash；不把這些手動報告當成正式 release receipt。
+
+重新盤點實際 Compose、Dockerfile 與 resolver 的四個 role，candidate lane 符合
+既有範圍；本輪只改 Core private helper，沒有公開 facade、schema、資料格式、
+telemetry、dependency range 或部署控制變更。下游實作不需修改；受影響的 Ingest
+orchestration/session 已重查並驗證。未執行 OPDS／Komga／Downloader 的無關完整
+suite、實際 Compose build／隔離發布流程或 production deploy；candidate wheels
+取代了 index releases，不能因此宣稱正式 index-backed Compose 已可部署。
+
+品質優先且不以最小修改或向後相容限制設計；採用同呼叫去重並保留必要 authority
+檢查，沒有跨交易 cache 或新增套件。結果為「品質優先後恰好向後相容」，沒有
+compatibility path 移除。Runtime shipped surface 需 patch 升版至 `0.45.7`；
+dependency audit 已重新產生並審閱，最新 Pydantic `2.14.0` 的 release notes 及
+四個 config tests 通過，final gate 的環境亦已更新至該版本。局部計時使用之前的
+Pydantic `2.13.5`；family helper 不使用它。其他直接依賴最新版與既有 audit 相同，
+未改依賴宣告或 upper bound。正式 code review／full merge gate 尚待整合執行，
+由 Git metadata receipt 核對，不預寫通過；未 push、publish 或 deploy。
+
+Skill 也已修正並安裝：預設完成候選的實驗、採用／拒絕、必要實作與驗收整合，
+不能以 docs commit、列下一步或上下文壓縮停止。Skill schema、Markdown、Codex
+重新載入與獨立情境檢查通過；使用者明確只要分析仍不自動改碼，充分保留證據
+也可結案。Skill 是使用者環境的任務流程，沒有複製 repository 開發政策。
+
 ## 下一輪入口
 
-接續時先核對七個 workspace 的可用性、來源基線與政策，再細讀當輪相關範圍。
-缺失 workspace 保留為未完成項；只有當輪需要它才阻擋該單元，不據此縮小整體目標。
-優先核對本輪文件整合，再處理 R01 的同交易 baseline/current family 重讀假設。
-入口為 [analysis repository](../src/h2hdb/vnext_analysis_repository.py) 的
-`_require_file_decision_targets`／`_load_file_decision_evidence` 與
-`vnext_analysis_decision_batch.py` 的 shadow/tombstone exact-family loaders。
-先確認是否能以一次有界讀取推導兩個結果且保留 partial/orphan family、shadow+tombstone、
-missing layout、checkpoint/replay 的拒絕契約；不得跨 issue／prepare／commit 快取 authority。
-若要作效能實驗，先從既有成本契約固定 SQL／rows examined、local CPU／memory 與 elapsed
-預算，列明既有資料量、本次工作量、hash 重用率、artist 密度分布與 overlay depth。
-涵蓋 genesis、一般 overlay、policy-change／depth-16 compaction、頁容量前／上／後與
-重複循環，並以保留重讀的退化反例驗證計數；SQLite 與 MariaDB 分開實測。
-未建立固定預算或取得中大型證據時保持待實驗，不宣稱收益。
-雙 `page.verify()` 是次要規則收斂候選；R02 及 S2／S3 的其他候選仍需後續審核。
-此單元不代表 C01–C04 已審核完成，也不預設拆包或一定有程式可刪。
+接續時先核對七個 workspace 的來源、政策、Git ancestry 與本輪 exact-tree receipt。
+本輪未整合時先完成既有 branch；整合完成後不要重做已結案的 ancestry 共讀實驗。
+下一個優先單元為 C01 source 成本：下方完整流程的 128-gallery append 在舊／新版
+都超過既有 SQL 預算。從成本報告的 source SQL attribution 與
+`vnext_source_*`／`vnext_gallery_staging_*` 呼叫者，固定可省的工作及反例，
+沿用既有預算後實驗並完成採用或拒絕；若需要擴充資料形狀，先寫入成本契約。
+R03 cleanup 的 replacement 超標也需定位，不能宣稱 R01 局部加速已解決它。
+本輪的 128-gallery pipeline 只作完整流程成本回歸，不代替下一輪中大型驗收。
+R02、R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未完成，
+不得從總範圍刪除。每輪以一個內聚候選完成處置，不因只更新文件而提早停止。
 
 ## 每輪交付與證據
 
@@ -298,9 +477,15 @@ missing layout、checkpoint/replay 的拒絕契約；不得跨 issue／prepare�
 - 本輪完成前回寫候選、範圍審核狀態與下一個入口；只改 ledger 不代表 runtime 通過。
   實作 commit 可先記錄，最後 merge 由 Git history 核對，避免自我引用 commit hash。
 
-調查輪完成指該單元有可核對的結論與下一步，不代表其所屬範圍已全部審核。
-實作輪完成另需相關 repository 整合與必要驗收的真實證據；待整合、待實驗、
-待決策或缺少證據的候選仍未完成。沒有收益的候選可以具體理由結案，不強行修改。
+預設一輪完成一個候選的完整處置：先說明具體修改方案、預期收益及驗證方法，
+完成相稱的調查／實驗；證據支持採用時接續實作、必要驗收、整合及受影響範圍重查。
+充分證據支持拒絕或保留時，可附理由與重開條件結案，不強迫修改或刪碼。
+調查是候選內的步驟，列出下一步、提交文件或上下文壓縮都不是正常停止條件；
+有資料、能力與既有授權可繼續時，接著完成待辦，不把「尚未驗證」當成結案。
+使用者明確要求只分析或查進度時，依指定範圍交付；因實際阻礙或使用者限制而
+中斷時，保存已完成工作、具體阻礙及恢復入口，保持未完成狀態。
+待整合、待實驗、待決策或缺少必要證據的候選仍未完成；單一候選結案也不代表
+其所屬範圍或全系統已審核完成。既有授權內的工作不逐步要求再次確認。
 
 可重用 [驗證說明](../verification/README.md)、[語意證據索引](../verification/invariants.toml)、
 [Core SQL 成本工具](../scripts/check-ingest-database-performance.py)，以及 Ingest 的
@@ -321,6 +506,7 @@ missing layout、checkpoint/replay 的拒絕契約；不得跨 issue／prepare�
    包含未啟用 jobs、共用 build 與跨庫檔案／鎖契約，沒有遺漏的可處理範圍內問題。
 5. 拆包各自有採用／拒絕／後續階段決定與依據；拆包數量和 LOC 減少都不是完成指標。
 
-目前進度：範圍已擴至全系統；R01 file validation step 的責任／狀態調查完成，
-保留三階段並列出兩個待驗證局部候選。其餘 runtime／部署審核與工程工具細分仍待做；
-R01 整體、S1–S4 及全系統完成條件均尚未滿足。
+目前進度：R01 同交易 family 共讀實驗支持採用，第二次 verify 移除候選由故障反例
+拒絕；本輪待正式整合，整合結果以 Git 與 receipt 為準。已重查受影響 loader、
+兩個直接呼叫點及 Ingest orchestration/session。其他 analysis stages、runtime／部署
+審核與工程工具細分仍待做；R01 整體、S1–S4 及全系統完成條件均尚未滿足。

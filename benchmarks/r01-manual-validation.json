@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "scope": "R01 manual full-pipeline comparison, cleanup acceptance, candidate-wheel consumer and installed skill snapshots; not a release receipt",
+  "runtime_commit": "d99f5c9",
+  "runtime_sha256": "37bc736defa94c497ee70d16af30cafdb003c6eca10d20ad95285b9d9f685da3",
+  "pipeline": {
+    "baseline": "041f7070e4bbaeff00821754454bc588e93aea8b",
+    "candidate_version": "0.45.7",
+    "invocation": ".venv/bin/python scripts/check-ingest-database-performance.py --backend BACKEND [--allow-mariadb] --case 128:128:1 --replacement-case 4:2 --output REPORT.json",
+    "result": "all four completed; pipeline cost violated (exit 1), READY audit cost satisfied",
+    "timing_limitation": "manual probes and cleanup acceptance overlapped; SQL work and contract outcomes compared, not end-to-end wall time"
+  },
+  "cleanup": {
+    "invocation": ".venv/bin/python scripts/run-pytest.py cleanup-acceptance",
+    "sqlite_passed": 259,
+    "mariadb_passed": 242,
+    "exit_code": 0,
+    "scope": "manual cleanup acceptance, not all deep tests and not bounded merge receipt"
+  },
+  "consumer": {
+    "core": "0.45.7",
+    "ingest": "0.30.3",
+    "passed": 242,
+    "scope": "normal dependency resolution, installed wheel payload/metadata, fake service/session boundaries and config; not live DB or Compose evidence"
+  },
+  "files": {
+    "cleanup/acceptance.log": {
+      "size": 11349,
+      "sha256": "a4ee56d648a825d22876c0e879d6339f5361e4ddf281f181bd16a5257149767c"
+    },
+    "consumer/consumer-tests.log": {
+      "size": 940,
+      "sha256": "039fba03043e3c04f96a403755c77f2b5acc4eed5394de201df93c3c7f24c779"
+    },
+    "consumer/consumer-tests.xml": {
+      "size": 32051,
+      "sha256": "71553029ce15d832e38cf5c1f5716ab0341e1e3225726485f38ce28a599727b5"
+    },
+    "consumer/install-network.log": {
+      "size": 1763,
+      "sha256": "517ac384de9557f58d1e4c989dce9abb6653ed3d3b9a96022d3c35049c910587"
+    },
+    "consumer/installed-versions.json": {
+      "size": 1755,
+      "sha256": "b94a825df0d2ab5b706395c6f22eee667e010a277e1cdb8a9a86c98953fd8e38"
+    },
+    "consumer/invocations.txt": {
+      "size": 1747,
+      "sha256": "ca33459747f829875e6c7ecad173cf1049611adff9a2c9ad8a665d75215be0dc"
+    },
+    "consumer/metadata.json": {
+      "size": 25308,
+      "sha256": "0e3bd68ae08f321aec0443290090a52359d64d156c0ce4e9fb7180f297bf103f"
+    },
+    "consumer/pip-check.log": {
+      "size": 146,
+      "sha256": "3e1b058c95393a91c061bb2408b3fd5d9e8a21aebf171586b0a7c7038c25aefc"
+    },
+    "consumer/verify_metadata.py": {
+      "size": 3415,
+      "sha256": "ba9693d670b28f5d5898cfda37bd281acd4339025b470b6989a378437896e215"
+    },
+    "pipeline/comparison.json": {
+      "size": 35209,
+      "sha256": "301738aaee98b03fbcea6839bf072dd782e9ee3be55d335c5f2af8a1cff28fa9"
+    },
+    "pipeline/pipeline-baseline-mariadb.json": {
+      "size": 13065597,
+      "sha256": "b8902973c28752282e2731556b08adcf3720e5d3b8346001fb6e56acfc25bf1d"
+    },
+    "pipeline/pipeline-baseline-mariadb.log": {
+      "size": 5698,
+      "sha256": "9894140a1e7bd1da8a608bba4ebcaa7b9357f6a7c3a3e4c3f00bf37153629264"
+    },
+    "pipeline/pipeline-baseline-sqlite.json": {
+      "size": 13809230,
+      "sha256": "f854a2dcb934bbbd4c796a3015b9bebf344ad87e0dfe1af9c6c04b1ca7502033"
+    },
+    "pipeline/pipeline-baseline-sqlite.log": {
+      "size": 5678,
+      "sha256": "9c94e0c236b1476807c29f23019ae1d2ce2c0d3e2caf9ad2f659cb347b763b31"
+    },
+    "pipeline/pipeline-mariadb.json": {
+      "size": 13080579,
+      "sha256": "c88109c8ba8a9ad78a558e16d951768774c9d80c018104de8581934ce0c5b612"
+    },
+    "pipeline/pipeline-mariadb.log": {
+      "size": 5681,
+      "sha256": "e18e72b99403e6eb015ef5977c126714479bcbc0667619948df35e2b44053b67"
+    },
+    "pipeline/pipeline-sqlite.json": {
+      "size": 13821302,
+      "sha256": "d014e75524098247f2cd632041a4ba352531f64ac9c342552cb81f8c2d583e38"
+    },
+    "pipeline/pipeline-sqlite.log": {
+      "size": 5702,
+      "sha256": "724cb4d61bb564f1d7ff5d0a2d3a72159e9625d46a88c16e372cfe96685083b6"
+    },
+    "skill/SKILL.md": {
+      "size": 6234,
+      "sha256": "25c8bddd107cdb1c0e7e477e229b19591c854b9d34cffdf3429eef3db57abae1"
+    },
+    "skill/agents/openai.yaml": {
+      "size": 362,
+      "sha256": "37ca7d822714fa2deef1442a8a0b0f15d295932ae53bc0af4a1dd2f33f506d05"
+    }
+  },
+  "archive": {
+    "path": "benchmarks/evidence/r01-manual-validation.tar.gz",
+    "sha256": "f694e42601b6714738111f4efedaa8abdf1bdf753e547e78a59f33ae4870808c",
+    "size": 4089531
+  }
+}

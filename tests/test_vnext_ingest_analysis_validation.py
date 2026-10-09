@@ -22,6 +22,7 @@ from vnext_test_database import (
     open_generated_database,
 )
 
+import h2hdb.vnext_analysis_repository as analysis_module
 import h2hdb.vnext_ingest_analysis as orchestration
 from h2hdb import (
     CoreConfig,
@@ -165,6 +166,54 @@ def test_reused_plan_page_preparation_opens_no_database_connection(
             fault.setattr(MariaDBConnector, "__init__", reject_connection)
             step = driver.prepare_analysis_step(prepared, next_issue)
         assert driver.commit_analysis_step(session, step).processed_rows == 1
+
+
+@pytest.mark.parametrize("mutation", ("close", "metadata"))
+def test_commit_rechecks_plan_after_database_authority_wait(
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    path = database_factory.config(str(tmp_path / "commit-plan-mutation.sqlite3"))
+    driver, session, prepared, issued, _build = _start(path)
+    original = analysis_module._prepare_batch
+    with prepared, database_connector(path) as connector:
+        step = driver.prepare_analysis_step(prepared, issued)
+        plan = prepared._machine.validation_plan
+        assert plan is not None
+        before = inspect_all(
+            connector,
+            "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
+            (_STAGE,),
+        )
+        mutated = False
+
+        def mutate_after_authority(*args: Any, **kwargs: Any) -> Any:
+            nonlocal mutated
+            result = original(*args, **kwargs)
+            assert not mutated
+            mutated = True
+            # This callback models another owner changing process-local state
+            # while the commit waits for its database fence/authority reads.
+            if mutation == "close":
+                plan.close()
+            else:
+                plan.row_count += 1
+            return result
+
+        monkeypatch.setattr(analysis_module, "_prepare_batch", mutate_after_authority)
+        with pytest.raises(ValueError, match="plan is closed|metadata was modified"):
+            driver.commit_analysis_step(session, step)
+        assert mutated
+        assert (
+            inspect_all(
+                connector,
+                "SELECT * FROM catalog_analysis_checkpoints WHERE stage = %s",
+                (_STAGE,),
+            )
+            == before
+        )
 
 
 def test_reissued_committed_batch_carries_actual_prefix_from_its_start_cursor(
