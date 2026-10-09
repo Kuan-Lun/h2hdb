@@ -304,6 +304,13 @@ role；本局部實驗不宣稱 index-backed Compose 或 production 已驗收。
 
 本節建立時尚未量測或採用實作；結果與持久證據於同一任務內補入。
 
+補充形狀（執行前固定，原預算不變）：原 fixture 每 key 在 baseline ancestry
+只存一份 family，另量測 4,096 retained／requested keys、8 個 baseline layers
+每層每 key 都有完整 shadow 的高歷史改寫密度，current inherited reuse 為 95%／0%。
+另以兩個不重疊的 17-layer roots、128 keys、每層完整 family 檢查最大聯集的
+Python peak 與局部 CPU 成本。此補充只支持已測密度／規模，不冒稱 32,768 dense
+keys 或完整 source 分布已驗證；仍用三循環及同一原始 baseline 比較。
+
 ## 下一輪入口
 
 接續時先核對七個 workspace 的可用性、來源基線與政策，再細讀當輪相關範圍。
