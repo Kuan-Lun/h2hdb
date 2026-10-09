@@ -270,6 +270,40 @@ Core `git diff --stat 13e9277 HEAD` 僅有本紀錄，
 及 exact candidate receipt 核對，不預寫通過。未執行 runtime、MariaDB、deep、成本、
 跨套件 wheel resolution、Compose build／隔離流程或 production 驗收。
 
+## R01：同交易 family 讀取實驗（2026-10-09）
+
+實驗前基線為 Core `041f707`／Ingest `c5a6967`。候選只合併同一次呼叫內
+baseline/current ancestry 的 family 讀取；兩個 fresh layout 檢查、各自解析順序及
+既有 17-layer／128-key 上限保留，不跨交易或 issue／prepare／commit 快取。
+公開 facade、schema、telemetry 與部署介面預期不變；若採用 runtime 修改，
+候選 Core 為 `0.45.7`，四個 role 的 `>=0.43.0,<0.46.0` 皆容納它。
+Ingest 是直接 analysis consumer，需驗證既有 orchestration/session 契約；OPDS、
+Komga sync、Downloader 與 hbrowser 的介面未預定修改。部署共用 build 仍包含四個
+role；本局部實驗不宣稱 index-backed Compose 或 production 已驗收。
+
+事前固定的局部成本契約如下，不依候選測得平均調高預算：
+
+- 每頁 K ≤ 128；每個 root ancestry ≤ 17，兩個 root 的去重聯集 U ≤ 34。
+  非空 root 各保留 2 個 layout SQL；family SQL 為 `2 * ceil(U / 17)`，
+  返回的 requested-grid rows 為 `2 * K * U`，singleton probes 至多 `6 * K * U`。
+  同一次 pair 讀取不得重讀相同 ancestry/key coordinate；恢復原雙讀作退化反例。
+- 小型涵蓋 1／127／128／129（跨頁）／257 keys；主要局部規模為 4,096／32,768
+  retained decision keys，當輪完整驗證同等 key 數。另以固定 128 keys 比較兩種
+  retained 規模，檢查無關資料成長不增加 point-read 工作。
+- 涵蓋 genesis、baseline depth 1／8／16 的 overlay、policy-change self-only、
+  baseline 17 layers 的 depth-16 compaction；34-layer 非 suffix 邊界只作有界
+  正確性案例。Inherited-value reuse 分別 0%／95%，不得混稱跨 gallery hash 重用率。
+  本 fixture 使用已聚合 artist scalar 分布，並不冒充完整 source artist 分布；
+  故結果只支持 family 讀取熱點，public pipeline 正確性另由既有測試驗證。
+- SQLite／MariaDB 分開量測，在同資料上交替 baseline/candidate，各至少三次完整循環。
+  報告 SQL/native work、固定與逐 key local CPU、elapsed、Python peak memory。
+  本機新增的回歸預算為每次 pair Python peak ≤ 8 MiB、CPU ≤ 1 ms/key、
+  elapsed ≤ 5 ms/key；它們是本候選的固定驗收預算，不是既有全管線 SLO。
+  中大型重疊形狀的 candidate median wall 必須低於 baseline，才能宣稱本機淨收益。
+  非重疊案例記錄新增成本，不能以漸近改善或小型查詢減少代替主要規模實測。
+
+本節建立時尚未量測或採用實作；結果與持久證據於同一任務內補入。
+
 ## 下一輪入口
 
 接續時先核對七個 workspace 的可用性、來源基線與政策，再細讀當輪相關範圍。
@@ -298,9 +332,15 @@ missing layout、checkpoint/replay 的拒絕契約；不得跨 issue／prepare�
 - 本輪完成前回寫候選、範圍審核狀態與下一個入口；只改 ledger 不代表 runtime 通過。
   實作 commit 可先記錄，最後 merge 由 Git history 核對，避免自我引用 commit hash。
 
-調查輪完成指該單元有可核對的結論與下一步，不代表其所屬範圍已全部審核。
-實作輪完成另需相關 repository 整合與必要驗收的真實證據；待整合、待實驗、
-待決策或缺少證據的候選仍未完成。沒有收益的候選可以具體理由結案，不強行修改。
+預設一輪完成一個候選的完整處置：先說明具體修改方案、預期收益及驗證方法，
+完成相稱的調查／實驗；證據支持採用時接續實作、必要驗收、整合及受影響範圍重查。
+充分證據支持拒絕或保留時，可附理由與重開條件結案，不強迫修改或刪碼。
+調查是候選內的步驟，列出下一步、提交文件或上下文壓縮都不是正常停止條件；
+有資料、能力與既有授權可繼續時，接著完成待辦，不把「尚未驗證」當成結案。
+使用者明確要求只分析或查進度時，依指定範圍交付；因實際阻礙或使用者限制而
+中斷時，保存已完成工作、具體阻礙及恢復入口，保持未完成狀態。
+待整合、待實驗、待決策或缺少必要證據的候選仍未完成；單一候選結案也不代表
+其所屬範圍或全系統已審核完成。既有授權內的工作不逐步要求再次確認。
 
 可重用 [驗證說明](../verification/README.md)、[語意證據索引](../verification/invariants.toml)、
 [Core SQL 成本工具](../scripts/check-ingest-database-performance.py)，以及 Ingest 的
