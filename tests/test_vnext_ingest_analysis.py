@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -407,33 +408,28 @@ def test_renewed_receipt_is_accepted_but_foreign_authority_is_rejected(
             )
     finally:
         connector.close()
+    renewed = _session(renewed_gate, renewed_turn)
+    assert facade.issue_analysis_step(renewed, prepared) is issued
     result = facade.commit_analysis_step(
-        _session(renewed_gate, renewed_turn),
+        renewed,
         local,
     )
     assert isinstance(result, VNextAnalysisAdvanceResult)
     assert result.analysis_id
 
-    next_issue = facade.issue_analysis_step(
-        _session(renewed_gate, renewed_turn),
-        prepared,
-    )
+    next_issue = facade.issue_analysis_step(renewed, prepared)
     next_local = facade.prepare_analysis_step(prepared, next_issue)
-    foreign = VNextIngestSession(
-        renewed_gate.owner_token,
-        renewed_gate.gate_generation,
-        renewed_gate.slots[0],
-        renewed_gate.lease_expires_at,
-        renewed_turn.generation,
-        b"x" * 16,
-        renewed_turn.lease_expires_at,
-        None,
-        None,
-        None,
-        None,
-    )
-    with pytest.raises(ValueError, match="another ingest session"):
-        facade.commit_analysis_step(foreign, next_local)
+    for foreign in (
+        replace(renewed, gate_owner_token=b"x" * 16),
+        replace(renewed, gate_generation=renewed.gate_generation + 1),
+        replace(renewed, gate_slot=(renewed.gate_slot + 1) % 64),
+        replace(renewed, ingest_generation=renewed.ingest_generation + 1),
+        replace(renewed, ingest_owner_token=b"x" * 16),
+    ):
+        with pytest.raises(ValueError, match="^analysis step belongs to another"):
+            facade.issue_analysis_step(foreign, prepared)
+        with pytest.raises(ValueError, match="^analysis step belongs to another"):
+            facade.commit_analysis_step(foreign, next_local)
     prepared.close()
 
 

@@ -25,6 +25,7 @@ from enum import StrEnum
 from time import time_ns
 from typing import TypeVar
 
+from ._ingest.validation import require_same_session_authority
 from .domain import VNextIngestSession, VNextResolvedIngestPolicy
 from .ingest_performance import describe_ingest_step, prepare_ingest_operation
 from .repository import RepositoryContext
@@ -385,7 +386,7 @@ class VNextIngestAnalysisOrchestrator:
         analysis = _require_prepared_analysis(prepared)
         active = analysis._active_issue
         if active is not None:
-            _require_same_session_authority(active._session, session)
+            require_same_session_authority(active._session, session, step="analysis")
             self.__write(lambda work: _resume_authority(work, session, self.__clock()))
             _describe_analysis_step(active)
             return active
@@ -547,7 +548,7 @@ class VNextIngestAnalysisOrchestrator:
             or analysis._active_step is not prepared_step
         ):
             raise ValueError("prepared analysis step is stale")
-        _require_same_session_authority(issued._session, session)
+        require_same_session_authority(issued._session, session, step="analysis")
         gate, turn = _repository_authority(session)
         _describe_analysis_step(issued)
         action = prepared_step._action
@@ -1013,31 +1014,6 @@ def _resume_authority(
     timestamp = require_int63(now, field="analysis issue authorization now")
     MaintenanceGateRepository.resume(work, gate, now=timestamp)
     IngestFenceRepository.lock_and_require_live(work, turn, now=timestamp)
-
-
-def _session_authority_identity(session: VNextIngestSession) -> tuple[object, ...]:
-    if not isinstance(session, VNextIngestSession):
-        raise TypeError("session must be VNextIngestSession")
-    session.__post_init__()
-    return (
-        session.gate_owner_token,
-        session.gate_generation,
-        session.gate_slot,
-        session.ingest_generation,
-        session.ingest_owner_token,
-        session.download_generation,
-        session.handoff_owner_token,
-        session.handoff_kind,
-        session.consumed_at,
-    )
-
-
-def _require_same_session_authority(
-    issued: VNextIngestSession,
-    current: VNextIngestSession,
-) -> None:
-    if _session_authority_identity(issued) != _session_authority_identity(current):
-        raise ValueError("analysis step belongs to another ingest session authority")
 
 
 def _token16(value: bytes, *, field: str) -> bytes:

@@ -18,6 +18,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
+from ._ingest.validation import require_named_page, require_tag_page
 from .domain import (
     ArtifactSourceRole,
     DirectoryObservation,
@@ -1076,7 +1077,7 @@ class FrozenSourceObservationSpool:
                 )
             else:  # pragma: no cover - private caller is closed above
                 raise AssertionError("named component must be FILE or DIRECTORY")
-            next_after = _require_named_page(
+            next_after = require_named_page(
                 page,
                 after=after,
                 capacity=capacity,
@@ -1117,7 +1118,7 @@ class FrozenSourceObservationSpool:
                 after_ordinal=after,
                 limit=256,
             )
-            next_after = _require_tag_page(page, after=after)
+            next_after = require_tag_page(page, after=after)
             builder.append_page(page.items, terminal=page.terminal)
             self._store_page(
                 position=position,
@@ -1305,59 +1306,6 @@ class FrozenSourceObservationSpool:
             raise FrozenSourceObservationError(
                 "source observation failed; close the spool and restart the scan"
             )
-
-
-def _require_named_page(
-    page: VNextIngestPage[Any],
-    *,
-    after: bytes | None,
-    capacity: int,
-    label: str,
-) -> bytes | None:
-    if not isinstance(page, VNextIngestPage):
-        raise TypeError(f"{label} adapter must return VNextIngestPage")
-    page.__post_init__()
-    if not page.terminal and len(page.items) != capacity:
-        raise ValueError(f"nonterminal {label} page must contain {capacity} items")
-    if page.terminal and not page.items and after is not None:
-        raise ValueError(f"nonempty {label} streams cannot end with an empty page")
-    prior = after
-    for item in page.items:
-        name = getattr(item, "name_bytes", None)
-        if not isinstance(name, bytes):
-            raise TypeError(f"{label} observation must expose bytes name_bytes")
-        if prior is not None and name <= prior:
-            raise ValueError(f"{label} page keys must be strictly increasing")
-        prior = name
-    if page.terminal:
-        return None
-    if not isinstance(page.next_after, bytes):
-        raise TypeError(f"{label} next_after must be bytes")
-    if not page.items or page.next_after != getattr(page.items[-1], "name_bytes"):
-        raise ValueError(f"{label} next_after must equal the last item key")
-    return page.next_after
-
-
-def _require_tag_page(
-    page: VNextIngestPage[Any],
-    *,
-    after: int | None,
-) -> int | None:
-    if not isinstance(page, VNextIngestPage):
-        raise TypeError("TAG adapter must return VNextIngestPage")
-    page.__post_init__()
-    if not page.terminal and len(page.items) != 256:
-        raise ValueError("nonterminal TAG page must contain 256 items")
-    if page.terminal and not page.items and after is not None:
-        raise ValueError("nonempty TAG streams cannot end with an empty page")
-    if page.terminal:
-        return None
-    if not isinstance(page.next_after, int):
-        raise TypeError("TAG next_after must be an ordinal")
-    start = 0 if after is None else after + 1
-    if page.next_after != start + len(page.items) - 1:
-        raise ValueError("TAG next_after must equal the last page ordinal")
-    return page.next_after
 
 
 def _iter_metadata_chunks(

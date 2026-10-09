@@ -919,13 +919,20 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
         now = 110
         renewed = facade.renew_ingest(session, 1_000)
         assert renewed.ingest_lease_expires_at == 1_110
+        assert facade.issue_source_step(renewed, policy, source) is issued
         with database_connector(config) as raw_database:
             before_forgery = snapshot_rows(raw_database)
-        with pytest.raises(ValueError, match="another ingest session"):
-            facade.commit_source_step(
-                replace(renewed, ingest_owner_token=b"x" * 16),
-                local,
-            )
+        for foreign in (
+            replace(renewed, gate_owner_token=b"x" * 16),
+            replace(renewed, gate_generation=renewed.gate_generation + 1),
+            replace(renewed, gate_slot=(renewed.gate_slot + 1) % 64),
+            replace(renewed, ingest_generation=renewed.ingest_generation + 1),
+            replace(renewed, ingest_owner_token=b"x" * 16),
+        ):
+            with pytest.raises(ValueError, match="^source step belongs to another"):
+                facade.issue_source_step(foreign, policy, source)
+            with pytest.raises(ValueError, match="^source step belongs to another"):
+                facade.commit_source_step(foreign, local)
         with database_connector(config) as raw_database:
             assert snapshot_rows(raw_database) == before_forgery
 

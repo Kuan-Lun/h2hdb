@@ -35,6 +35,11 @@ from threading import Lock
 from time import time_ns
 from typing import TypeVar
 
+from ._ingest.validation import (
+    require_named_page,
+    require_same_session_authority,
+    require_tag_page,
+)
 from .config_loader import CoreConfig
 from .database_performance import (
     DatabasePerformance,
@@ -959,7 +964,7 @@ class VNextIngestFacade:
                 raise ValueError("prepared source is bound to another ingest policy")
             active = source._active_issue
             if active is not None:
-                _require_same_session_authority(active._session, session)
+                require_same_session_authority(active._session, session, step="source")
                 self.__write(
                     lambda work: _resume_authority(work, session, self.__clock())
                 )
@@ -1278,7 +1283,7 @@ class VNextIngestFacade:
             or source._active_step is not prepared_step
         ):
             raise ValueError("prepared source step is stale")
-        _require_same_session_authority(issued._session, session)
+        require_same_session_authority(issued._session, session, step="source")
         gate, turn = _repository_authority(session)
         machine = source._machine
         action = prepared_step._action
@@ -2688,31 +2693,6 @@ def _same_resolved_policy(
     )
 
 
-def _session_authority_identity(session: VNextIngestSession) -> tuple[object, ...]:
-    if not isinstance(session, VNextIngestSession):
-        raise TypeError("session must be VNextIngestSession")
-    session.__post_init__()
-    return (
-        session.gate_owner_token,
-        session.gate_generation,
-        session.gate_slot,
-        session.ingest_generation,
-        session.ingest_owner_token,
-        session.download_generation,
-        session.handoff_owner_token,
-        session.handoff_kind,
-        session.consumed_at,
-    )
-
-
-def _require_same_session_authority(
-    issued: VNextIngestSession,
-    current: VNextIngestSession,
-) -> None:
-    if _session_authority_identity(issued) != _session_authority_identity(current):
-        raise ValueError("source step belongs to another ingest session authority")
-
-
 def _resume_authority(
     work: VNextUnitOfWork,
     session: VNextIngestSession,
@@ -2790,7 +2770,7 @@ def _prepare_observation_component(
             after_name_bytes=machine.file_after,
             limit=256,
         )
-        file_next_after = _require_named_component_page(
+        file_next_after = require_named_page(
             file_page,
             after=machine.file_after,
             capacity=256,
@@ -2806,7 +2786,7 @@ def _prepare_observation_component(
             after_name_bytes=machine.directory_after,
             limit=192,
         )
-        directory_next_after = _require_named_component_page(
+        directory_next_after = require_named_page(
             directory_page,
             after=machine.directory_after,
             capacity=192,
@@ -2826,7 +2806,7 @@ def _prepare_observation_component(
             after_ordinal=machine.tag_after,
             limit=256,
         )
-        tag_next_after = _require_tag_component_page(
+        tag_next_after = require_tag_page(
             tag_page,
             after=machine.tag_after,
         )
@@ -2849,59 +2829,6 @@ def _prepare_observation_component(
             None,
         )
     raise RuntimeError(f"{action.value} is not an observation component action")
-
-
-def _require_named_component_page(
-    page: VNextIngestPage[object],
-    *,
-    after: bytes | None,
-    capacity: int,
-    label: str,
-) -> bytes | None:
-    if not isinstance(page, VNextIngestPage):
-        raise TypeError(f"{label} adapter must return VNextIngestPage")
-    page.__post_init__()
-    if not page.terminal and len(page.items) != capacity:
-        raise ValueError(f"nonterminal {label} page must contain {capacity} items")
-    if page.terminal and not page.items and after is not None:
-        raise ValueError(f"nonempty {label} streams cannot end with an empty page")
-    prior = after
-    for item in page.items:
-        name = getattr(item, "name_bytes", None)
-        if not isinstance(name, bytes):
-            raise TypeError(f"{label} observation must expose bytes name_bytes")
-        if prior is not None and name <= prior:
-            raise ValueError(f"{label} page keys must be strictly increasing")
-        prior = name
-    if page.terminal:
-        return None
-    if not isinstance(page.next_after, bytes):
-        raise TypeError(f"{label} next_after must be bytes")
-    if not page.items or page.next_after != getattr(page.items[-1], "name_bytes"):
-        raise ValueError(f"{label} next_after must equal the last item key")
-    return page.next_after
-
-
-def _require_tag_component_page(
-    page: VNextIngestPage[object],
-    *,
-    after: int | None,
-) -> int | None:
-    if not isinstance(page, VNextIngestPage):
-        raise TypeError("TAG adapter must return VNextIngestPage")
-    page.__post_init__()
-    if not page.terminal and len(page.items) != 256:
-        raise ValueError("nonterminal TAG page must contain 256 items")
-    if page.terminal and not page.items and after is not None:
-        raise ValueError("nonempty TAG streams cannot end with an empty page")
-    if page.terminal:
-        return None
-    if not isinstance(page.next_after, int):
-        raise TypeError("TAG next_after must be an ordinal")
-    start = 0 if after is None else after + 1
-    if page.next_after != start + len(page.items) - 1:
-        raise ValueError("TAG next_after must equal the last page ordinal")
-    return page.next_after
 
 
 def _resume_staging_machine(

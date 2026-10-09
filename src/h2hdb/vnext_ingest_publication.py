@@ -32,6 +32,7 @@ from threading import Event, Lock
 from time import time_ns
 from typing import Protocol, cast, runtime_checkable
 
+from ._ingest.validation import require_same_session_authority
 from .domain import (
     ArtifactReleaseStorageEvidence,
     CatalogResourceKind,
@@ -1159,7 +1160,9 @@ class VNextIngestPublication:
 
         self.__require_open()
         exact = _require_prepared(prepared)
-        _require_same_session_authority(exact._issued._session, session)
+        require_same_session_authority(
+            exact._issued._session, session, step="publication"
+        )
         gate, coordinated = _repository_authority(session)
         describe_ingest_step(
             operation=exact._issued._action.value,
@@ -3157,31 +3160,6 @@ def _resume_authority(
         current.ingest_turn.generation,
         field="publication ingest generation",
     )
-
-
-def _session_identity(session: VNextIngestSession) -> tuple[object, ...]:
-    if not isinstance(session, VNextIngestSession):
-        raise TypeError("session must be VNextIngestSession")
-    session.__post_init__()
-    return (
-        session.gate_owner_token,
-        session.gate_generation,
-        session.gate_slot,
-        session.ingest_generation,
-        session.ingest_owner_token,
-        session.download_generation,
-        session.handoff_owner_token,
-        session.handoff_kind,
-        session.consumed_at,
-    )
-
-
-def _require_same_session_authority(
-    issued: VNextIngestSession,
-    current: VNextIngestSession,
-) -> None:
-    if _session_identity(issued) != _session_identity(current):
-        raise ValueError("publication step belongs to another ingest session authority")
 
 
 def _renew_finalization_page(
