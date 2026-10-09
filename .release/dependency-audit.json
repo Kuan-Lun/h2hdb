@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-09T14:42:10+00:00",
+  "checked_at": "2026-10-09T16:02:15+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.7",
+  "project_version": "0.45.8",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all registry candidates against the 0.45.6 receipt and installed Python 3.14 toolchain. Pydantic 2.14.0 is the only new direct candidate; reviewed https://github.com/pydantic/pydantic/releases/tag/v2.14.0 including enum construction and model_config handling. Core uses frozen ConfigDict with no model_config mutation; its four configuration tests passed with isolated Pydantic 2.14.0. Remaining direct versions are unchanged and within existing justified bounds. No dependency declarations changed. Full release gate and candidate-wheel consumer validation are separate evidence and are not asserted by this receipt.",
+    "note": "Reviewed every registry candidate against the 0.45.7 receipt: all latest direct Python and Node versions are unchanged and remain inside the existing justified bounds. R02 consolidates private ingest validation without dependency, public API, schema, protocol, or platform changes. The previous exact-tree gate validated this dependency cohort; this task has also passed 90 targeted non-MariaDB tests. MariaDB, candidate-wheel consumer validation, and the final full gate are separate evidence, not asserted by this audit.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

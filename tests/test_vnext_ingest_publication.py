@@ -560,13 +560,18 @@ def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = _session(expires_at=100)
+    original = replace(
+        _session(expires_at=100),
+        download_generation=1,
+        handoff_owner_token=b"h" * 16,
+        handoff_kind="DOWNLOADER",
+        consumed_at=10,
+    )
     renewed = replace(
         original,
         gate_lease_expires_at=200,
         ingest_lease_expires_at=200,
     )
-    foreign = replace(renewed, ingest_owner_token=b"x" * 16)
     root = publication._Root(
         b"b" * 16,
         b"a" * 16,
@@ -614,11 +619,26 @@ def test_renewed_session_is_accepted_but_foreign_owner_is_rejected(
             finalization_adapters={},
             library_activation=adapter,
         )
-    with pytest.raises(ValueError, match="another ingest session authority"):
-        machine.commit_step(
-            foreign,
-            foreign_prepared,
-        )
+    for foreign in (
+        replace(renewed, gate_owner_token=b"x" * 16),
+        replace(renewed, gate_generation=2),
+        replace(renewed, gate_slot=1),
+        replace(renewed, ingest_generation=2),
+        replace(renewed, ingest_owner_token=b"x" * 16),
+        replace(renewed, download_generation=2),
+        replace(renewed, handoff_owner_token=b"x" * 16),
+        replace(renewed, handoff_kind="EXPIRED_TAKEOVER"),
+        replace(renewed, consumed_at=11),
+        replace(
+            renewed,
+            download_generation=None,
+            handoff_owner_token=None,
+            handoff_kind=None,
+            consumed_at=None,
+        ),
+    ):
+        with pytest.raises(ValueError, match="^publication step belongs to another"):
+            machine.commit_step(foreign, foreign_prepared)
     foreign_prepared.close()
 
 

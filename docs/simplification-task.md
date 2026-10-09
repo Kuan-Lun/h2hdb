@@ -3,10 +3,14 @@
 這是跨對話接續用的任務範圍、候選與驗收狀態，不是第二份代理政策。
 政策以各 repository 的 `AGENTS.md` 為準；Core 入口為 [AGENTS.md](../AGENTS.md)。
 目標是六個自有程式 repository 與部署 workspace 的整體精簡：先檢查功能必要性、
-責任、狀態與重複工作，再決定是否拆包；LOC 減幅不是目標。
+責任、狀態與重複工作，刪除不必要實作並降低維護負擔。分開記錄 runtime、tests、
+dev tooling 與 generated code 的增減；LOC 不是唯一指標，但不能以搬檔或加速冒充減碼。
+優先在正確 ownership 的 repository 內建立內聚子套件；只有獨立使用／發布邊界
+和淨收益成立時才考慮 PyPI 拆包，不把相同 schema、交易或生命週期切成多個發行單位。
 2026-10-09 使用者將原 Core／Ingest 計畫擴至整套系統，其他 workspace 也需主動審核。
-範圍擴充已整合；R01 同交易 family 重讀已完成實驗並採用，正進行本輪整合。
-第二次 page verification 經故障反例確認保留；全系統審核與拆包決策仍未完成。
+範圍擴充與 R01 同交易 family 共讀已整合；R01 是效能改善，runtime 淨增 30 行。
+R02 已實作共用 session／page validation，runtime 淨減 83 行，本節寫入時待正式整合。
+第二次 page verification 經故障反例確認保留；全系統審核與模組邊界決策仍未完成。
 
 ## 已核對基線
 
@@ -52,6 +56,12 @@ Ingest 另有乾淨的 `feat/page-worker-decision-log` worktree（`d7c8ef7b`，�
 兩者均保留，不推定其工作已失效或接管；本輪只讀上表來源、只修改 Core 本紀錄，
 未修改它們的程式範圍。部署 P01–P07 的 23 檔 hash 重算與既有摘要相同。
 
+以上為歷史盤點。R02 的 Core 基線為 `e9422d788217a25ef56fefea3b25946670e458f0`
+（`0.45.7`），已含 R01 實作、code review 與有效 full release receipt；其他五庫
+仍為上表 ref。六個主要 checkout 開始時乾淨，既有非本任務 branch／worktree 保留。
+R02 新增兩個 private Python 模組歸 C04，Core 模組由 94 增為 96；新增目錄本身
+不算減碼成果，完整 source delta 見 R02。前次 LOC／部署摘要保留為歷史基線。
+
 ## 已知與未證實
 
 - 已知：上述歷史差異、模組盤點及 R02 的相同函式 body 可由 Git source 核對。
@@ -86,7 +96,7 @@ Komga Java server、H@H、galleryinfo parser 及其他第三方套件是外部�
 | 階段 | 工作範圍 | 目前狀態 |
 | --- | --- | --- |
 | S0 | 七個 workspace 的來源與依賴盤點 | 本次建立基線；功能必要性仍未審核 |
-| S1 | Core／Ingest 的責任、狀態與重複工作 | R01 family 共讀採用、第二次 verify 保留；本輪待整合，其餘範圍未完成 |
+| S1 | Core／Ingest 的責任、狀態與重複工作 | R01 family 共讀已整合、第二次 verify 保留；R02 共用 validation 採用待整合，其餘範圍未完成 |
 | S2 | OPDS、Komga sync、Downloader、hbrowser 的自身設計 | 待審核；不以 S1 是否碰到它們作為啟動條件 |
 | S3 | 部署控制流程與跨 repository 工程工具重複責任 | 待審核；按實際契約和維護成本選單元 |
 | S4 | 全系統重查與逐項拆包決定 | 待 S1–S3 的證據；不是自動發布套件 |
@@ -100,8 +110,9 @@ S1 是優先順序，不是其他範圍的豁免。相依介面有變更時，�
 下列模式匹配相對 package root 的路徑、不含 `.py`。
 Core／Ingest／OPDS／Komga／Downloader 根各為 `src/h2hdb*` 的對應 package；
 hbrowser 根為 `hbrowser/`，保留 `gallery/` 等子路徑。
-分組覆蓋 94／48／23／7／3／49 個模組，基線中無重複或遺漏。
-C02／C04 與 I04 已局部追蹤 R01 呼叫路徑，所有分組的完整審核仍未完成。
+分組原基線覆蓋 94／48／23／7／3／49 個模組，無重複或遺漏；下表 C04 已納入
+R02 的兩個新模組，Core 現為 96。C02／C04 與 I04 已局部追蹤 R01 呼叫路徑，
+C01／C04 補入 R02 驗證邊界；所有分組的完整審核仍未完成。
 新增模組或 HEAD 變動時，差異仍待分類；候選表不取代完整範圍清單。
 
 | ID | 功能範圍 | 數量 | 模組模式 |
@@ -109,7 +120,7 @@ C02／C04 與 I04 已局部追蹤 R01 呼叫路徑，所有分組的完整審核
 | C01 | Source、observation、staging | 16 | `vnext_source_*`, `vnext_gallery_staging_*`, `vnext_gallery_identity_repository`, `vnext_manifest_family` |
 | C02 | Analysis、decision、hash reuse | 8 | `vnext_analysis_*`, `vnext_file_decision_validation_plan`, `vnext_hash_cache_repository` |
 | C03 | Publication、artifact、activation | 10 | `vnext_publication_*`, `vnext_artifact_*`, `vnext_library_activation_repository` |
-| C04 | 公開 orchestration／facades | 4 | `vnext_ingest_facade`, `vnext_ingest_analysis`, `vnext_ingest_publication`, `vnext_facade` |
+| C04 | 公開 orchestration／facades 與 private ingest validation | 6 | `vnext_ingest_facade`, `vnext_ingest_analysis`, `vnext_ingest_publication`, `vnext_facade`, `_ingest/*` |
 | C05 | Cleanup、canonical persistence | 5 | `vnext_cleanup_*`, `vnext_canonical_value_*`, `vnext_canonical_consumer` |
 | C06 | Coordination、queue、transaction | 10 | `vnext_allocator_repository`, `vnext_download_ingest_repository`, `vnext_ingest_fence_repository`, `vnext_ingest_policy_repository`, `vnext_maintenance_gate_repository`, `vnext_operational_event_repository`, `vnext_queue_repository`, `vnext_storage_instance_repository`, `vnext_transaction`, `vnext_state_machine_contract` |
 | C07 | Schema、validators、audit、capacity | 12 | `schema_*`, `vnext_schema_provider`, `_generated_vnext_schema`, `_schema_artifact_codec`, `catalog_refinement`, `operational_refinement`, `source_collection_refinement`, `catalog_writer`, `database_audit`, `vnext_physical_domains`, `vnext_capacity` |
@@ -174,13 +185,13 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
 
 狀態區分待審核、調查中、待實驗、待決策、採用待驗收、完成、拒絕、延期。
 拒絕與延期不是實作完成；保留理由及新證據下的重開條件。
-R01 下述兩個局部候選已取得採用／拒絕依據，本輪待整合；其他 analysis stages
-與其餘範圍仍未完成。正式整合狀態由 Git ancestry 與 exact-tree receipt 核對。
+R01 下述兩個局部候選已整合；R02 採用共用規則並保留各次驗證，待正式整合。
+其他 analysis stages 與其餘範圍仍未完成。整合狀態由 Git ancestry 與 receipt 核對。
 
 | ID | 候選／狀態 | 持久證據入口 | 結案或重開條件 |
 | --- | --- | --- | --- |
-| R01 | 同交易 family 共讀採用待整合；第二次 verify 保留，移除候選拒絕 | C02／C04、I04；下方實驗、故障反例與持久報告 | 相關 authority／plan ownership 改變或新工作負載違反局部契約時重開；其他 analysis stages 待審核 |
-| R02 | 相同 session／page predicates；待審核 | `vnext_ingest_facade.py`、`vnext_ingest_analysis.py`、`vnext_ingest_publication.py` 的 session identity；facade／source spool 的 named/tag page validators | 證明可共用規則且各信任邊界仍驗證；若語意不同則拒絕，日後語意收斂再開 |
+| R01 | 同交易 family 共讀已整合；第二次 verify 保留，移除候選拒絕 | C02／C04、I04；下方實驗、故障反例與持久報告；merge `e9422d7` | 相關 authority／plan ownership 改變或新工作負載違反局部契約時重開；其他 analysis stages 待審核 |
+| R02 | 相同 session／page predicates 共用；採用待正式整合 | C01／C04；`_ingest/validation.py`；下方雙 backend 與 consumer 驗證 | 各信任邊界保留驗證；authority 欄位、分頁語意或 caller lifecycle 改變時重查 |
 | R03 | READY audit／cleanup 重複工作；cleanup 已重現既有成本超標、待定位 | C05、C07；`catalog_refinement.py`、`vnext_cleanup_repository.py`；R01 全流程回歸報告 | 沿用既有預算定位可省工作；不得以 READY audit 通過覆蓋 cleanup 失敗 |
 | R04 | 純 codecs distribution；延期至邊界審核 | C08；`vnext_identity.py`、`catalog_search.py`、`catalog_writer.py`、`database_audit.py` | 先確認 byte／Unicode／guard ownership／audit 失效契約；邊界與收益成立後再決定拆包 |
 | R05 | Media distribution；待審核 | I02 與 I01／I03 使用點；Ingest `AGENTS.md` 的 ownership boundary | 先證明與 source authority、storage、journal 的可分離性及驗收範圍 |
@@ -279,6 +290,9 @@ Core `git diff --stat 13e9277 HEAD` 僅有本紀錄，
 跨套件 wheel resolution、Compose build／隔離流程或 production 驗收。
 
 ## R01：同交易 family 讀取實驗（2026-10-09）
+
+以下為整合前的實驗紀錄；後續已以 `e9422d7` 合併至 `master`，Core `0.45.7`，
+code review 與 full release receipt 有效。文內「待整合」不是目前阻礙。
 
 實驗前基線為 Core `041f707`／Ingest `c5a6967`。候選只合併同一次呼叫內
 baseline/current ancestry 的 family 讀取；兩個 fresh layout 檢查、各自解析順序及
@@ -454,23 +468,97 @@ Skill 也已修正並安裝：預設完成候選的實驗、採用／拒絕、�
 重新載入與獨立情境檢查通過；使用者明確只要分析仍不自動改碼，充分保留證據
 也可結案。Skill 是使用者環境的任務流程，沒有複製 repository 開發政策。
 
+## R02：共用 ingest validation
+
+基線為 Core `e9422d7`。使用者要求實際減少重複程式，並優先使用 repository 內部
+子套件；本輪不延伸 R01 效能工具或新增 PyPI 發行單位。採用
+`src/h2hdb/_ingest/validation.py` 作為規則唯一 owner，四個既有 callers 直接引用。
+Session 比較與 page cursor 規則同屬 ingest 邊界驗證；page 規則需要上頁 cursor、
+capacity 與 component context，不是 neutral domain value 本身的約束，因此沒有
+擴大 `domain.py` 或新增公開 API。Facade／spool 的交易和生命週期仍由原模組負責。
+
+| 項目 | 之前 | 之後／處置 |
+| --- | --- | --- |
+| Session authority identity／guard | source、analysis、publication 各一份 | 各只留一份共用實作；保留 source／analysis issue replay 與 commit，以及 publication commit 呼叫 |
+| Named／tag page validator | facade 與 observation spool 各一份 | 各只留一份；adapter freeze 與 frozen-page replay 各次仍驗證 |
+| 相同規則的函式數 | 10 | 4，刪除 6 份重複實作，不留下 shim 或 forwarding wrapper |
+| Runtime Python 實體行數 | 相對基線 | 淨減 83，包含新增 `_ingest/__init__.py` 與 validation module |
+| Tests Python 實體行數 | 相對基線 | 淨增 80；Python 合計淨減 3，不將測試排除後冒稱總減幅 |
+| Dev tooling／generated Python | 相對基線 | 都未變；未新增實驗 runner 或報告 archive |
+
+以 `git show e9422d7:<path>` 與 AST 比較，三份 session identity、兩份 named page、
+兩份 tag page 的函式 body 與共用 owner 一致。Guard 只將原 error prefix 改為明確
+`step` 參數；九個 authority 欄位、兩個 lease expiry 的排除、`__post_init__()`、
+容量、排序、terminal 與 cursor 規則均保留。這是 source 等價檢查，runtime 契約
+另由下列測試驗證；沒有宣稱 SQL 次數、端到端時間或清理成本改善。
+
+受影響測試檔為 `tests/test_vnext_ingest_public_contract.py`、
+`tests/test_vnext_ingest_analysis.py`、`tests/test_vnext_ingest_publication.py`、
+`tests/test_vnext_source_preflight_manifest.py`。前兩者補強 renewed session 的 issue
+replay／commit 與五個 gate／ingest authority 欄位偽造；publication fake 驗證全部
+九欄及 linked→unlinked 偽造，不能把此 fake 當成 live DB 證據。新增六種 page 案例
+涵蓋 FILE／DIRECTORY／TAG × adapter／replay，錯誤 cursor 必須在 durable staging
+checkpoint／request／receipt 變更前拒絕，失敗 source handle 也不能重新使用。
+
+上述四檔以 `.venv/bin/python -m pytest -n 0 --check-backend-pairs -q` 執行：
+`-m 'not mariadb'` 為 90 passed／51 deselected（37.87 s）；
+`H2HDB_TEST_MARIADB=1` 配 `-m mariadb` 為 51 passed／90 deselected（169.05 s）。
+沒有 skip；每個新增可攜 page 案例均在兩個實際 backend 執行，database snapshot
+也使用所選 backend。Targeted Ruff、format、strict mypy 與 `git diff --check` 通過。
+
+重新讀取實際 Compose／Dockerfile／resolver 及四個 consumer dependency range，
+候選 Core `0.45.8` 在現有 `>=0.43.0,<0.46.0` 內。公開 facade、immutable values、
+schema、protocol、telemetry、dependency range 與平台支援未變；只有 Core 實作與
+測試需修改，Ingest 是直接 consumer。
+
+乾淨 venv 以 `uv pip install --refresh --python VENV/bin/python CORE_WHEEL
+h2hdb-ingest[dev]@file://INGEST_WHEEL` 正常解析 43 packages，未用 `--no-deps`；
+Core `0.45.8`、Ingest `0.30.3`、Pydantic `2.14.0`、galleryinfo parser `0.5.3`，
+`uv pip check` 通過。Core wheel SHA-256：
+`93aa60ef69e987d246e2cbe2ead88c4231930aa79e538b2498254d96a8fa7fff`；
+Ingest wheel SHA-256 與 R01 相同，49 package files 仍與 `c5a6967` source 一致。
+Core 98／Ingest 49 package files 的 wheel／source／installed bytes 和 METADATA
+均核對，兩個新 `_ingest` 檔案已包含；`direct_url.json` 的來源亦核對。
+在 Ingest checkout 清除 `PYTHONPATH` 後，以此 venv 的 `python -B -m pytest
+-p no:cacheprovider -o addopts= -n 0 -m 'not deep'` 執行 `tests/test_service_vnext.py`、`tests/test_session_vnext.py`、
+`tests/test_config.py`、`tests/test_filesystem_vnext.py`、`tests/test_source_reread.py`：
+300 passed、0 skip、1 deep deselected（3.32 s）。前兩檔是 fake Core 邊界，後兩檔
+涵蓋實際 filesystem adapter 的 named／tag pages 和 255／256／257 容量，不是 live
+Core SQL 證據。這個明確 candidate wheel 取代 index Core；不據此判定 index 發布狀態
+或宣稱正式 Compose 已可部署。測試可由上述 refs、wheels 與命令重建。
+
+本次以品質優先選擇單一規則 owner，未以最小修改或向後相容限制設計；結果為
+「品質優先後恰好向後相容」。沒有公開行為或資料格式變更、沒有 compatibility
+path 移除；刪除的是未公開的重複 helper，沒有相容 shim。Shipped runtime 變更需
+patch 升版 `0.45.7`→`0.45.8`。重新查詢 registry 並人工審閱 dependency audit：
+所有 Python／Node 直接依賴最新版與前次 receipt 相同，未改任何依賴宣告。
+
+本節寫入時仍待正式 code review／full merge gate；以本節的實作 commit、Git
+ancestry 與 exact-tree receipts 核對完成狀態，不預寫通過。沒有 cleanup、compaction、
+交易快取或部署組合變更，因此不重新執行 cleanup-acceptance、效能基準、完整 deep、
+Compose build／隔離發布流程或 production 驗收；本輪不宣稱部署可用或效能達標。
+下次只在相關 source 變更時重開 R02，不將已消除的重複規則再列成待調查項目。
+
 ## 下一輪入口
 
 接續時先核對七個 workspace 的來源、政策、Git ancestry 與本輪 exact-tree receipt。
-本輪未整合時先完成既有 branch；整合完成後不要重做已結案的 ancestry 共讀實驗。
-下一個優先單元為 C01 source 成本：下方完整流程的 128-gallery append 在舊／新版
-都超過既有 SQL 預算。從成本報告的 source SQL attribution 與
-`vnext_source_*`／`vnext_gallery_staging_*` 呼叫者，固定可省的工作及反例，
-沿用既有預算後實驗並完成採用或拒絕；若需要擴充資料形狀，先寫入成本契約。
-R03 cleanup 的 replacement 超標也需定位，不能宣稱 R01 局部加速已解決它。
-本輪的 128-gallery pipeline 只作完整流程成本回歸，不代替下一輪中大型驗收。
-R02、R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未完成，
-不得從總範圍刪除。每輪以一個內聚候選完成處置，不因只更新文件而提早停止。
+R02 未整合時先完成 `refactor/r02-ingest-validation`；整合後不要重做 R01／R02。
+下一個優先單元是 R07：比較 Ingest `library.py` 的 `_marker_payload`、
+`_quarantine_leaf` 與 `library_relocation.py` 的 `_publication_marker`、`_quarantine`。
+從實際格式、hash framing、檔案生命週期和錯誤語意確認重複規則；若可共用，放在
+Ingest 內部的正確 owner，保留 write／relocation 各自的必要驗證並完成測試及整合。
+若不能共用，給出具體差異及保留證據，不為了減行破壞責任邊界。
+R14 source SQL 與 R03 cleanup 仍是已知成本未達標事項；保留原預算與重新驗收要求，
+但使用者現在優先要求程式精簡，不能再默認以效能工具增量代替減碼工作。
+R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未完成，不得從
+總範圍刪除。每輪以一個內聚候選完成處置，不因只更新文件而提早停止。
 
 ## 每輪交付與證據
 
 - 一個內聚候選的問題、必要責任、行為變化、假設、反例、採用或不採用理由。
 - 涉及修改時，記錄實作 commit、影響範圍及實際執行的既有檢查；未跑、skip 分開列明。
+- 明列刪除的重複實作／狀態／責任及保留原因，分開計算 runtime、tests、dev tooling、
+  generated code 增減；揭露總差異和新增抽象成本，不能只以搬檔、拆包或加速宣稱精簡。
 - 效能主張附事前成本契約、中大型資料形狀、固定／逐筆成本及 baseline／candidate provenance。
 - Ledger 只保存摘要和證據索引：repo／ref、相對路徑或 artifact ID、hash、命令與結果。
   大型 logs 不複製進本文；缺失證據記為待重新取得，正式 receipts 不由本文取代。
@@ -504,9 +592,10 @@ R02、R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保
 3. 採用項目已整合並完成其必要驗證；程式正確、成本達標、部署可用分別記錄。
 4. 在所有 repository 的最終 ref 及部署控制檔 hash 上重查功能責任、重複工作與耦合，
    包含未啟用 jobs、共用 build 與跨庫檔案／鎖契約，沒有遺漏的可處理範圍內問題。
-5. 拆包各自有採用／拒絕／後續階段決定與依據；拆包數量和 LOC 減少都不是完成指標。
+5. 內部模組化與獨立拆包各自有決定及依據；說明實際消除的重複責任和維護成本，
+   列出分類 LOC 與總增減。不能只以減行數判定完成，也不能隱去沒有減碼的結果。
 
-目前進度：R01 同交易 family 共讀實驗支持採用，第二次 verify 移除候選由故障反例
-拒絕；本輪待正式整合，整合結果以 Git 與 receipt 為準。已重查受影響 loader、
-兩個直接呼叫點及 Ingest orchestration/session。其他 analysis stages、runtime／部署
-審核與工程工具細分仍待做；R01 整體、S1–S4 及全系統完成條件均尚未滿足。
+目前進度：R01 family 共讀已整合，第二次 verify 移除候選由故障反例拒絕；R02
+共用 validation 已實作並通過雙 backend targeted tests，本節寫入時待正式整合。
+整合結果以 Git 與 receipt 為準。受影響 callers 與 consumer 邊界已重查；其他
+analysis stages、runtime／部署審核與工程工具細分仍待做，S1–S4 及全系統尚未完成。

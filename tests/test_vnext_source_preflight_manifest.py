@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_fault_harness import snapshot_database
 from vnext_pipeline import collect_source
 from vnext_test_database import (
     DatabaseFactory,
@@ -658,6 +659,62 @@ def test_frozen_pages_replay_exactly_and_metadata_resumes_from_byte_cursor(
             "GROUP BY component ORDER BY component"
         ).fetchall()
         assert page_counts == [(0, 2), (1, 2), (2, 2), (3, 2)]
+
+
+@pytest.mark.parametrize("boundary", ("adapter", "replay"))
+@pytest.mark.parametrize("component", ("FILE", "DIRECTORY", "TAG"))
+def test_component_cursor_is_rechecked_before_freezing_and_staging(
+    database_factory: DatabaseFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    component: str,
+) -> None:
+    config = database_factory.config(str(tmp_path / "malformed-component-cursor.db"))
+    _generated_database(config)
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+    session = facade.try_claim_ingest(True, 1_000_000)
+    assert session is not None
+    policy = facade.ensure_policy(session, _policy())
+    adapter = _BoundarySource(257)
+    with facade.prepare_source(adapter, policy=policy) as source:
+        action = "COLLECTION_FREEZE" if boundary == "adapter" else f"{component}_PAGE"
+        for _step in range(100):
+            issued = facade.issue_source_step(session, policy, source)
+            if issued._action.value == action:
+                break
+            prepared = facade.prepare_source_step(source, issued)
+            facade.commit_source_step(session, prepared)
+        else:
+            pytest.fail(f"source did not reach {action}")
+
+        owner = type(adapter) if boundary == "adapter" else type(source._snapshot)
+        method_name = f"list_{component.lower()}_observations"
+        original = getattr(owner, method_name)
+
+        def changed_cursor(*args: Any, **kwargs: Any) -> VNextIngestPage[Any]:
+            page = original(*args, **kwargs)
+            assert not page.terminal
+            # Both cursors satisfy the generic page domain but contradict its items.
+            return replace(
+                page,
+                next_after=256 if component == "TAG" else b"changed-cursor",
+            )
+
+        tables = (
+            "operational_gallery_observation_staging_checkpoints",
+            "operational_gallery_observation_staging_requests",
+            "operational_gallery_observation_staging_receipts",
+        )
+        before = snapshot_database(config, tables=tables)
+        with monkeypatch.context() as patcher:
+            patcher.setattr(owner, method_name, changed_cursor)
+            with pytest.raises(ValueError, match=f"{component} next_after must equal"):
+                facade.prepare_source_step(source, issued)
+        assert snapshot_database(config, tables=tables) == before
+        # Restoring the reader cannot rehabilitate a failed observation handle.
+        with pytest.raises(ValueError, match="prepared source has failed"):
+            facade.prepare_source_step(source, issued)
 
 
 def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
