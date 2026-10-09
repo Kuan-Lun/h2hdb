@@ -612,6 +612,103 @@ def test_source_facade_hooks_forward_original_calls_and_exceptions_once(
     assert events[-1]["counters_complete"] is True
 
 
+def test_artifact_hooks_follow_internal_calls_and_public_inspection_alias_once(
+    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = probe._Probe(tmp_path, "artifact-owners")
+    calls: list[tuple[str, object]] = []
+    member = SimpleNamespace(expected_size_bytes=11)
+    digest = object()
+
+    def stream_digest(source: object, size: int) -> object:
+        assert source is member and size == 7
+        calls.append(("digest", source))
+        return digest
+
+    streams = SimpleNamespace(_stream_digest=stream_digest)
+    archive = SimpleNamespace(_stream_digest=stream_digest)
+
+    def inspect(source: object) -> object:
+        return archive._stream_digest(source, 7)
+
+    archive.inspect_presentation_archive = inspect
+
+    class Scratch:
+        def read(self) -> bytes:
+            calls.append(("read", self))
+            return b"cbz"
+
+    renderer = SimpleNamespace(
+        _ArchiveScratch=Scratch,
+        _stream_digest=stream_digest,
+        inspect_presentation_archive=inspect,
+        _render_page_member=lambda source: calls.append(("page", source)),
+        _verify_source_stream=lambda source: calls.append(("source", source)),
+    )
+
+    def render(source: object) -> bytes:
+        renderer._verify_source_stream(source)
+        renderer._render_page_member(source)
+        assert renderer._stream_digest(source, 7) is digest
+        assert renderer.inspect_presentation_archive(source) is digest
+        return Scratch().read()
+
+    renderer._render_archive = render
+    renderer._render_presentation = render
+    artifact = SimpleNamespace(inspect_presentation_archive=inspect)
+    journal = SimpleNamespace(require_exact_schema=lambda: None)
+    library = SimpleNamespace(
+        ManagedFilesystemLibraryAdapter=SimpleNamespace(
+            _ensure_layout=lambda: None,
+            maintain_cleanup=lambda: None,
+            activate_page=lambda: None,
+            reconcile_page=lambda: None,
+            _commit_pending_installs=lambda: None,
+        )
+    )
+    resident = SimpleNamespace(
+        ResidentIngestor=SimpleNamespace(
+            initialize=lambda: None,
+            _claim_after_maintenance=lambda: None,
+            _run_library_maintenance=lambda: None,
+            _try_current_only_maintenance=lambda: None,
+        )
+    )
+    modules = {
+        "h2hdb_ingest.artifact": artifact,
+        "h2hdb_ingest.artifact.archive": archive,
+        "h2hdb_ingest.artifact.renderer": renderer,
+        "h2hdb_ingest.artifact._streams": streams,
+        "h2hdb_ingest.library": library,
+        "h2hdb_ingest.resident": resident,
+        "h2hdb_ingest._library_journal": journal,
+    }
+    monkeypatch.setattr(probe.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setattr(probe.importlib.metadata, "version", lambda _name: "test")
+    try:
+        assert probe._install_ingest(state)
+        assert renderer._render_archive(member) == b"cbz"
+        assert artifact.inspect_presentation_archive(member) is digest
+    finally:
+        state.close()
+    assert [name for name, _value in calls] == [
+        "source",
+        "page",
+        "digest",
+        "digest",
+        "read",
+        "digest",
+    ]
+    counters = _events(tmp_path)[-1]["counters"]
+    assert counters["ingest.artifact._render_archive"]["completed"] == 1
+    assert counters["ingest.artifact.page_render"]["completed"] == 1
+    assert counters["ingest.artifact.inspect_presentation_archive"]["completed"] == 2
+    assert counters["ingest.source.verify_hash"]["logical_bytes"] == 11
+    assert counters["ingest.archive.hash"]["completed"] == 3
+    assert counters["ingest.archive.hash"]["logical_bytes"] == 21
+    assert counters["ingest.archive.python_read"]["logical_bytes"] == 3
+
+
 @pytest.mark.parametrize("missing", ["h2hdb.mariadb_connector", "mysql.connector"])
 def test_optional_mariadb_module_guard_does_not_hide_broken_dependencies(
     probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
