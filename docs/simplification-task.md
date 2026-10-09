@@ -5,7 +5,8 @@
 目標是六個自有程式 repository 與部署 workspace 的整體精簡：先檢查功能必要性、
 責任、狀態與重複工作，再決定是否拆包；LOC 減幅不是目標。
 2026-10-09 使用者將原 Core／Ingest 計畫擴至整套系統，其他 workspace 也需主動審核。
-本次只擴充接續機制與範圍，所有實際精簡與拆包候選均未完成。
+範圍擴充已整合；目前完成 R01 一個 bounded step 的來源調查，
+尚未採用 runtime 精簡或拆包。
 
 ## 已核對基線
 
@@ -14,7 +15,7 @@ LOC 是 tracked runtime `.py` 的實體行數，包含註解、空白與 docstri
 
 | Repository | Commit | Project version | 模組／LOC |
 | --- | --- | --- | --- |
-| Core／`h2hdb` | `13e927736d92c3ed82eb9edf8ec83427670fce37` | `0.45.6` | 94／117,084，含 generated wrapper 24 行 |
+| Core／`h2hdb` | `b8e3a06ab3bb91ad7fe07518383327af95d5ce82` | `0.45.6` | 94／117,084，含 generated wrapper 24 行 |
 | Ingest／`h2hdb-ingest` | `c5a69677c4cb40d87cace453a8159e31a3ed109e` | `0.30.3` | 48／20,091 |
 | OPDS／`h2hdb-opds` | `03be557ebd78763b74288f7c39a9e4934934148b` | `0.24.2` | 23／6,384 |
 | Komga sync／`h2hdb-komga` | `0182984a1357f5a1345d3dd78ff8dca94f0cf597` | `0.18.2` | 7／1,511 |
@@ -42,10 +43,21 @@ Core 歷史比較另列 generated Python，避免將 schema 展開量誤認為�
 `82e3f196272565e827d880df1113ab01b36234ca` 已刪除舊 service、migrations、
 canonical/catalog repositories 與 table repositories；不能由 `vnext` 名稱推定雙軌仍存在。
 
+R01 接續核對：六個主要 checkout 都乾淨且各有獨立 Git common directory；
+除 Core 外，HEAD 與上表前次基線一致。Core 從 `13e9277` 至 `b8e3a06`
+只改本紀錄，前次範圍擴充 commit `9ba36e8` 已是 HEAD ancestor，
+`release-gate.py status HEAD` 確認其 documentation receipt 有效。
+Core 尚有未合併的 `formal/close-production-blockers`（`5b8fe391`，無 worktree）；
+Ingest 另有乾淨的 `feat/page-worker-decision-log` worktree（`d7c8ef7b`，未合併）。
+兩者均保留，不推定其工作已失效或接管；本輪只讀上表來源、只修改 Core 本紀錄，
+未修改它們的程式範圍。部署 P01–P07 的 23 檔 hash 重算與既有摘要相同。
+
 ## 已知與未證實
 
 - 已知：上述歷史差異、模組盤點及 R02 的相同函式 body 可由 Git source 核對。
 - 已知：codecs 有純函式邊界；schema、cleanup、fencing 有跨表與交易耦合。
+- 已知：R01 file validation 的 local plan 已跨頁重用；issue／prepare／commit
+  分別擁有 durable coordinates、local preparation 與 fresh commit authority。
 - 未證實：任何候選可安全移除、整體狀態數可減少、拆包有淨收益或達成成本目標。
 - 先前聊天與暫存 logs 只提供線索；量化結論須重新取得有來源版本的持久報告。
 - 尚未執行本計畫的 runtime 實驗、正確性測試、效能驗收或完成範圍複查。
@@ -71,7 +83,7 @@ Komga Java server、H@H、galleryinfo parser 及其他第三方套件是外部�
 | 階段 | 工作範圍 | 目前狀態 |
 | --- | --- | --- |
 | S0 | 七個 workspace 的來源與依賴盤點 | 本次建立基線；功能必要性仍未審核 |
-| S1 | Core／Ingest 的責任、狀態與重複工作 | 待審核；下一輪 R01 |
+| S1 | Core／Ingest 的責任、狀態與重複工作 | R01 file validation step 已調查；其餘範圍與候選驗證未完成 |
 | S2 | OPDS、Komga sync、Downloader、hbrowser 的自身設計 | 待審核；不以 S1 是否碰到它們作為啟動條件 |
 | S3 | 部署控制流程與跨 repository 工程工具重複責任 | 待審核；按實際契約和維護成本選單元 |
 | S4 | 全系統重查與逐項拆包決定 | 待 S1–S3 的證據；不是自動發布套件 |
@@ -85,7 +97,8 @@ S1 是優先順序，不是其他範圍的豁免。相依介面有變更時，�
 下列模式匹配相對 package root 的路徑、不含 `.py`。
 Core／Ingest／OPDS／Komga／Downloader 根各為 `src/h2hdb*` 的對應 package；
 hbrowser 根為 `hbrowser/`，保留 `gallery/` 等子路徑。
-分組覆蓋 94／48／23／7／3／49 個模組，基線中無重複或遺漏；全部「已盤點、待審核」。
+分組覆蓋 94／48／23／7／3／49 個模組，基線中無重複或遺漏。
+C02／C04 與 I04 已局部追蹤 R01 呼叫路徑，所有分組的完整審核仍未完成。
 新增模組或 HEAD 變動時，差異仍待分類；候選表不取代完整範圍清單。
 
 | ID | 功能範圍 | 數量 | 模組模式 |
@@ -157,11 +170,12 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
 ## 候選與處置
 
 狀態區分待審核、調查中、待實驗、待決策、採用待驗收、完成、拒絕、延期。
-拒絕與延期不是實作完成；保留理由及新證據下的重開條件。以下尚無完成項目。
+拒絕與延期不是實作完成；保留理由及新證據下的重開條件。
+R01 已完成下述調查單元，候選整體及其他項目仍未完成。
 
 | ID | 候選／狀態 | 持久證據入口 | 結案或重開條件 |
 | --- | --- | --- | --- |
-| R01 | Issue／prepare／commit 責任與狀態；待審核、下一輪 | C01–C04；`vnext_ingest_analysis.py` 的 `issue_analysis_step`、`prepare_analysis_step`、`commit_analysis_step` | 一個步驟完成 authority／狀態／失敗路徑對照後，判定保留、合併或實驗；契約或路徑改變時重開 |
+| R01 | File validation step 調查完成；保留三階段邊界，局部重複候選待驗證 | C02／C04、I04；下方 R01 調查結果及來源／測試索引 | 同交易 baseline/current 重讀先固定成本契約與反例再實驗；其他 analysis stages 仍待審核 |
 | R02 | 相同 session／page predicates；待審核 | `vnext_ingest_facade.py`、`vnext_ingest_analysis.py`、`vnext_ingest_publication.py` 的 session identity；facade／source spool 的 named/tag page validators | 證明可共用規則且各信任邊界仍驗證；若語意不同則拒絕，日後語意收斂再開 |
 | R03 | READY audit／cleanup 重複工作；待重新量測 | C05、C07；`catalog_refinement.py`、`vnext_cleanup_repository.py`；既有成本工具 | 先固定工作量契約與反例再量測；缺可靠 provenance 時不判達標 |
 | R04 | 純 codecs distribution；延期至邊界審核 | C08；`vnext_identity.py`、`catalog_search.py`、`catalog_writer.py`、`database_audit.py` | 先確認 byte／Unicode／guard ownership／audit 失效契約；邊界與收益成立後再決定拆包 |
@@ -175,18 +189,104 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
 | R12 | 部署解析／啟動／驗收／操作責任；待審核 | P01–P07，包含全部 profile jobs 與共用 build stage | 驗證 resolver、啟動 probes、隔離驗收與 deploy 各自的責任；不得以讀過來源宣稱可部署 |
 | R13 | 跨庫工程工具收斂；待逐檔盤點 | E01–E02；既有 scripts、hooks、workflow 與驗收 fixture | 先比較執行語意與 ownership，列出真正重複者；不能以抽共用套件取代各庫應有驗收 |
 
+## R01：file decision validation step 調查
+
+來源為上表 Core `b8e3a06`／Ingest `c5a6967`；本輪只更新紀錄，待 task branch
+`docs/simplification-r01-validation` 整合。問題是三階段是否重複維護同一權威，
+成功條件為完成呼叫者、durable／local state、失敗與重播對照，並對可疑重複作出
+保留或待驗證判定；不以刪行數為成果，也不作效能達標主張。
+
+下表函式均在 Core 的 `src/h2hdb/`；Ingest 呼叫者為
+`src/h2hdb_ingest/service.py:synchronize_analysis`（405 起）及
+`session.py:IngestSessionController.call/outside_session`（54／66）。
+前者以 `session.call` 執行 issue／commit，以 `outside_session` 執行 prepare；
+後者只在取得 facade 與確認失敗狀態時短暫持鎖，local work 不阻擋 heartbeat。
+
+| 邊界 | 資料與狀態權威 | 失敗／重播責任 |
+| --- | --- | --- |
+| Issue：`vnext_ingest_analysis.py:issue_analysis_step`（378）；`vnext_analysis_repository.py:issue_next_batch`（1891） | 短 write transaction 從 durable run、stage、checkpoint 取得 generation、cursor、processed count、page limit 與 actual-key prefix；caller batch key 只作冪等識別，既有結果須讀 exact receipt；每頁上限 128，prefix 可多讀一筆 | 活躍 issue 保留於 handle，再次呼叫仍重驗 live session；既存 batch receipt 重發其 start coordinates，不能以已推進 checkpoint 代替 |
+| 首次 prepare：repository `prepare_file_decision_validation_plan`（2238） | 先後兩次獨立 read transaction 驗 run／source manifest／seals；中間分頁讀所選 accepted observations 的 artists／occurrences，在 private SQLite 排序後產生具 MAC 的匿名定寬檔 | Plan 是可丟棄的 process-local cache，不是 DB authority；失敗關閉 scratch；合法 source writers 不得修改 sealed facts |
+| 每頁 prepare：repository `prepare_file_decision_validation_page`（2277）；`vnext_file_decision_validation_plan.py:source_page`（161） | 重用同一 plan，以 checkpoint cursor 二分定位 expected keys，與 issued actual keys 合併，取最多 page limit；page 綁定 authority、batch 與 checkpoint，缺 expected 的 actual key 保留 `None` 供驗證其 absence／tombstone | 後續頁不重新建立 source plan、不開 Core DB；page MAC 與 record MAC 分別保護 prepared value 與 local file，不能取代 fresh SQL checks |
+| Commit：repository `validate_file_hash_decision_batch`（1743）、`_require_file_validation_binding`（6975）與 `_require_file_decision_targets`（7094） | Fresh write transaction 重新驗 lease/generation、run/source/seals、checkpoint 與 actual prefix，exact-compare current／baseline families；checkpoint、batch receipt 與 terminal component seal 一起提交 | 新增 prefix orphan、stale page、seal 變更或 takeover 必須拒絕；terminal 是空頁且 live count 等於 source count，不只看 page digest |
+| Response loss／restart：repository `_require_prepared_file_validation_replay`（7024）；orchestrator `_prepare_file_decision_validation_work`（766） | Commit 成功但回應遺失時保留 exact page／plan，依 durable receipt 的 start coordinates 重驗 family、cursor、count、seal；重播不直接相信成功旗標 | Preparation 失敗丟棄 plan；commit 失敗保留可重播資源；process restart 從 durable authority 重建 plan，成功 terminal 後先 retire、在 lock 外關閉 |
+
+Bounded 指 issue／commit 的頁面與每次 source read 的界限；首次 prepare 仍遍歷整個
+selected source 並排序，不是總計只處理 128 筆，也未證明固定 wall-clock 上限。
+Actual prefix 可含被 tombstone 隱藏的 ancestor keys，不增加 validated live count；
+key 數有界不代表所有 SQL planner scan／aggregate fanout 均有相同界限。
+
+判定：保留 issue／prepare／commit 及三類 state。Durable checkpoint／receipt 是恢復權威，
+local active issue／step 是 response-loss handle，plan 是跨頁可丟棄工作；合併它們不能
+消除這些責任，反而可能讓 source scan／scratch I/O 進入 session lock 或 DB write。
+本輪無 compatibility path 移除、公開行為或資料格式變更，也沒有引入新 abstraction。
+Plan reuse 不承諾在每次 commit 偵測未改 immutable markers 的 unmanaged SQL source
+竄改；獨立 READY audit 的責任仍保留，不能把本調查視為完整資料稽核證明。
+
+重複分類與處置：
+
+- **不同信任邊界、保留**：issue 與 commit 各讀 actual prefix；prepare 前後與 commit
+  各驗 source/run binding；record/page MAC 與 durable family exact compare。
+  中間可能發生 takeover、prefix 插入、seal 改變或 caller page 竄改，前次成功不可重用。
+- **同一規則、待驗證**：`validate_file_hash_decision_batch`（1757）及其唯一 binding
+  helper（6982）在同一 commit 呼叫同一 page 的 `verify()`。它只驗 in-memory fields、
+  owner metadata 與 MAC，沒有再讀磁碟 plan；不是重複 source scan。
+  尚未證明可安全移除其中一次，後續須核對入口、錯誤次序與 mutation 邊界。
+- **同交易重讀、下一個調查單元**：`_require_file_decision_targets`（7105–7106）
+  先載入 baseline resolved values，再載入 current evidence；兩者都經
+  `_load_file_decision_evidence`（9732）的 layout／shadow／tombstone loaders。
+  一般 overlay 的 current ancestry 包含完整 parent suffix（`_derive_layout`，5469–5473），
+  有重疊 family reads。Policy 變更或 parent depth 16 的 compaction 則 self-only，
+  但 baseline 仍保存（1226–1231），不能直接把 current ancestry 尾部當成 baseline。
+  尚未量測成本，也未採用交易快取或共用 loader。
+
+可核對的既有驗收來源（本輪只讀，**未執行**）：
+
+- `tests/test_vnext_ingest_analysis_validation.py`：單次建 plan／跨頁 reuse（114）、
+  後續 prepare 不開 DB（148）、重發 start coordinates（170）、fresh prefix orphan（220）、
+  terminal／nonterminal response loss（279）、restart（327）、source seal 消失（398）、
+  takeover（435）、prepare 期間續租（484）。
+- `tests/test_vnext_file_decision_validation_plan.py`：計數 oracle、metadata／record／page
+  竄改；`tests/test_vnext_analysis_decision_batch.py`：materialized family exactness。
+  `verification/invariants.toml` 的相關 runtime／fault bindings 是證據索引，非本輪執行結果。
+- Ingest `tests/test_service_vnext.py:test_analysis_orchestration_keeps_preparation_outside_bounded_calls`
+  與 `tests/test_session_vnext.py` 是 consumer 邊界入口。
+- `scripts/ingest_growth_hash_probe.py` 已有 source-read 與 validation backend-work
+  計數入口；其工具或結構性斷言存在，不等於 baseline/current 重讀優化已達成本目標。
+  目前 fixture 的 history 是未選取 source observations，不是 overlay lineage，
+  depth-zero query expectations 不能直接涵蓋本候選。Whole-analysis 成本工具可作
+  整體回歸，但本輪無綁定這個候選的中大型 baseline/candidate 報告。
+
+已執行的核對：各 checkout `git status --short`、`git rev-parse HEAD`、
+`git rev-parse --git-common-dir`、`git worktree list`、`git branch --no-merged`；
+以 `pyproject.toml` 核對 name/version/range；23 個部署控制檔依上方算法重算 hash。
+Core `git diff --stat 13e9277 HEAD` 僅有本紀錄，
+`git merge-base --is-ancestor 9ba36e8 HEAD` 成功，
+`.venv/bin/python scripts/release-gate.py status HEAD` 確認前次文件 receipt 有效；
+`rg` 與函式來源讀取確認上述呼叫與證據入口。
+`node_modules/.bin/markdownlint-cli2 docs/simplification-task.md` 的工作樹預檢回報
+0 issues；不取代後續 exact candidate 文件 gate。
+本輪 version impact 為 `none`（純文件），Core 保持 `0.45.6`，無 dependency manifest
+變更，不重新產生 audit。此段寫入時尚待文件 commit／merge gate；正式結果由 Git history
+及 exact candidate receipt 核對，不預寫通過。未執行 runtime、MariaDB、deep、成本、
+跨套件 wheel resolution、Compose build／隔離流程或 production 驗收。
+
 ## 下一輪入口
 
 接續時先核對七個 workspace 的可用性、來源基線與政策，再細讀當輪相關範圍。
 缺失 workspace 保留為未完成項；只有當輪需要它才阻擋該單元，不據此縮小整體目標。
-本輪建議只處理 R01 的「file decision validation 一個 bounded step」，先不拆 package。
-入口為 [analysis orchestration](../src/h2hdb/vnext_ingest_analysis.py)、
-[analysis repository](../src/h2hdb/vnext_analysis_repository.py) 與
-[validation plan](../src/h2hdb/vnext_file_decision_validation_plan.py)。
-產出同一資料從來源、plan、checkpoint 到 commit 的責任／狀態對照，
-區分「相同規則的重複實作」「不同信任邊界的必要驗證」「可重用的重複工作」。
-若有可優化假設，下一步才是具固定預算與反例的隔離實驗；收益和正確性成立後再實作。
-這不代表 C01–C04 已審核完成，也不預設一定有程式可刪。
+優先核對本輪文件整合，再處理 R01 的同交易 baseline/current family 重讀假設。
+入口為 [analysis repository](../src/h2hdb/vnext_analysis_repository.py) 的
+`_require_file_decision_targets`／`_load_file_decision_evidence` 與
+`vnext_analysis_decision_batch.py` 的 shadow/tombstone exact-family loaders。
+先確認是否能以一次有界讀取推導兩個結果且保留 partial/orphan family、shadow+tombstone、
+missing layout、checkpoint/replay 的拒絕契約；不得跨 issue／prepare／commit 快取 authority。
+若要作效能實驗，先從既有成本契約固定 SQL／rows examined、local CPU／memory 與 elapsed
+預算，列明既有資料量、本次工作量、hash 重用率、artist 密度分布與 overlay depth。
+涵蓋 genesis、一般 overlay、policy-change／depth-16 compaction、頁容量前／上／後與
+重複循環，並以保留重讀的退化反例驗證計數；SQLite 與 MariaDB 分開實測。
+未建立固定預算或取得中大型證據時保持待實驗，不宣稱收益。
+雙 `page.verify()` 是次要規則收斂候選；R02 及 S2／S3 的其他候選仍需後續審核。
+此單元不代表 C01–C04 已審核完成，也不預設拆包或一定有程式可刪。
 
 ## 每輪交付與證據
 
@@ -221,5 +321,6 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
    包含未啟用 jobs、共用 build 與跨庫檔案／鎖契約，沒有遺漏的可處理範圍內問題。
 5. 拆包各自有採用／拒絕／後續階段決定與依據；拆包數量和 LOC 減少都不是完成指標。
 
-目前進度：範圍已擴至全系統；runtime 與部署控制來源僅盤點，工程工具細分待做。
-R01 尚未開始；S1–S4 及全系統完成條件均尚未滿足。
+目前進度：範圍已擴至全系統；R01 file validation step 的責任／狀態調查完成，
+保留三階段並列出兩個待驗證局部候選。其餘 runtime／部署審核與工程工具細分仍待做；
+R01 整體、S1–S4 及全系統完成條件均尚未滿足。
