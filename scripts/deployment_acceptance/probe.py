@@ -720,6 +720,9 @@ def _install_ingest(state: _Probe) -> bool:
     except importlib.metadata.PackageNotFoundError:
         return False
     artifact = importlib.import_module("h2hdb_ingest.artifact")
+    archive = importlib.import_module("h2hdb_ingest.artifact.archive")
+    renderer = importlib.import_module("h2hdb_ingest.artifact.renderer")
+    streams = importlib.import_module("h2hdb_ingest.artifact._streams")
     library = importlib.import_module("h2hdb_ingest.library")
     resident = importlib.import_module("h2hdb_ingest.resident")
     journal = importlib.import_module("h2hdb_ingest._library_journal")
@@ -756,22 +759,30 @@ def _install_ingest(state: _Probe) -> bool:
         state, journal, "require_exact_schema", "ingest.journal.schema", boundary=False
     )
     setattr(library, "_require_exact_journal_schema", journal.require_exact_schema)  # noqa: B010 - Optional installed module exposes this alias at runtime.
-    for name in (
-        "_render_archive",
-        "_render_presentation",
-        "inspect_presentation_archive",
-    ):
-        _hook(state, artifact, name, f"ingest.artifact.{name}", boundary=False)
+    for name in ("_render_archive", "_render_presentation"):
+        _hook(state, renderer, name, f"ingest.artifact.{name}", boundary=False)
     _hook(
         state,
-        artifact,
+        archive,
+        "inspect_presentation_archive",
+        "ingest.artifact.inspect_presentation_archive",
+        boundary=False,
+    )
+    # Preserve every explicit import alias with one wrapper per operation.
+    for owner in (artifact, renderer):
+        setattr(  # noqa: B010 - Optional installed modules expose this alias at runtime.
+            owner, "inspect_presentation_archive", archive.inspect_presentation_archive
+        )
+    _hook(
+        state,
+        renderer,
         "_render_page_member",
         "ingest.artifact.page_render",
         boundary=False,
     )
     _hook(
         state,
-        artifact,
+        renderer,
         "_verify_source_stream",
         "ingest.source.verify_hash",
         boundary=False,
@@ -779,15 +790,17 @@ def _install_ingest(state: _Probe) -> bool:
     )
     _hook(
         state,
-        artifact,
+        streams,
         "_stream_digest",
         "ingest.archive.hash",
         boundary=False,
         byte_counter=_expected_digest_size,
     )
+    for owner in (renderer, archive):
+        setattr(owner, "_stream_digest", streams._stream_digest)  # noqa: B010 - Optional installed modules expose this alias at runtime.
     _hook(
         state,
-        artifact._ArchiveScratch,
+        renderer._ArchiveScratch,
         "read",
         "ingest.archive.python_read",
         boundary=False,

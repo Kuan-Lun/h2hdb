@@ -9,7 +9,9 @@ dev tooling 與 generated code 的增減；LOC 不是唯一指標，但不能以
 和淨收益成立時才考慮 PyPI 拆包，不把相同 schema、交易或生命週期切成多個發行單位。
 2026-10-09 使用者將原 Core／Ingest 計畫擴至整套系統，其他 workspace 也需主動審核。
 範圍擴充與 R01 同交易 family 共讀已整合；R01 是效能改善，runtime 淨增 30 行。
-R02 已實作共用 session／page validation，runtime 淨減 83 行，本節寫入時待正式整合。
+R02 共用 session／page validation 已整合，runtime 淨減 83 行。
+2026-10-10 使用者要求提高每輪的實質維護收益；不再機械式優先處理 R07 小型 helper。
+R15 收斂完整 CBZ 解析責任並建立 Ingest 內部 artifact 子套件，驗收狀態見下節。
 第二次 page verification 經故障反例確認保留；全系統審核與模組邊界決策仍未完成。
 
 ## 已核對基線
@@ -62,6 +64,12 @@ Ingest 另有乾淨的 `feat/page-worker-decision-log` worktree（`d7c8ef7b`，�
 R02 新增兩個 private Python 模組歸 C04，Core 模組由 94 增為 96；新增目錄本身
 不算減碼成果，完整 source delta 見 R02。前次 LOC／部署摘要保留為歷史基線。
 
+R15 基線：Core `d37561428c0338ec9a475c1a637c237ce1c94e9e`／`0.45.8`，
+R02 實作 `9039d9d`、升版 `0848ba5` 已合併，重新核對 full receipt 有效；其餘五庫
+HEAD 與上表相同。六個主要工作樹開始時乾淨，既有其他分支／worktree 保留。
+Ingest 的 `artifact.py` 改為六個 package modules，48→53 模組，全歸 I02；
+本輪 runtime LOC 為 20,006，Core runtime 117,031（含原 generated wrapper）。
+
 ## 已知與未證實
 
 - 已知：上述歷史差異、模組盤點及 R02 的相同函式 body 可由 Git source 核對。
@@ -96,7 +104,7 @@ Komga Java server、H@H、galleryinfo parser 及其他第三方套件是外部�
 | 階段 | 工作範圍 | 目前狀態 |
 | --- | --- | --- |
 | S0 | 七個 workspace 的來源與依賴盤點 | 本次建立基線；功能必要性仍未審核 |
-| S1 | Core／Ingest 的責任、狀態與重複工作 | R01 family 共讀已整合、第二次 verify 保留；R02 共用 validation 採用待整合，其餘範圍未完成 |
+| S1 | Core／Ingest 的責任、狀態與重複工作 | R01／R02 已整合；R15 artifact 規則收斂與內部分割採用，正式整合以 Git／receipt 核對；其餘範圍未完成 |
 | S2 | OPDS、Komga sync、Downloader、hbrowser 的自身設計 | 待審核；不以 S1 是否碰到它們作為啟動條件 |
 | S3 | 部署控制流程與跨 repository 工程工具重複責任 | 待審核；按實際契約和維護成本選單元 |
 | S4 | 全系統重查與逐項拆包決定 | 待 S1–S3 的證據；不是自動發布套件 |
@@ -111,7 +119,8 @@ S1 是優先順序，不是其他範圍的豁免。相依介面有變更時，�
 Core／Ingest／OPDS／Komga／Downloader 根各為 `src/h2hdb*` 的對應 package；
 hbrowser 根為 `hbrowser/`，保留 `gallery/` 等子路徑。
 分組原基線覆蓋 94／48／23／7／3／49 個模組，無重複或遺漏；下表 C04 已納入
-R02 的兩個新模組，Core 現為 96。C02／C04 與 I04 已局部追蹤 R01 呼叫路徑，
+R02 的兩個新模組，Core 現為 96；I02 納入 R15 的六個 artifact modules，Ingest 為 53。
+C02／C04 與 I04 已局部追蹤 R01 呼叫路徑，
 C01／C04 補入 R02 驗證邊界；所有分組的完整審核仍未完成。
 新增模組或 HEAD 變動時，差異仍待分類；候選表不取代完整範圍清單。
 
@@ -130,7 +139,7 @@ C01／C04 補入 R02 驗證邊界；所有分組的完整審核仍未完成。
 | C11 | Telemetry、logging | 6 | `*performance`, `ingest_performance_format`, `logger` |
 | C12 | 啟動、設定、exports | 5 | `__init__`, `__main__`, `config_loader`, `environment`, `settings` |
 | I01 | Source observation／scheduling | 5 | `core_source`, `filesystem`, `source_monitor`, `source_schedule`, `_source_retry` |
-| I02 | Media／qualification／artifact policy | 6 | `artifact`, `artifact_errors`, `image_qualification`, `page_workers`, `policy`, `source_image` |
+| I02 | Media／qualification／artifact policy | 11 | `artifact/*`, `artifact_errors`, `image_qualification`, `page_workers`, `policy`, `source_image` |
 | I03 | Library、storage、journal、cleanup | 13 | `library`, `library_identity`, `library_relocation`, `_library_journal`, `_library_layout`, `_library_maintenance`, `_relocation_files`, `_resource_cleanup`, `_storage_paths`, `storage`, `storage_capacity`, `scratch`, `relocate` |
 | I04 | Resident、session、runtime lifecycle | 7 | `bootstrap`, `database_audit`, `maintenance`, `resident`, `runtime`, `service`, `session` |
 | I05 | Telemetry、diagnostics、progress | 13 | `*performance`, `image_diagnostics`, `metrics`, `progress`, `progress_format`, `_diagnostic_logging`, `_log_fields`, `_log_recovery`, `_retry_diagnostics` |
@@ -185,18 +194,18 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
 
 狀態區分待審核、調查中、待實驗、待決策、採用待驗收、完成、拒絕、延期。
 拒絕與延期不是實作完成；保留理由及新證據下的重開條件。
-R01 下述兩個局部候選已整合；R02 採用共用規則並保留各次驗證，待正式整合。
+R01／R02 已整合；R15 採用單一 archive parser 與內部責任分割，正式整合以 Git 核對。
 其他 analysis stages 與其餘範圍仍未完成。整合狀態由 Git ancestry 與 receipt 核對。
 
 | ID | 候選／狀態 | 持久證據入口 | 結案或重開條件 |
 | --- | --- | --- | --- |
 | R01 | 同交易 family 共讀已整合；第二次 verify 保留，移除候選拒絕 | C02／C04、I04；下方實驗、故障反例與持久報告；merge `e9422d7` | 相關 authority／plan ownership 改變或新工作負載違反局部契約時重開；其他 analysis stages 待審核 |
-| R02 | 相同 session／page predicates 共用；採用待正式整合 | C01／C04；`_ingest/validation.py`；下方雙 backend 與 consumer 驗證 | 各信任邊界保留驗證；authority 欄位、分頁語意或 caller lifecycle 改變時重查 |
+| R02 | 相同 session／page predicates 共用；已整合 `d375614` | C01／C04；`_ingest/validation.py`；下方雙 backend 與 consumer 驗證 | 各信任邊界保留驗證；authority 欄位、分頁語意或 caller lifecycle 改變時重查 |
 | R03 | READY audit／cleanup 重複工作；cleanup 已重現既有成本超標、待定位 | C05、C07；`catalog_refinement.py`、`vnext_cleanup_repository.py`；R01 全流程回歸報告 | 沿用既有預算定位可省工作；不得以 READY audit 通過覆蓋 cleanup 失敗 |
 | R04 | 純 codecs distribution；延期至邊界審核 | C08；`vnext_identity.py`、`catalog_search.py`、`catalog_writer.py`、`database_audit.py` | 先確認 byte／Unicode／guard ownership／audit 失效契約；邊界與收益成立後再決定拆包 |
-| R05 | Media distribution；待審核 | I02 與 I01／I03 使用點；Ingest `AGENTS.md` 的 ownership boundary | 先證明與 source authority、storage、journal 的可分離性及驗收範圍 |
+| R05 | Media distribution 暫不採用；R15 先完成內部分割 | I02 與 I01／I03 使用點；Ingest `artifact/` | 有獨立使用／發布需求及可降低耦合的證據才重開 PyPI 拆包；現有 renderer 仍接 source authority、storage 與 Core evidence |
 | R06 | Transport／telemetry／contracts；延期 | C08、C10、C11、I05；實際 import 與 consumer 使用點 | 有獨立使用需求、可減少依賴或發布耦合的證據再開；檔案大小不是理由 |
-| R07 | Library／relocation 重複格式規則；待審核 | I03；`library.py` 的 `_marker_payload`、`_quarantine_leaf` 與 `library_relocation.py` 的 `_publication_marker`、`_quarantine` | 核對同一 marker／hash framing 的共用邊界與錯誤語意；規則不同則保留並記錄差異，格式變更時重開 |
+| R07 | Library／relocation 局部重複成立但收益較小，降低優先序 | I03；marker JSON 與 quarantine hash framing 相同 | 應併入完整 library I/O ownership 工作；保留 relocation object guard／path validation、exact-prefix restore 與 runtime atomic write 的差異，不為小 helper 單獨啟動下一輪 |
 | R08 | OPDS／Komga reader fencing 共用規則；待審核 | O04、K02；OPDS `library.py` 與 Komga `coordination.py` | 比較開檔機制、錯誤分類與持鎖期限；request 與整次 sync 的生命週期不能直接等同 |
 | R09 | Downloader root／batch 工作生命週期；待審核 | D02–D03；`downloader.py` 的 `_run_coordinated_batch`、`_run_coordinated_root` | 對照 heartbeat／handoff 與不同 completion 邊界後，判定共用規則或保留；契約變更時重開 |
 | R10 | Browser ownership／deadline／diagnostics；待審核 | H01–H06；`gallery/browser/`、`gallery/utils/` 及 driver 呼叫者 | 先驗證狀態與資源所有權；兩次 fresh empty 的 confirmed-missing 證據不能視為無用重讀 |
@@ -204,6 +213,8 @@ R01 下述兩個局部候選已整合；R02 採用共用規則並保留各次驗
 | R12 | 部署解析／啟動／驗收／操作責任；待審核 | P01–P07，包含全部 profile jobs 與共用 build stage | 驗證 resolver、啟動 probes、隔離驗收與 deploy 各自的責任；不得以讀過來源宣稱可部署 |
 | R13 | 跨庫工程工具收斂；待逐檔盤點 | E01–E02；既有 scripts、hooks、workflow 與驗收 fixture | 先比較執行語意與 ownership，列出真正重複者；不能以抽共用套件取代各庫應有驗收 |
 | R14 | Source append SQL 成本；已重現超標、待定位 | C01／C04；R01 完整流程的 source attribution | 沿用既有 source 預算，固定代表形狀與退化反例，驗證重複工作後採用或拒絕 |
+| R15 | Canonical CBZ 單一解析與 artifact 內部責任分割；採用 | I02、E02；Ingest `artifact/`、Core deployment acceptance probe；下節驗收 | 保留每個信任邊界的驗證，刪重複解析／狀態；格式、writer 或 source/cache 邊界變更時重查 |
+| R16 | Analysis overlay 四組 BUILD／VALIDATE 與 replay 責任；待驗證 | C02；`vnext_analysis_repository.py`、`vnext_analysis_overlay_family.py` | 比較 content candidate／owner、GID candidate／winner 的規則與 durable authority，驗證能否收斂完整 family；不可用大量 flags 掩蓋差異 |
 
 ## R01：file decision validation step 調查（歷史紀錄）
 
@@ -539,15 +550,134 @@ ancestry 與 exact-tree receipts 核對完成狀態，不預寫通過。沒有 c
 Compose build／隔離發布流程或 production 驗收；本輪不宣稱部署可用或效能達標。
 下次只在相關 source 變更時重開 R02，不將已消除的重複規則再列成待調查項目。
 
+## R15：artifact 完整責任收斂與內部分割
+
+使用者要求避免反覆完成小型 helper 後，重新比較 Core analysis、Ingest library 與
+artifact。沒有證據支持可直接安全刪掉數千行；library／relocation 的 marker 重複
+較小，且 hardlink healing、重新 hash、atomic replacement／exact-prefix continuation
+具有不同權威，因此 R07 降序。本輪選擇完整的 CBZ inspection：原本 raw parser 已
+驗證 central／local fields，接著 `ZipFile` 又建立 member state、重讀 header 並驗證。
+
+Ingest 基線 `c5a6967`，實作 `a92747c`、升版 `e3e6463`。以單一 bounded raw parser
+輸出 `_CanonicalMember`，直接驗證 metadata DEFLATE 與 page JPEG／CRC；刪除第二套
+`ZipFile` reader、`ZipInfo` map、重複 local-layout／offset helpers、排序 overlap pass
+及可由連續 canonical offsets 推導的狀態。每個 central／local field 的 exact compare
+仍保留。Canonical EOCD 為最後 22 bytes、comment 必須為零，移除通用 ZIP tail search。
+writer 仍使用 stdlib `ZipFile`；沒有改圖片解碼、壓縮、縮放或來源預檢政策。
+
+| 經重新確認的責任 | 決策／位置 |
+| --- | --- |
+| Artifact policy／values、image、archive、source preparation | 已完成 `artifact/model.py`、`images.py`、`archive.py`、`renderer.py`；`_streams.py` 是共用 bounded byte I/O，`__init__.py` 為原公開 API 的唯一入口，沒有 forwarding functions |
+| Ingest `presentation/` 暫名 | 改用既有 `artifact/` 公開名稱作 canonical package，不新增另一層相容 shim，也不新增 PyPI 發行單位 |
+| Source／qualification | `image_qualification.py` 屬 source eligibility，引用 images/model owner；未搬進 renderer。`source_monitor`／`source_schedule` 屬 resident 排程，未把它們混入純 observation 子套件 |
+| Library | 保留 staging／journal／activation／cleanup／relocation 的完整生命週期責任；後續以 I/O ownership 為單元，不能直接合併不同恢復語意 |
+| Core identity／codecs | 純函式邊界仍成立，但固定 bytes／digest 契約與廣泛 callers 需一起驗收；目前單純搬檔不能證明收益，留在 Core，不先拆 PyPI |
+| Devtools | Core probe 直接 hook 新 owner，並同步相同 wrapper 到實際 import aliases；舊單檔 artifact 私有 hook 不再支援，instrumented 驗收需本輪 Ingest candidate |
+
+| Python 實體行數（相對本輪兩庫基線） | Runtime | Tests | Dev tooling | Generated |
+| --- | ---: | ---: | ---: | ---: |
+| Ingest | -85 | +142 | 0 | 0 |
+| Core | 0 | +97 | +13 | 0 |
+| 合計 | -85 | +239 | +13 | 0 |
+
+總 Python 淨增 **167**，不是總減碼。單純分檔時 artifact 1,943→2,067（+124，
+主要是 imports／模組邊界）；真正刪除重複解析後為 1,860，另 qualifier imports -2，
+最終 runtime -85。Artifact 最大單檔 1,943→816。維護收益是 archive 只剩一份
+解析規則，圖片與 preparation 不再放在同一巨檔；不以搬檔或測試新增冒稱刪碼。
+
+實驗與回歸：
+
+- 原 parser 接受缺少 DEFLATE EOF、trailing／concatenated streams、實際解壓長度
+  超過宣告值／metadata cap 等損壞輸入。新版用 `declared + 1` output cap，驗證
+  EOF、unused／unconsumed input、exact size 與 CRC；64 MiB expansion 的案例要求
+  Python peak allocation 小於 8 MiB。原 body 負向控制 7 個預期失敗／4 通過；新版
+  對應 11 通過，另外新增 EOCD 截斷／comment／trailing 三種拒絕案例。
+- 同次 inspection 的 metadata／兩頁 local-header read 由 `(4, 3, 3)` 變為
+  `(1, 1, 1)`；沒有把此局部次數當作端到端效能提升。原 47 個 top-level definitions
+  中 38 個 AST 完全等價；27 個公開 exports 保留。
+- 實際 writer 差分四組全部通過：metadata-only；RGBA PNG／EXIF rotated JPEG／GIF；
+  自訂尺寸品質與 BICUBIC／parallel；NEAREST／preparation cache。CBZ、各 JPEG、
+  thumbnail exact bytes、policy fingerprint 與三種 evidence 全部相等。暫存 runner
+  `compare_writer_bytes.py` SHA-256：
+  `5b24045e1bf105abb7e46e502a033a2b77a33be3ed053d90401995148998ca80`；
+  report `writer-bytes-differential.json` SHA-256：
+  `c31cc77f0e92768b0d84d7f30525ba5d22a31d89113aae2afc04961876f82c39`。
+  兩者位於 `/private/tmp/h2hdb-artifact-refactor/`；baseline 由 `c5a6967:src/h2hdb_ingest/artifact.py`
+  匯出，candidate 為 `a92747c`，以 Ingest `.venv/bin/python` 執行 runner。
+  證據遺失時依上述四種形狀與來源重驗，不能只沿用暫存路徑。
+- 新依賴環境的 `tests/test_artifact_vnext.py` 214 passed；先前 artifact／preparation／
+  source images／progress 選集 265 passed、2 deep deselected；qualification／runtime／
+  library 選集 121 passed，加上因 sandbox 禁止 `ps` 而失敗的五個程序案例在取得
+  process inspection 權限後 5 passed；沒有修改測試或放寬程序清理要求。
+- Core probe tests 35 non-MariaDB、3 MariaDB passed；新增 regression 確認 import aliases
+  使用同一 wrapper。真實 installed-module smoke 的 instrumentation 前後 bytes/evidence
+  相同，hash 4×547=2,188 bytes、source verification 292 bytes，counters 無漏計或重複。
+
+乾淨環境由 `uv pip install --refresh --python VENV/bin/python CORE_WHEEL
+h2hdb-ingest[dev]@file://INGEST_WHEEL` 正常解析 43 packages，沒有 `--no-deps`；
+`uv pip check` 通過。Core `0.45.8` wheel hash 與 R02 相同，Ingest `0.30.4` wheel
+SHA-256 為 `d3f876c29ea0d429ae69ab8a023b1c25ee173d33e0528ce8a7c2b04b2e1378ef`。
+Core 98／Ingest 54 個 package files 的 source、wheel、installed bytes 與 METADATA
+相同，`direct_url.json` 指向明確 candidate wheel。此 wheel 替代 index Ingest；
+不能據此宣稱 index-backed Compose 已可部署。
+
+Core 使用此環境的 `H2HDB_ACCEPTANCE_PYTHON`，另設 `H2HDB_TEST_MARIADB=1` 執行
+`.venv/bin/python -m pytest tests/test_deployment_acceptance_fixture.py -n 0
+--check-backend-pairs -m '' -k test_real -q`：6 passed／32 deselected，117.68 s，
+沒有 skip。包含 SQLite／MariaDB native parent oracle、真實 CBZ／restart 及兩種
+mixed raster 配置；不是只有 import 或版本字串驗證。
+
+Ingest 手動 release validation：`H2HDB_TEST_MARIADB=1 .venv/bin/python -m pytest
+-n 0 --check-backend-pairs -m mariadb tests/test_runtime_e2e.py` 分兩個不重疊 selection
+執行，`-k 'not large_encoded_source'` 為 27 passed（508.30 s），
+`-k large_encoded_source` 為 1 passed（15.01 s），完整 28 unique cases、零 skip。
+包含 257 頁 CBZ、100 MP mixed repair、33 MiB source、restart／policy takeover／
+relocation／replacement／storage pressure；測試前後 source hashes 相同。
+此處 Core 為 index `0.45.8`，Ingest 實際 source/project 為 `0.30.4`，舊 editable
+metadata 尚為 `0.30.3`；不是前述乾淨 wheel 的證據。命令、環境與 source hashes
+保存在 `/private/tmp/h2hdb-artifact-mariadb.YvmqeI/environment.json`，SHA-256：
+`520cf98c013d787aec29c95637f23f76a6073e1af7f7c32517e7e22770cf6a03`。
+JUnit `results.xml`／`large-results.xml` SHA-256 分別為
+`cdc5803e1ff0c15d458d01145865fbf40ade025ec55d00a3b0ddfa168d972c90`／
+`4d90b848082a9048baa56d9a729ba409ac55bc3820f66d67e7739d73e29af469`；
+來源為上述 `a92747c` runtime，可按相同兩個 selections 重建證據。
+
+Ingest 已經 `scripts/git-flow-merge.sh` 合併至 `main`，merge `3ce26cd`，task branch
+已刪除。實際 pre-merge hook 的 version／full profile 通過：Ruff、formatter、strict
+mypy、Markdown、backend collection、bounded pytest 2,033 passed／7 skipped
+（112.46 s）、Lean、TLC Small、sdist/wheel 與 installed-wheel smoke。七個 skip 是
+兩個 private-corpus opt-in 與五個 Windows-only 案例，不當成已驗證。
+Ingest 此版本使用 hook 直接執行完整檢查，沒有 Core 式 exact-tree receipt；不要
+混稱兩庫證據。Ingest 獨立唯讀審查 `c5a6967..e3e6463` 未發現 P0／P1／P2，
+Core 正式 online review 仍由其 merge flow 執行。
+
+本輪以品質優先選擇完整 parser ownership，未受最小修改或向後相容限制；受支援
+runtime 公開 API／canonical bytes／schema／資料格式為「品質優先後恰好向後相容」。
+公開 inspection 現在拒絕上述原本誤接受的損壞 metadata，屬於原 canonical 契約修正；
+沒有移除 runtime compatibility path，也沒有新增 shim。整體交付含一項「不向後相容」
+的開發工具變化：Core dev probe 移除舊私有位置，對舊 Ingest 不做 fallback，必須
+同步使用本輪 Ingest candidate。無法以一次性資料轉換工具讓舊程式提供新模組；
+所需操作是更新工具與 Ingest 套件，不涉及資料遷移、刪除或重建，既有資料全數保留。
+Ingest shipped runtime impact 為 patch，`0.30.3`→`0.30.4`；Core 只有 dev tool／test／
+ledger，impact none，維持 `0.45.8`。Ingest audit 已重查並人工審閱 Core `0.45.8`、
+Pydantic `2.14.0`、Hypothesis `6.168.5`、mypy `2.4.0`、Ruff `0.16.10`，本機及乾淨
+環境驗證新版；其餘直接依賴最新版不變，所有 bounds 滿足，不修改 dependency range。
+本節寫入時 Core 正式 review／full gate 待整合，以其 Git metadata receipt 核對；
+不預寫通過。沒有 schema、清理／compaction／交易快取或部署組合變更，未重跑
+完整 deep、效能矩陣、cleanup-acceptance、Compose build／隔離部署流程或 production
+驗收；不宣稱端到端加速或正式可部署，沒有 push、publish 或 deploy。
+
 ## 下一輪入口
 
 接續時先核對七個 workspace 的來源、政策、Git ancestry 與本輪 exact-tree receipt。
-R02 未整合時先完成 `refactor/r02-ingest-validation`；整合後不要重做 R01／R02。
-下一個優先單元是 R07：比較 Ingest `library.py` 的 `_marker_payload`、
-`_quarantine_leaf` 與 `library_relocation.py` 的 `_publication_marker`、`_quarantine`。
-從實際格式、hash framing、檔案生命週期和錯誤語意確認重複規則；若可共用，放在
-Ingest 內部的正確 owner，保留 write／relocation 各自的必要驗證並完成測試及整合。
-若不能共用，給出具體差異及保留證據，不為了減行破壞責任邊界。
+R01／R02 已整合，不重做。R15 Ingest 已整合 `3ce26cd`；若 Core 尚未整合，完成
+`refactor/artifact-consumer-boundaries`，核對 candidate wheel、手動驗收、Ingest
+hook 結果及 Core exact-tree receipt。
+下一輪先驗證 R16 的完整 analysis overlay family：現有四組 BUILD／VALIDATE entry
+共約 786 行、replay helpers 約 132 行，先比較 durable owners／keyspace／exactness，
+再判定能收斂哪些真正相同責任。這些是調查範圍，不是已證實可刪行數；不能為合併
+造出 flags framework。R07 不再是預設第一順位；library 整體 I/O ownership 或其他
+高維護負擔的完整功能可依證據調整排序，不能每輪自動挑最小 helper。
 R14 source SQL 與 R03 cleanup 仍是已知成本未達標事項；保留原預算與重新驗收要求，
 但使用者現在優先要求程式精簡，不能再默認以效能工具增量代替減碼工作。
 R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未完成，不得從
@@ -595,7 +725,7 @@ R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未
 5. 內部模組化與獨立拆包各自有決定及依據；說明實際消除的重複責任和維護成本，
    列出分類 LOC 與總增減。不能只以減行數判定完成，也不能隱去沒有減碼的結果。
 
-目前進度：R01 family 共讀已整合，第二次 verify 移除候選由故障反例拒絕；R02
-共用 validation 已實作並通過雙 backend targeted tests，本節寫入時待正式整合。
-整合結果以 Git 與 receipt 為準。受影響 callers 與 consumer 邊界已重查；其他
+目前進度：R01 family 共讀與 R02 validation 已整合；R15 完成單一 CBZ parser 與
+artifact 內部分割實作，整合結果以 Git 與 receipt 為準。受影響 callers、Core probe
+及 consumer byte 邊界已重查；其他
 analysis stages、runtime／部署審核與工程工具細分仍待做，S1–S4 及全系統尚未完成。
