@@ -654,25 +654,32 @@ Core 正式 online review 仍由其 merge flow 執行。
 本輪以品質優先選擇完整 parser ownership，未受最小修改或向後相容限制；受支援
 runtime 公開 API／canonical bytes／schema／資料格式為「品質優先後恰好向後相容」。
 公開 inspection 現在拒絕上述原本誤接受的損壞 metadata，屬於原 canonical 契約修正；
-沒有移除 runtime compatibility path，也沒有新增 shim。整體交付含一項「不向後相容」
-的開發工具變化：Core dev probe 移除舊私有位置，對舊 Ingest 不做 fallback，必須
-同步使用本輪 Ingest candidate。無法以一次性資料轉換工具讓舊程式提供新模組；
-所需操作是更新工具與 Ingest 套件，不涉及資料遷移、刪除或重建，既有資料全數保留。
+沒有移除 runtime compatibility path，也沒有新增 shim。Core dev probe 的私有
+instrumentation 接點改為本輪 Ingest 結構，不能搭配舊單檔 artifact 的 `0.30.3`；
+必須同步使用 `0.30.4` candidate，沒有 fallback。這是驗收工具的版本配套限制，
+既有契約未承諾支援任意歷史 Ingest，公開 CLI、事件名稱與 counters 都未改，
+不將它分類為公開 breaking change。所需操作是同步工具與套件；不需要一次性
+資料轉換，不涉及資料遷移、刪除或重建，既有資料全數保留。
 Ingest shipped runtime impact 為 patch，`0.30.3`→`0.30.4`；Core 只有 dev tool／test／
 ledger，impact none，維持 `0.45.8`。Ingest audit 已重查並人工審閱 Core `0.45.8`、
 Pydantic `2.14.0`、Hypothesis `6.168.5`、mypy `2.4.0`、Ruff `0.16.10`，本機及乾淨
 環境驗證新版；其餘直接依賴最新版不變，所有 bounds 滿足，不修改 dependency range。
-本節寫入時 Core 正式 review／full gate 待整合，以其 Git metadata receipt 核對；
-不預寫通過。沒有 schema、清理／compaction／交易快取或部署組合變更，未重跑
+Core 正式 online review 無 findings；full gate 全部通過，包含 4,735 non-MariaDB
+passed／9 skipped、24 MariaDB smoke passed、Lean、TLC Small 與 distribution boundary。
+九個 skip 是三個需 explicit Ingest／Pillow 的案例與六個 Windows-only；前者另以
+上述六個雙 backend real cases 驗證，後者未在本機執行。Merge `1010ec2` 已整合
+`c03efe5`／`05cc07f` 至 `master`，task branch 已刪除，exact-tree full receipt 位於
+Git metadata；本段措辭澄清另走 documentation profile，不冒稱再次執行 full gate。
+沒有 schema、清理／compaction／交易快取或部署組合變更，未重跑
 完整 deep、效能矩陣、cleanup-acceptance、Compose build／隔離部署流程或 production
 驗收；不宣稱端到端加速或正式可部署，沒有 push、publish 或 deploy。
 
 ## 下一輪入口
 
 接續時先核對七個 workspace 的來源、政策、Git ancestry 與本輪 exact-tree receipt。
-R01／R02 已整合，不重做。R15 Ingest 已整合 `3ce26cd`；若 Core 尚未整合，完成
-`refactor/artifact-consumer-boundaries`，核對 candidate wheel、手動驗收、Ingest
-hook 結果及 Core exact-tree receipt。
+R01／R02 已整合，不重做。R15 Ingest／Core 已分別整合 `3ce26cd`／`1010ec2`，
+核對 candidate wheel、手動驗收、Ingest hook 結果及 Core exact-tree receipt；
+本輪相容性措辭修正的文件整合另由 Git ancestry 核對，不重開已完成的 runtime。
 下一輪先驗證 R16 的完整 analysis overlay family：現有四組 BUILD／VALIDATE entry
 共約 786 行、replay helpers 約 132 行，先比較 durable owners／keyspace／exactness，
 再判定能收斂哪些真正相同責任。這些是調查範圍，不是已證實可刪行數；不能為合併
