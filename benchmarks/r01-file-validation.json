@@ -1,0 +1,1797 @@
+{
+  "schema_version": 1,
+  "status": "completed",
+  "scope": "local file-decision family-pair loader only",
+  "baseline_ref": "041f7070e4bbaeff00821754454bc588e93aea8b",
+  "reports": [
+    {
+      "report": "precise-sqlite-sanity.json",
+      "report_sha256": "0c2bf5a80739aeba192313074663d71869da2c40230a595eee8b9430f1b1dfbf",
+      "runner": "precise_probe.py",
+      "runner_sha256": "de8b5a1240486da2b1cf5ec1711c91b20deb4c537fb2447d7d0e3542270ad959",
+      "selected_case_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "report_sha256": "205b5725ca46ffe6d5d9f612c7667c81accc489aea8765357aa1aab0662e596d",
+      "runner": "precise_probe.py",
+      "runner_sha256": "de8b5a1240486da2b1cf5ec1711c91b20deb4c537fb2447d7d0e3542270ad959",
+      "selected_case_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "report_sha256": "898bbcea82c2d6e79c9099c7559d16f211f042fdfdf3d1e3a22f7f63ac29d2fd",
+      "runner": "precise_probe.py",
+      "runner_sha256": "de8b5a1240486da2b1cf5ec1711c91b20deb4c537fb2447d7d0e3542270ad959",
+      "selected_case_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "report_sha256": "3083cd660c68b0be8a59d22b48eda36668f65de94545df221b62af2e6da310e4",
+      "runner": "precise_probe.py",
+      "runner_sha256": "de8b5a1240486da2b1cf5ec1711c91b20deb4c537fb2447d7d0e3542270ad959",
+      "selected_case_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "formal-sqlite-dense.json",
+      "report_sha256": "176ce07687fa44430dabbb7173aeea8900d31d75fb1687fe3641dd195ae4ff50",
+      "runner": "formal_dense_v1.py",
+      "runner_sha256": "1edd410a39d7ac6a42f1d84186b38d9a38e397c0dd9026da6a7683571dbb092a",
+      "selected_case_indices": [
+        0,
+        1
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "formal-sqlite-boundary.json",
+      "report_sha256": "cc9e54b0968f2d2a38b9bf10016ebc5ecccf31b762d38e8ff3d96b12ce30d233",
+      "runner": "formal_final.py",
+      "runner_sha256": "05199def07f4de67e7815d0ce5243aa116ede60d570c51c30ca395ffbc630791",
+      "selected_case_indices": [
+        0
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "formal-mariadb-dense.json",
+      "report_sha256": "9b7f89a229a291638c46994766fe30f309ee94ba88e549c2d84c71c3238970a4",
+      "runner": "formal_final.py",
+      "runner_sha256": "05199def07f4de67e7815d0ce5243aa116ede60d570c51c30ca395ffbc630791",
+      "selected_case_indices": [
+        0,
+        1,
+        2
+      ],
+      "role": "cost"
+    },
+    {
+      "report": "formal-sqlite-exact-union-smoke.json",
+      "report_sha256": "a1ff2468b10633e847998cc127b50ee551515311f6eabe689aa29948faa395c7",
+      "runner": "formal_guard.py",
+      "runner_sha256": "76248b3daa49634b670c515b31264d8ff96a536e5c98dd812feb86fcf270710b",
+      "selected_case_indices": [
+        0
+      ],
+      "role": "tool_smoke"
+    },
+    {
+      "report": "formal-mariadb-exact-union-smoke.json",
+      "report_sha256": "b5f5575076026836a69fb032d083d0aca2ab1eb7fcaf5833e79451c8f56019b8",
+      "runner": "formal_guard.py",
+      "runner_sha256": "76248b3daa49634b670c515b31264d8ff96a536e5c98dd812feb86fcf270710b",
+      "selected_case_indices": [
+        0
+      ],
+      "role": "tool_smoke"
+    }
+  ],
+  "cases": [
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 1,
+        "requested": 1,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 1,
+      "physical_shadow_rows": 5,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 4,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 6
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.00013545795809477568,
+          "cpu_seconds": 0.00013499999999999623
+        },
+        "candidate": {
+          "seconds": 8.425000123679638e-05,
+          "cpu_seconds": 8.300000000005525e-05
+        }
+      },
+      "wall_reduction_percent": 37.80357948563694,
+      "candidate_cpu_seconds_per_key": 8.300000000005525e-05,
+      "candidate_wall_seconds_per_key": 8.425000123679638e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 6473,
+        "baseline": 8714
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 1,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 127,
+        "requested": 127,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 132,
+      "physical_shadow_rows": 660,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 508,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 762
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0023132500937208533,
+          "cpu_seconds": 0.0023090000000000055
+        },
+        "candidate": {
+          "seconds": 0.001405874965712428,
+          "cpu_seconds": 0.0014049999999999896
+        }
+      },
+      "wall_reduction_percent": 39.22512012304368,
+      "candidate_cpu_seconds_per_key": 1.106299212598417e-05,
+      "candidate_wall_seconds_per_key": 1.1069881619782898e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 90696,
+        "baseline": 124087
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 2,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 128,
+        "requested": 128,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 133,
+      "physical_shadow_rows": 665,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 512,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 768
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0023424579994753003,
+          "cpu_seconds": 0.0023419999999999552
+        },
+        "candidate": {
+          "seconds": 0.0014296669978648424,
+          "cpu_seconds": 0.0014259999999999273
+        }
+      },
+      "wall_reduction_percent": 38.9672302263229,
+      "candidate_cpu_seconds_per_key": 1.1140624999999432e-05,
+      "candidate_wall_seconds_per_key": 1.1169273420819081e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 91289,
+        "baseline": 124825
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 3,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 134,
+      "physical_shadow_rows": 670,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 516,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 774
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.002486291923560202,
+          "cpu_seconds": 0.0024850000000000705
+        },
+        "candidate": {
+          "seconds": 0.0015332909533753991,
+          "cpu_seconds": 0.001530999999999949
+        }
+      },
+      "wall_reduction_percent": 38.330212198902615,
+      "candidate_cpu_seconds_per_key": 1.1868217054263171e-05,
+      "candidate_wall_seconds_per_key": 1.1885976382755031e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 92529,
+        "baseline": 125017
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 4,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 257,
+        "requested": 257,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 267,
+      "physical_shadow_rows": 1335,
+      "structural": {
+        "candidate_queries": 6,
+        "candidate_grid_rows": 1028,
+        "baseline_queries": 12,
+        "baseline_grid_rows": 1542
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0048680838663131,
+          "cpu_seconds": 0.004866000000000148
+        },
+        "candidate": {
+          "seconds": 0.0029221249278634787,
+          "cpu_seconds": 0.002919000000000005
+        }
+      },
+      "wall_reduction_percent": 39.97381704772099,
+      "candidate_cpu_seconds_per_key": 1.1357976653696518e-05,
+      "candidate_wall_seconds_per_key": 1.1370135906083575e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 92721,
+        "baseline": 125241
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 5,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 0,
+        "mode": "genesis",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 0,
+      "current_layers": 1,
+      "unique_layers": 1,
+      "stored_shadow_families": 129,
+      "physical_shadow_rows": 645,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 258,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 258
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0010800000745803118,
+          "cpu_seconds": 0.0010769999999999946
+        },
+        "candidate": {
+          "seconds": 0.0010732919909060001,
+          "cpu_seconds": 0.0010710000000000441
+        }
+      },
+      "wall_reduction_percent": 0.6211188158406749,
+      "candidate_cpu_seconds_per_key": 8.30232558139569e-06,
+      "candidate_wall_seconds_per_key": 8.320092952759691e-06,
+      "python_peak_bytes_per_call": {
+        "candidate": 74590,
+        "baseline": 73966
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 6,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 8,
+        "mode": "policy_change",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 1,
+      "unique_layers": 9,
+      "stored_shadow_families": 258,
+      "physical_shadow_rows": 1290,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 2322,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 2322
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.004991042078472674,
+          "cpu_seconds": 0.0049880000000002145
+        },
+        "candidate": {
+          "seconds": 0.004623875021934509,
+          "cpu_seconds": 0.004622000000000126
+        }
+      },
+      "wall_reduction_percent": 7.356520958254928,
+      "candidate_cpu_seconds_per_key": 3.582945736434206e-05,
+      "candidate_wall_seconds_per_key": 3.584399241809697e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 271126,
+        "baseline": 208606
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-sanity.json",
+      "case_index": 7,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 17,
+        "mode": "compaction",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 17,
+      "current_layers": 1,
+      "unique_layers": 18,
+      "stored_shadow_families": 258,
+      "physical_shadow_rows": 1290,
+      "structural": {
+        "candidate_queries": 8,
+        "candidate_grid_rows": 4644,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 4644
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.00878654106054455,
+          "cpu_seconds": 0.00878599999999996
+        },
+        "candidate": {
+          "seconds": 0.008738917065784335,
+          "cpu_seconds": 0.008736999999999995
+        }
+      },
+      "wall_reduction_percent": 0.5420107233558386,
+      "candidate_cpu_seconds_per_key": 6.77286821705426e-05,
+      "candidate_wall_seconds_per_key": 6.7743543145615e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 511162,
+        "baseline": 509202
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 4297,
+      "physical_shadow_rows": 21485,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.2803123309276998,
+          "cpu_seconds": 0.280009999999999
+        },
+        "candidate": {
+          "seconds": 0.15145070874132216,
+          "cpu_seconds": 0.15118799999999943
+        }
+      },
+      "wall_reduction_percent": 45.97072906493528,
+      "candidate_cpu_seconds_per_key": 3.691113281249986e-05,
+      "candidate_wall_seconds_per_key": 3.6975270688799355e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 226716,
+        "baseline": 241197
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "case_index": 1,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 32768,
+        "requested": 32768,
+        "baseline_layers": 16,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 16,
+      "current_layers": 17,
+      "unique_layers": 17,
+      "stored_shadow_families": 34403,
+      "physical_shadow_rows": 172015,
+      "structural": {
+        "candidate_queries": 512,
+        "candidate_grid_rows": 1114112,
+        "baseline_queries": 1024,
+        "baseline_grid_rows": 2162688
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 4.450687895994633,
+          "cpu_seconds": 4.4458879999999965
+        },
+        "candidate": {
+          "seconds": 2.298357457271777,
+          "cpu_seconds": 2.2964369999999725
+        }
+      },
+      "wall_reduction_percent": 48.35950057652507,
+      "candidate_cpu_seconds_per_key": 7.008169555663979e-05,
+      "candidate_wall_seconds_per_key": 7.014030326146781e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 511827,
+        "baseline": 545156
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "case_index": 2,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 0
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 8192,
+      "physical_shadow_rows": 40960,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.30652212584391236,
+          "cpu_seconds": 0.3054750000000013
+        },
+        "candidate": {
+          "seconds": 0.16636399913113564,
+          "cpu_seconds": 0.16597999999999047
+        }
+      },
+      "wall_reduction_percent": 45.72528861559189,
+      "candidate_cpu_seconds_per_key": 4.052246093749767e-05,
+      "candidate_wall_seconds_per_key": 4.061621072537491e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 271686,
+        "baseline": 286311
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "case_index": 3,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 32768,
+        "requested": 32768,
+        "baseline_layers": 16,
+        "mode": "overlay",
+        "reuse_percent": 0
+      },
+      "baseline_layers": 16,
+      "current_layers": 17,
+      "unique_layers": 17,
+      "stored_shadow_families": 65536,
+      "physical_shadow_rows": 327680,
+      "structural": {
+        "candidate_queries": 512,
+        "candidate_grid_rows": 1114112,
+        "baseline_queries": 1024,
+        "baseline_grid_rows": 2162688
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 4.62504614808131,
+          "cpu_seconds": 4.613192000000005
+        },
+        "candidate": {
+          "seconds": 2.410215828800574,
+          "cpu_seconds": 2.406920000000042
+        }
+      },
+      "wall_reduction_percent": 47.88774529740754,
+      "candidate_cpu_seconds_per_key": 7.345336914062629e-05,
+      "candidate_wall_seconds_per_key": 7.355394985353314e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 539705,
+        "baseline": 573290
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "case_index": 4,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 4096,
+        "requested": 128,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 4297,
+      "physical_shadow_rows": 21485,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 2304,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 4352
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.008501417003571987,
+          "cpu_seconds": 0.008499999999997954
+        },
+        "candidate": {
+          "seconds": 0.004529499914497137,
+          "cpu_seconds": 0.004528000000000532
+        }
+      },
+      "wall_reduction_percent": 46.72064771562193,
+      "candidate_cpu_seconds_per_key": 3.537500000000415e-05,
+      "candidate_wall_seconds_per_key": 3.538671808200888e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 226655,
+        "baseline": 241128
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-sqlite-main.json",
+      "case_index": 5,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 32768,
+        "requested": 128,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 34403,
+      "physical_shadow_rows": 172015,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 2304,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 4352
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.009135916945524514,
+          "cpu_seconds": 0.009095000000002074
+        },
+        "candidate": {
+          "seconds": 0.004918832913972437,
+          "cpu_seconds": 0.004899999999999238
+        }
+      },
+      "wall_reduction_percent": 46.159395457485346,
+      "candidate_cpu_seconds_per_key": 3.828124999999405e-05,
+      "candidate_wall_seconds_per_key": 3.842838214040967e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 226591,
+        "baseline": 241096
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 1,
+        "requested": 1,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 1,
+      "physical_shadow_rows": 5,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 4,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 6
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0017681249883025885,
+          "cpu_seconds": 0.0004569999999999297
+        },
+        "candidate": {
+          "seconds": 0.0012033329112455249,
+          "cpu_seconds": 0.00027199999999993896
+        }
+      },
+      "wall_reduction_percent": 31.94299502544035,
+      "candidate_cpu_seconds_per_key": 0.00027199999999993896,
+      "candidate_wall_seconds_per_key": 0.0012033329112455249,
+      "python_peak_bytes_per_call": {
+        "candidate": 13394,
+        "baseline": 14179
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 1,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 127,
+        "requested": 127,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 132,
+      "physical_shadow_rows": 660,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 508,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 762
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.006495791021734476,
+          "cpu_seconds": 0.0028369999999999784
+        },
+        "candidate": {
+          "seconds": 0.004334166063927114,
+          "cpu_seconds": 0.0018780000000000463
+        }
+      },
+      "wall_reduction_percent": 33.27731681291334,
+      "candidate_cpu_seconds_per_key": 1.4787401574803515e-05,
+      "candidate_wall_seconds_per_key": 3.412729184194578e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 122607,
+        "baseline": 154558
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 2,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 128,
+        "requested": 128,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 133,
+      "physical_shadow_rows": 665,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 512,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 768
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.006994458031840622,
+          "cpu_seconds": 0.003306999999999949
+        },
+        "candidate": {
+          "seconds": 0.004379124962724745,
+          "cpu_seconds": 0.0018460000000000143
+        }
+      },
+      "wall_reduction_percent": 37.391504205332126,
+      "candidate_cpu_seconds_per_key": 1.4421875000000112e-05,
+      "candidate_wall_seconds_per_key": 3.421191377128707e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 123440,
+        "baseline": 155568
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 3,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 134,
+      "physical_shadow_rows": 670,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 516,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 774
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.00800475012511015,
+          "cpu_seconds": 0.003117999999999954
+        },
+        "candidate": {
+          "seconds": 0.0052147910464555025,
+          "cpu_seconds": 0.0019340000000003243
+        }
+      },
+      "wall_reduction_percent": 34.853793498223105,
+      "candidate_cpu_seconds_per_key": 1.4992248062018018e-05,
+      "candidate_wall_seconds_per_key": 4.04247367942287e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 123440,
+        "baseline": 155568
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 4,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 257,
+        "requested": 257,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 267,
+      "physical_shadow_rows": 1335,
+      "structural": {
+        "candidate_queries": 6,
+        "candidate_grid_rows": 1028,
+        "baseline_queries": 12,
+        "baseline_grid_rows": 1542
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.016085540992207825,
+          "cpu_seconds": 0.006364000000000036
+        },
+        "candidate": {
+          "seconds": 0.01074454199988395,
+          "cpu_seconds": 0.004269999999999996
+        }
+      },
+      "wall_reduction_percent": 33.20372622164942,
+      "candidate_cpu_seconds_per_key": 1.6614785992217882e-05,
+      "candidate_wall_seconds_per_key": 4.180755641978191e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 123440,
+        "baseline": 155709
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 5,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 0,
+        "mode": "genesis",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 0,
+      "current_layers": 1,
+      "unique_layers": 1,
+      "stored_shadow_families": 129,
+      "physical_shadow_rows": 645,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 258,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 258
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0035725830821320415,
+          "cpu_seconds": 0.00131099999999984
+        },
+        "candidate": {
+          "seconds": 0.0033889999613165855,
+          "cpu_seconds": 0.0012780000000003344
+        }
+      },
+      "wall_reduction_percent": 5.138666242182881,
+      "candidate_cpu_seconds_per_key": 9.906976744188639e-06,
+      "candidate_wall_seconds_per_key": 2.6271317529585934e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 121693,
+        "baseline": 121789
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 6,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 8,
+        "mode": "policy_change",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 1,
+      "unique_layers": 9,
+      "stored_shadow_families": 258,
+      "physical_shadow_rows": 1290,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 2322,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 2322
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.013580166967585683,
+          "cpu_seconds": 0.005854000000000026
+        },
+        "candidate": {
+          "seconds": 0.011538333026692271,
+          "cpu_seconds": 0.005145999999999873
+        }
+      },
+      "wall_reduction_percent": 15.035411168117722,
+      "candidate_cpu_seconds_per_key": 3.989147286821607e-05,
+      "candidate_wall_seconds_per_key": 8.944444206738195e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 297483,
+        "baseline": 235171
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-sanity.json",
+      "case_index": 7,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 17,
+        "mode": "compaction",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 17,
+      "current_layers": 1,
+      "unique_layers": 18,
+      "stored_shadow_families": 258,
+      "physical_shadow_rows": 1290,
+      "structural": {
+        "candidate_queries": 8,
+        "candidate_grid_rows": 4644,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 4644
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.01908487407490611,
+          "cpu_seconds": 0.008859000000000172
+        },
+        "candidate": {
+          "seconds": 0.019327166955918074,
+          "cpu_seconds": 0.008757000000000126
+        }
+      },
+      "wall_reduction_percent": -1.269554517682375,
+      "candidate_cpu_seconds_per_key": 6.788372093023353e-05,
+      "candidate_wall_seconds_per_key": 0.00014982299965827963,
+      "python_peak_bytes_per_call": {
+        "candidate": 543555,
+        "baseline": 543155
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 4297,
+      "physical_shadow_rows": 21485,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.6404753724345937,
+          "cpu_seconds": 0.31674300000000155
+        },
+        "candidate": {
+          "seconds": 0.3483232102589682,
+          "cpu_seconds": 0.16665700000000072
+        }
+      },
+      "wall_reduction_percent": 45.61489399117537,
+      "candidate_cpu_seconds_per_key": 4.0687744140625176e-05,
+      "candidate_wall_seconds_per_key": 8.50398462546309e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 254380,
+        "baseline": 268737
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "case_index": 1,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 32768,
+        "requested": 32768,
+        "baseline_layers": 16,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 16,
+      "current_layers": 17,
+      "unique_layers": 17,
+      "stored_shadow_families": 34403,
+      "physical_shadow_rows": 172015,
+      "structural": {
+        "candidate_queries": 512,
+        "candidate_grid_rows": 1114112,
+        "baseline_queries": 1024,
+        "baseline_grid_rows": 2162688
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 8.3317937128013,
+          "cpu_seconds": 4.048824000000005
+        },
+        "candidate": {
+          "seconds": 4.320660301484168,
+          "cpu_seconds": 2.0825609999999877
+        }
+      },
+      "wall_reduction_percent": 48.14249547674551,
+      "candidate_cpu_seconds_per_key": 6.355471801757775e-05,
+      "candidate_wall_seconds_per_key": 0.00013185608830212914,
+      "python_peak_bytes_per_call": {
+        "candidate": 545148,
+        "baseline": 577981
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "case_index": 2,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 0
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 8192,
+      "physical_shadow_rows": 40960,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.6357598352478817,
+          "cpu_seconds": 0.30016300000000484
+        },
+        "candidate": {
+          "seconds": 0.35460550093557686,
+          "cpu_seconds": 0.16510999999999498
+        }
+      },
+      "wall_reduction_percent": 44.22335585302951,
+      "candidate_cpu_seconds_per_key": 4.0310058593748775e-05,
+      "candidate_wall_seconds_per_key": 8.657360862684982e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 297931,
+        "baseline": 312108
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "case_index": 3,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 32768,
+        "requested": 32768,
+        "baseline_layers": 16,
+        "mode": "overlay",
+        "reuse_percent": 0
+      },
+      "baseline_layers": 16,
+      "current_layers": 17,
+      "unique_layers": 17,
+      "stored_shadow_families": 65536,
+      "physical_shadow_rows": 327680,
+      "structural": {
+        "candidate_queries": 512,
+        "candidate_grid_rows": 1114112,
+        "baseline_queries": 1024,
+        "baseline_grid_rows": 2162688
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 8.692668498377316,
+          "cpu_seconds": 4.089199999999991
+        },
+        "candidate": {
+          "seconds": 4.594249872141518,
+          "cpu_seconds": 2.1415210000000755
+        }
+      },
+      "wall_reduction_percent": 47.14799174730822,
+      "candidate_cpu_seconds_per_key": 6.535403442383043e-05,
+      "candidate_wall_seconds_per_key": 0.00014020537939885003,
+      "python_peak_bytes_per_call": {
+        "candidate": 573154,
+        "baseline": 606179
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "case_index": 4,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 4096,
+        "requested": 128,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 4297,
+      "physical_shadow_rows": 21485,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 2304,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 4352
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.01863774994853884,
+          "cpu_seconds": 0.008802000000002863
+        },
+        "candidate": {
+          "seconds": 0.010401249979622662,
+          "cpu_seconds": 0.0047560000000004266
+        }
+      },
+      "wall_reduction_percent": 44.192566118003434,
+      "candidate_cpu_seconds_per_key": 3.715625000000333e-05,
+      "candidate_wall_seconds_per_key": 8.125976546580205e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 254380,
+        "baseline": 268557
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "precise-mariadb-main.json",
+      "case_index": 5,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 32768,
+        "requested": 128,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 34403,
+      "physical_shadow_rows": 172015,
+      "structural": {
+        "candidate_queries": 2,
+        "candidate_grid_rows": 2304,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 4352
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.019236500025726855,
+          "cpu_seconds": 0.008696000000000481
+        },
+        "candidate": {
+          "seconds": 0.010289291036315262,
+          "cpu_seconds": 0.0044719999999998095
+        }
+      },
+      "wall_reduction_percent": 46.5116262181042,
+      "candidate_cpu_seconds_per_key": 3.493749999999851e-05,
+      "candidate_wall_seconds_per_key": 8.038508622121299e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 254380,
+        "baseline": 268557
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "formal-sqlite-dense.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95,
+        "dense": true
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 32969,
+      "physical_shadow_rows": 164845,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264,
+        "candidate_layout_calls": 128,
+        "baseline_layout_calls": 128
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.3963095401413739,
+          "cpu_seconds": 0.396008000000001
+        },
+        "candidate": {
+          "seconds": 0.20960608590394258,
+          "cpu_seconds": 0.20933499999999983
+        }
+      },
+      "wall_reduction_percent": 47.11051219479332,
+      "candidate_cpu_seconds_per_key": 5.110717773437496e-05,
+      "candidate_wall_seconds_per_key": 5.117336081639223e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 543660,
+        "baseline": 578957
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "formal-sqlite-dense.json",
+      "case_index": 1,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 0,
+        "dense": true
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 36864,
+      "physical_shadow_rows": 184320,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264,
+        "candidate_layout_calls": 128,
+        "baseline_layout_calls": 128
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.42098649917170405,
+          "cpu_seconds": 0.4182190000000032
+        },
+        "candidate": {
+          "seconds": 0.221189247793518,
+          "cpu_seconds": 0.22000100000000078
+        }
+      },
+      "wall_reduction_percent": 47.45930137220303,
+      "candidate_cpu_seconds_per_key": 5.371118164062519e-05,
+      "candidate_wall_seconds_per_key": 5.400128119958936e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 582990,
+        "baseline": 618335
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "formal-sqlite-boundary.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 128,
+        "requested": 128,
+        "baseline_layers": 17,
+        "mode": "disjoint",
+        "reuse_percent": 0,
+        "dense": true
+      },
+      "baseline_layers": 17,
+      "current_layers": 17,
+      "unique_layers": 34,
+      "stored_shadow_families": 4352,
+      "physical_shadow_rows": 21760,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 8704,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 8704,
+        "candidate_layout_calls": 4,
+        "baseline_layout_calls": 4
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.02372487506363541,
+          "cpu_seconds": 0.023706000000000005
+        },
+        "candidate": {
+          "seconds": 0.023501291987486184,
+          "cpu_seconds": 0.02349000000000001
+        }
+      },
+      "wall_reduction_percent": 0.9423993827133991,
+      "candidate_cpu_seconds_per_key": 0.00018351562500000008,
+      "candidate_wall_seconds_per_key": 0.0001836038436522358,
+      "python_peak_bytes_per_call": {
+        "candidate": 1855487,
+        "baseline": 1396911
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "formal-mariadb-dense.json",
+      "case_index": 0,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 95,
+        "dense": true
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 32969,
+      "physical_shadow_rows": 164845,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264,
+        "candidate_layout_calls": 128,
+        "baseline_layout_calls": 128
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.742384874029085,
+          "cpu_seconds": 0.3698320000000015
+        },
+        "candidate": {
+          "seconds": 0.41571104107424617,
+          "cpu_seconds": 0.20820200000000133
+        }
+      },
+      "wall_reduction_percent": 44.00329861004691,
+      "candidate_cpu_seconds_per_key": 5.0830566406250325e-05,
+      "candidate_wall_seconds_per_key": 0.00010149195338726713,
+      "python_peak_bytes_per_call": {
+        "candidate": 570716,
+        "baseline": 605761
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "formal-mariadb-dense.json",
+      "case_index": 1,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 4096,
+        "requested": 4096,
+        "baseline_layers": 8,
+        "mode": "overlay",
+        "reuse_percent": 0,
+        "dense": true
+      },
+      "baseline_layers": 8,
+      "current_layers": 9,
+      "unique_layers": 9,
+      "stored_shadow_families": 36864,
+      "physical_shadow_rows": 184320,
+      "structural": {
+        "candidate_queries": 64,
+        "candidate_grid_rows": 73728,
+        "baseline_queries": 128,
+        "baseline_grid_rows": 139264,
+        "candidate_layout_calls": 128,
+        "baseline_layout_calls": 128
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.7783760007005185,
+          "cpu_seconds": 0.38750499999999555
+        },
+        "candidate": {
+          "seconds": 0.42008508590515703,
+          "cpu_seconds": 0.21111400000000025
+        }
+      },
+      "wall_reduction_percent": 46.03057063333258,
+      "candidate_cpu_seconds_per_key": 5.154150390625006e-05,
+      "candidate_wall_seconds_per_key": 0.00010255983542606373,
+      "python_peak_bytes_per_call": {
+        "candidate": 609651,
+        "baseline": 644580
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": true
+    },
+    {
+      "report": "formal-mariadb-dense.json",
+      "case_index": 2,
+      "role": "cost",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 128,
+        "requested": 128,
+        "baseline_layers": 17,
+        "mode": "disjoint",
+        "reuse_percent": 0,
+        "dense": true
+      },
+      "baseline_layers": 17,
+      "current_layers": 17,
+      "unique_layers": 34,
+      "stored_shadow_families": 4352,
+      "physical_shadow_rows": 21760,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 8704,
+        "baseline_queries": 4,
+        "baseline_grid_rows": 8704,
+        "candidate_layout_calls": 4,
+        "baseline_layout_calls": 4
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.04571841692086309,
+          "cpu_seconds": 0.02167500000000011
+        },
+        "candidate": {
+          "seconds": 0.04426774999592453,
+          "cpu_seconds": 0.02124400000000115
+        }
+      },
+      "wall_reduction_percent": 3.173047149575653,
+      "candidate_cpu_seconds_per_key": 0.000165968750000009,
+      "candidate_wall_seconds_per_key": 0.0003458417968431604,
+      "python_peak_bytes_per_call": {
+        "candidate": 1891484,
+        "baseline": 1432524
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": false,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "formal-sqlite-exact-union-smoke.json",
+      "case_index": 0,
+      "role": "tool_smoke",
+      "backend": "sqlite",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 134,
+      "physical_shadow_rows": 670,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 516,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 774,
+        "candidate_layout_calls": 8,
+        "baseline_layout_calls": 8
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0026225000619888306,
+          "cpu_seconds": 0.002619000000000038
+        },
+        "candidate": {
+          "seconds": 0.001770207891240716,
+          "cpu_seconds": 0.0017619999999999303
+        }
+      },
+      "wall_reduction_percent": 32.49922404584273,
+      "candidate_cpu_seconds_per_key": 1.365891472868163e-05,
+      "candidate_wall_seconds_per_key": 1.372254179256369e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 92513,
+        "baseline": 125065
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    },
+    {
+      "report": "formal-mariadb-exact-union-smoke.json",
+      "case_index": 0,
+      "role": "tool_smoke",
+      "backend": "mariadb",
+      "shape": {
+        "retained": 129,
+        "requested": 129,
+        "baseline_layers": 1,
+        "mode": "overlay",
+        "reuse_percent": 95
+      },
+      "baseline_layers": 1,
+      "current_layers": 2,
+      "unique_layers": 2,
+      "stored_shadow_families": 134,
+      "physical_shadow_rows": 670,
+      "structural": {
+        "candidate_queries": 4,
+        "candidate_grid_rows": 516,
+        "baseline_queries": 8,
+        "baseline_grid_rows": 774,
+        "candidate_layout_calls": 8,
+        "baseline_layout_calls": 8
+      },
+      "medians": {
+        "baseline": {
+          "seconds": 0.0074702081037685275,
+          "cpu_seconds": 0.0028850000000000264
+        },
+        "candidate": {
+          "seconds": 0.005018042051233351,
+          "cpu_seconds": 0.001850999999999936
+        }
+      },
+      "wall_reduction_percent": 32.825940301423756,
+      "candidate_cpu_seconds_per_key": 1.434883720930183e-05,
+      "candidate_wall_seconds_per_key": 3.889955078475466e-05,
+      "python_peak_bytes_per_call": {
+        "candidate": 123480,
+        "baseline": 155616
+      },
+      "oracle_matches": true,
+      "negative_control_rejected": true,
+      "main_net_wall_benefit": null
+    }
+  ],
+  "excluded": {
+    "probe.py": "pilot repeated new single-root helper instead of historical body; no final timing claim",
+    "sqlite-sanity.json": "pilot baseline",
+    "sqlite-main.json": "pilot baseline",
+    "mariadb-sanity.json": "pilot baseline",
+    "mariadb-main.json": "pilot baseline intentionally interrupted and cleaned up",
+    "formal-sqlite-sanity.json": "superseded intermediate tool smoke",
+    "formal-sqlite-dense.json case 2": "same nearest scalar across disjoint roots; replaced by formal-sqlite-boundary.json distinct-root oracle"
+  },
+  "interpretation": [
+    "8 MiB is per-call traced Python allocation, not server/process RSS.",
+    "Historical baseline executes exact helper body with current shared dependencies. The shared dependencies were separately source-compared for this task.",
+    "Pair output retains both full evidence objects, unlike historical caller retaining only parent.resolved. Peak is helper-pair scope, not exact historical commit peak.",
+    "Timings exclude read-transaction entry/exit and independent output oracle; include layout reads, family SQL, parsing and local result construction.",
+    "Dense medium case contains complete prior shadows at every baseline layer. Dense 32768 was not measured.",
+    "Artist/occurrence values are aggregate deterministic scalars, not source gallery/artist distributions.",
+    "B=1,K=1 already benefited in these local measurements; no unmeasured NAS breakeven is inferred.",
+    "Formal exact-union smoke verifies stronger owner-set checking but is not another main performance sample."
+  ],
+  "shared_dependency_evidence": {
+    "_load_layout": {
+      "unchanged": true,
+      "sha256": "4ae1fc5571519eea1fed3af99df3f90876af6fd1840a4592774e04dae97cbe8a"
+    },
+    "_Decision": {
+      "unchanged": true,
+      "sha256": "dac0ddbb7b5f0ab7afc18e8c9ed29dc5f281e1c7cf972c31e2d36e590c80eece"
+    },
+    "_FileDecisionEvidence": {
+      "unchanged": true,
+      "sha256": "bbe2d41e2e27cf1cd42063eeb20f62c8bd33c16deb27849956bdbf80c3f156f3"
+    },
+    "AnalysisCorruptionError": {
+      "unchanged": true,
+      "sha256": "0e06af64997412cf258557e6d6c677b2fc5c5224ec09d236f4c391641b8fcca6"
+    },
+    "src/h2hdb/vnext_analysis_decision_batch.py": {
+      "unchanged": true,
+      "sha256": "5671738e98a212cd1918f604f723a06c0d7ef7c13e3e5abd74ccb2fd3d04c94b"
+    },
+    "src/h2hdb/vnext_analysis_overlay_family.py": {
+      "unchanged": true,
+      "sha256": "3ea3df72435fa52949beb447c7b78899bd599d52a9d3c2fb967075c11b06d2fc"
+    },
+    "src/h2hdb/vnext_domains.py": {
+      "unchanged": true,
+      "sha256": "b851ca7e1781430c99fef847857591bf536d62e35222474e41caf890507fec06"
+    }
+  },
+  "validation": {
+    "pure_guard_regression": "pytest -n 0 tests/test_ingest_file_validation_cost_probe.py: 1 passed",
+    "lint": "Ruff lint + format check: passed",
+    "typing": "strict mypy scripts/ingest_file_validation_cost_probe.py tests/test_ingest_file_validation_cost_probe.py: 2 files passed",
+    "wrong_union_counterexample": "same 2x128 grid size, replace expected b-layer with c-layer: rejected by exact-owner-set guard"
+  },
+  "archive": {
+    "path": "evidence/r01-file-validation.tar.gz",
+    "sha256": "20d727189e616a44c6f3af7f4224a9b0622339eb21bf546a8810dbdc32892f14",
+    "bytes": 815561,
+    "summary_entry": "summary.json",
+    "reports_prefix": "reports/",
+    "runner_prefix": "sources/",
+    "entries": 14
+  }
+}
