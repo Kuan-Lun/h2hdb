@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-08T14:14:49+00:00",
+  "checked_at": "2026-10-09T14:42:10+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.6",
+  "project_version": "0.45.7",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -32,7 +32,7 @@
     {
       "declared": "pydantic>=2.13.4,<3.0.0",
       "group": "runtime",
-      "latest": "2.13.5",
+      "latest": "2.14.0",
       "latest_satisfies": true,
       "name": "pydantic",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed registry candidates against the 0.45.5 audit and the installed Python 3.14 toolchain: latest direct dependency versions are unchanged, remain within the existing justified bounds, and are already installed. This cleanup performance release changes no dependency declarations or public adapter requirements. SQLite and MariaDB targeted cleanup regressions have passed; full release gate and deployment acceptance are separate evidence, not asserted by this receipt.",
+    "note": "Reviewed all registry candidates against the 0.45.6 receipt and installed Python 3.14 toolchain. Pydantic 2.14.0 is the only new direct candidate; reviewed https://github.com/pydantic/pydantic/releases/tag/v2.14.0 including enum construction and model_config handling. Core uses frozen ConfigDict with no model_config mutation; its four configuration tests passed with isolated Pydantic 2.14.0. Remaining direct versions are unchanged and within existing justified bounds. No dependency declarations changed. Full release gate and candidate-wheel consumer validation are separate evidence and are not asserted by this receipt.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
