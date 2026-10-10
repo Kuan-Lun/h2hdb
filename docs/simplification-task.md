@@ -899,6 +899,17 @@ Node 最新候選不變，現有 bounds 全部滿足；dependency manifest 不�
   Ingest source 未改，完整 collection 2,166 cases 的 backend-pair 檢查另通過。
 - 正式 code review 與 full gate 由 `scripts/git-flow-merge.sh` 對真正 two-parent
   candidate 執行；是否完成以 Git metadata 的 evidence／receipt 為準，本文件不預寫通過。
+- 首次正式 review 阻擋一個 P2：成本工具移除 `cleanup` alias 後，deep scalar cleanup
+  反例仍存取 `acceptance.cleanup`。合併已自動 abort；測試改為直接匯入 registry／model
+  owner，不補 shim、不改成本斷言。原始
+  `test_real_replacement_rejects_scalar_cleanup_but_accepts_batched_cost` 的 SQLite／
+  MariaDB × batched／scalar 四案以 `H2HDB_TEST_MARIADB=1`、`-o addopts= -n 0
+  --check-backend-pairs -m ''` 執行：4 passed、零 skip、74.42 秒；scalar 反例確實被成本
+  契約拒絕，published facts／cleanup DONE／READY／next claim 仍通過。此修正只有測試
+  ownership，runtime、候選 wheels 與原人工驗收 artifact 不變，後續正式 merge 重新審查。
+  獨立 audit 掃描 452 個 tracked Python files，核對 125 個 attribute／literal patch
+  references 與 18 個動態 owner/name pairs，沒有未解決引用；對失敗 candidate tree
+  `97002fe810a735b28cf3ce026fb28e642283a8bb` 能重現原本的 alias 缺口。
 
 持久人工證據為本 checkout 的
 `.manual-evidence/cleanup-ownership-0.45.9.tar.gz`（既有 ignore，未 commit），
@@ -907,23 +918,28 @@ SHA-256 `e7bf198f47e8bf1d3da76304885883dc968bdc89da57d8be05f55190257deaee`；
 `cleanup-ownership-0.45.9/commands.json` 是重建索引，包含明確六庫來源／wheels、
 乾淨解析環境、Compose 衍生 build／run、fixture／consumer 與 AST／plan parity 命令；
 `build/` 保存 candidate overlay，`provenance.json`、`wheel-manifest.json` 與
-`artifact-files.json` 保存來源及 hash。Core source 對應實作／升版 commits，後續僅改本紀錄。
+`artifact-files.json` 保存來源及 hash。Core runtime 對應實作／升版 commits；其後只改
+本紀錄及上述 deep 反例的測試 owner 引用。
 12-case staging 選集保留原 tool result 與精確 invocation，沒有完整 stdout artifact；
 其他所列測試的實際 logs／JUnit 均已收入，不補造缺少的 stdout。
+Review 修正另存 `.manual-evidence/cleanup-ownership-0.45.9-review-supplement.tar.gz`，
+SHA-256 `6217450996288a1944fd646f0128dfc5cf2604306182190ad10a11966e949b2c`，
+20,394 bytes／12 files，包含首次 review finding、4-case regression、兩套 alias audit
+與以 `e9ba240` 為 base 的 `test-fix.patch`；原證據包維持原 hash，沒有修改正式 receipts。
 
 相對 `41c8d8d` 的實體文字行差異如下，採 `git diff --no-renames --numstat`；
-新增／刪除包含搬移，不把搬檔當成刪碼成果。Code 的分類與獨立 blob 行數核對
-保存在 archive 的 LOC evidence，文件與總計以本紀錄最後內容重算。
+新增／刪除包含搬移，不把搬檔當成刪碼成果。原 archive 保存升版 commit 的 LOC
+分類與獨立 blob 行數核對；下表另納入 review 後測試修正，依最後 task diff 重算。
 
 | 分類 | 新增 | 刪除 | 淨增 |
 | --- | --- | --- | --- |
 | Runtime（非 generated） | 8,643 | 8,212 | 431 |
-| Tests | 551 | 497 | 54 |
+| Tests | 554 | 499 | 55 |
 | Dev tooling | 160 | 104 | 56 |
 | Generated code | 2 | 2 | 0 |
 | 版本／audit／manifests 等其他文字 | 11 | 11 | 0 |
-| 文件 | 213 | 77 | 136 |
-| 合計 | 9,580 | 8,903 | 677 |
+| 文件 | 229 | 77 | 152 |
+| 合計 | 9,599 | 8,905 | 694 |
 
 Generated loader／Lean provenance 各一行替換，binary 仍為 4,437,047 bytes。
 新增模組全歸 C04／C05，private probes 歸 E02，沒有新部署角色或獨立發行套件。
