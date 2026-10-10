@@ -21,7 +21,7 @@ from vnext_test_database import (
     track_managed_transactions,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup_module
+import h2hdb._cleanup.registry as cleanup_registry
 import h2hdb.vnext_ingest_policy_repository as policy_module
 from h2hdb import (
     ArtifactReleaseAdapter,
@@ -49,11 +49,9 @@ from h2hdb import (
     VNextPreparedSource,
     VNextPreparedSourceStep,
 )
-from h2hdb.vnext_cleanup_repository import (
-    CatalogPublicationMaintenanceState,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CatalogPublicationMaintenanceState, CleanupTargetKind
+from h2hdb._cleanup.selection import CleanupSelectionRepository
 from h2hdb.vnext_ingest_policy_repository import VNextIngestPolicyConflictError
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
@@ -647,7 +645,7 @@ def test_current_only_outcome_reports_gate_contention(
     assert session is not None
 
     monkeypatch.setattr(
-        VNextCleanupRepository,
+        CleanupSelectionRepository,
         "current_only_maintenance_state",
         staticmethod(
             lambda *_args, **_kwargs: CatalogPublicationMaintenanceState.ACTIONABLE
@@ -675,14 +673,14 @@ def test_current_only_failure_releases_the_latest_renewed_gate(
         raise RuntimeError("injected cleanup probe failure")
 
     monkeypatch.setattr(
-        VNextCleanupRepository,
+        CleanupSelectionRepository,
         "current_only_maintenance_state",
         staticmethod(
             lambda *_args, **_kwargs: CatalogPublicationMaintenanceState.ACTIONABLE
         ),
     )
     monkeypatch.setattr(
-        VNextCleanupRepository,
+        CleanupSelectionRepository,
         "next_current_only_cycle",
         staticmethod(fail_after_renewal),
     )
@@ -733,7 +731,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
                 lease_duration=1_000_000,
             )
         with connector.transaction():
-            VNextCleanupRepository.begin_cycle(
+            CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.CONTENT_BLOB,
@@ -750,9 +748,9 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
             )
 
     assert CleanupTargetKind.HASH_CACHE_OBSERVATION not in (
-        cleanup_module._CURRENT_ONLY_TARGET_PRIORITY
+        cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY
     )
-    assert set(cleanup_module._CURRENT_ONLY_TARGET_PRIORITY) == set(
+    assert set(cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY) == set(
         CleanupTargetKind
     ) - {CleanupTargetKind.HASH_CACHE_OBSERVATION}
 
@@ -761,7 +759,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
         clock=lambda: 100,
     )
     advance_calls = 0
-    original_advance = VNextCleanupRepository.advance_current_only_cycle
+    original_advance = CleanupCycleRepository.advance_current_only_cycle
 
     def counted_advance(*args: Any, **kwargs: Any) -> Any:
         nonlocal advance_calls
@@ -770,7 +768,7 @@ def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
         return result
 
     monkeypatch.setattr(
-        VNextCleanupRepository,
+        CleanupCycleRepository,
         "advance_current_only_cycle",
         staticmethod(counted_advance),
     )

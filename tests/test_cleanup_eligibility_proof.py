@@ -22,11 +22,14 @@ from vnext_pipeline import (
 )
 from vnext_test_database import connector_backend, open_generated_database
 
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.registry as cleanup_registry
+import h2hdb._cleanup.targets.resources as cleanup_resources
 from h2hdb import CoreConfig, VNextIngestFacade
-from h2hdb import vnext_cleanup_repository as cleanup
+from h2hdb._cleanup.eligibility import CurrentOnlyEligibilityProof
+from h2hdb._cleanup.selection import CleanupSelectionRepository
 from h2hdb.domain import CurrentOnlyCleanupTerminalState
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_eligibility import CurrentOnlyEligibilityProof
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
@@ -53,9 +56,9 @@ def _select(
     *,
     now: int = 2,
     cutoff: int = 100,
-) -> cleanup.CurrentOnlyCleanupSelection:
+) -> cleanup_model.CurrentOnlyCleanupSelection:
     with connector.transaction():
-        selected = cleanup.VNextCleanupRepository.next_current_only_cycle(
+        selected = CleanupSelectionRepository.next_current_only_cycle(
             _work(connector),
             gate_lease=lease,
             cycle_cutoff_at=cutoff,
@@ -81,7 +84,9 @@ def _count_probes(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
         "_next_content_blob_candidate_shard",
         "_next_file_name_candidate_shard",
     ):
-        monkeypatch.setattr(cleanup, name, counter(name, getattr(cleanup, name)))
+        monkeypatch.setattr(
+            cleanup_resources, name, counter(name, getattr(cleanup_resources, name))
+        )
     return counts
 
 
@@ -109,7 +114,7 @@ def test_absence_reuse_requires_fresh_exact_ownership(
         _select(connector, renewed, proof, now=12, cutoff=101)
         assert list(counts.values()) == [3, 3]
         with connector.transaction(), pytest.raises(TypeError, match="freshly fenced"):
-            cleanup.VNextCleanupRepository.current_only_maintenance_state(
+            CleanupSelectionRepository.current_only_maintenance_state(
                 _work(connector), cycle_cutoff_at=100, eligibility_proof=proof
             )
         with pytest.raises(MaintenanceGateUnavailableError):
@@ -196,9 +201,10 @@ def test_reference_removal_invalidates_absence_before_next_priority_scan(
         invalidated = proof.after_committed_cleanup("GALLERY_OBSERVATION")
         assert not invalidated.absent_targets
         selected = _select(connector, lease, invalidated, now=10**18 + 3)
-        assert isinstance(selected.cycle, cleanup.CleanupCycle)
+        assert isinstance(selected.cycle, cleanup_model.CleanupCycle)
         assert (
-            selected.cycle.target_kind is cleanup.CleanupTargetKind.FILE_NAME_IDENTITY
+            selected.cycle.target_kind
+            is cleanup_model.CleanupTargetKind.FILE_NAME_IDENTITY
         )
         assert counts["_next_file_name_candidate_shard"] == 2
         # The immutable prior receipt is unchanged, not silently mutated.
@@ -226,10 +232,10 @@ def test_facade_drops_selection_evidence_on_rollback_or_response_loss(
     pending = False
     injected = False
     incoming: list[CurrentOnlyEligibilityProof | None] = []
-    original_select = cleanup.VNextCleanupRepository.next_current_only_cycle
+    original_select = CleanupSelectionRepository.next_current_only_cycle
     original_commit = connector_type.commit
 
-    def select(*args: Any, **kwargs: Any) -> cleanup.CurrentOnlyCleanupSelection:
+    def select(*args: Any, **kwargs: Any) -> cleanup_model.CurrentOnlyCleanupSelection:
         nonlocal pending
         incoming.append(kwargs.get("eligibility_proof"))
         selected = original_select(*args, **kwargs)
@@ -250,7 +256,7 @@ def test_facade_drops_selection_evidence_on_rollback_or_response_loss(
         original_commit(connector)
 
     monkeypatch.setattr(
-        cleanup.VNextCleanupRepository, "next_current_only_cycle", staticmethod(select)
+        CleanupSelectionRepository, "next_current_only_cycle", staticmethod(select)
     )
     monkeypatch.setattr(connector_type, "commit", commit)
     with VNextIngestFacade(db_config) as facade:
@@ -265,7 +271,9 @@ def test_facade_drops_selection_evidence_on_rollback_or_response_loss(
 def test_canonical_mutation_footprint_preserves_exact_probe_relations() -> None:
     """A future new canonical mutation must not silently invalidate this proof."""
 
-    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+    plan = cleanup_registry._STATIC_PLANS[
+        cleanup_model.CleanupTargetKind.CANONICAL_VALUE
+    ]
     mutations = {
         table
         for specs in plan.phases.values()
@@ -281,8 +289,8 @@ def test_canonical_mutation_footprint_preserves_exact_probe_relations() -> None:
             self.query = query
 
     for probe in (
-        cleanup._next_file_name_candidate_shard,
-        cleanup._next_content_blob_candidate_shard,
+        cleanup_resources._next_file_name_candidate_shard,
+        cleanup_resources._next_content_blob_candidate_shard,
     ):
         capture = Capture()
         probe(cast(Any, SimpleNamespace(connector=capture)))

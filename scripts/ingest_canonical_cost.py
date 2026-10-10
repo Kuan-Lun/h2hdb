@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from h2hdb import vnext_cleanup_repository as cleanup
+from h2hdb._cleanup.targets.canonical import _CANONICAL_VALUE_ELIGIBILITY
 from h2hdb.mariadb_connector import MariaDBConnector
 
 BASELINE_COMMIT = "fe32ba7186daf52561fd183ae3ac70298ebbd07b"
@@ -29,7 +29,7 @@ def historical_query(query: str) -> str:
     payload = path.read_bytes()
     if sha256(payload).hexdigest() != BASELINE_SHA256:
         raise RuntimeError("historical cleanup control fingerprint changed")
-    predicate = cleanup._CANONICAL_VALUE_ELIGIBILITY
+    predicate = _CANONICAL_VALUE_ELIGIBILITY
     if _ROOT not in query or query.count(predicate) != 1:
         raise ValueError("comparison requires one captured canonical predicate")
     return query.replace(predicate, payload.decode("utf-8"))

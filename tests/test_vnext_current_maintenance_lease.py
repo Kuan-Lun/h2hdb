@@ -11,14 +11,15 @@ import pytest
 from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 
-import h2hdb.vnext_ingest_facade as facade_module
+import h2hdb._ingest.maintenance as maintenance_module
 import h2hdb.vnext_maintenance_gate_repository as gate_module
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
-from h2hdb.vnext_cleanup_repository import (
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import (
     CleanupCorruptionError,
     CleanupTargetKind,
-    VNextCleanupRepository,
 )
+from h2hdb._ingest.maintenance import CurrentOnlyMaintenance
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     LockedExclusiveGateClaim,
@@ -56,7 +57,7 @@ def _seed_open_cycle(config: CoreConfig, *, rows: int = 3) -> None:
                 work, now=1, lease_duration=_DURATION
             )
         with connector.transaction():
-            VNextCleanupRepository.begin_cycle(
+            CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=backend_of(config)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.CONTENT_BLOB,
@@ -132,7 +133,7 @@ def test_expired_committed_batch_yields_then_resumes_to_done(
     _seed_open_cycle(db_config)
     clock = _Clock()
     advances = 0
-    original = VNextCleanupRepository.advance_current_only_cycle
+    original = CleanupCycleRepository.advance_current_only_cycle
 
     def slow_batch(*args: Any, **kwargs: Any) -> Any:
         nonlocal advances
@@ -143,7 +144,7 @@ def test_expired_committed_batch_yields_then_resumes_to_done(
         return result
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(slow_batch)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(slow_batch)
     )
     with VNextIngestFacade(db_config, clock=clock) as facade:
         assert facade.drain_current_only_maintenance(_DURATION) is (
@@ -168,16 +169,15 @@ def test_gate_wait_expiry_yields_without_mutating_under_stale_time(
     if phase == "state":
         # Three one-row batches plus the terminal empty batch exhaust this
         # budget. Only budget exhaustion needs a separate final-state scan.
-        monkeypatch.setattr(facade_module, "_CURRENT_ONLY_BATCHES_PER_ATTEMPT", 4)
+        monkeypatch.setattr(maintenance_module, "_CURRENT_ONLY_BATCHES_PER_ATTEMPT", 4)
     clock = _Clock()
     method = {
-        "next_cycle": "__next_current_only_cycle",
-        "advance": "__advance_current_only_shard",
-        "state": "__current_only_state",
-        "release": "__release_current_only_lease",
+        "next_cycle": "_next_cycle",
+        "advance": "_advance_shard",
+        "state": "_state",
+        "release": "_release_lease",
     }[phase]
-    method = "_VNextIngestFacade" + method
-    original_method = getattr(VNextIngestFacade, method)
+    original_method = getattr(CurrentOnlyMaintenance, method)
     original_lock = VNextUnitOfWork.lock_rows
     active = False
     delayed = False
@@ -198,7 +198,7 @@ def test_gate_wait_expiry_yields_without_mutating_under_stale_time(
             clock.now += _DURATION
         return result
 
-    monkeypatch.setattr(VNextIngestFacade, method, operation)
+    monkeypatch.setattr(CurrentOnlyMaintenance, method, operation)
     monkeypatch.setattr(VNextUnitOfWork, "lock_rows", lock)
     progressed = phase in {"state", "release"}
     with VNextIngestFacade(db_config, clock=clock) as facade:
@@ -263,9 +263,9 @@ def test_renewal_samples_after_gate_wait_and_never_revives_expired_owner(
     _seed_open_cycle(db_config)
     clock = _Clock()
     advances = 0
-    advance = VNextCleanupRepository.advance_current_only_cycle
-    renewal = "_VNextIngestFacade__renew_current_only_lease"
-    renew = getattr(VNextIngestFacade, renewal)
+    advance = CleanupCycleRepository.advance_current_only_cycle
+    renewal = "_renew_lease"
+    renew = getattr(CurrentOnlyMaintenance, renewal)
     lock_rows = VNextUnitOfWork.lock_rows
     renewing = False
     delayed = False
@@ -295,9 +295,9 @@ def test_renewal_samples_after_gate_wait_and_never_revives_expired_owner(
         return result
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(batch)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(batch)
     )
-    monkeypatch.setattr(VNextIngestFacade, renewal, renewal_step)
+    monkeypatch.setattr(CurrentOnlyMaintenance, renewal, renewal_step)
     monkeypatch.setattr(VNextUnitOfWork, "lock_rows", lock)
     with VNextIngestFacade(db_config, clock=clock) as facade:
         assert facade.drain_current_only_maintenance(_DURATION) is (
@@ -322,10 +322,8 @@ def test_replaced_owner_is_not_released_and_fresh_claim_resumes_durable_job(
 ) -> None:
     _seed_open_cycle(db_config)
     clock = _Clock()
-    method = "_VNextIngestFacade" + (
-        "__advance_current_only_shard" if progressed else "__next_current_only_cycle"
-    )
-    original = getattr(VNextIngestFacade, method)
+    method = "_advance_shard" if progressed else "_next_cycle"
+    original = getattr(CurrentOnlyMaintenance, method)
     replacement: list[GateLease] = []
 
     def takeover(*args: Any, **kwargs: Any) -> Any:
@@ -335,7 +333,7 @@ def test_replaced_owner_is_not_released_and_fresh_claim_resumes_durable_job(
             replacement.append(_claim(db_config, clock))
         return result
 
-    monkeypatch.setattr(VNextIngestFacade, method, takeover)
+    monkeypatch.setattr(CurrentOnlyMaintenance, method, takeover)
     with VNextIngestFacade(db_config, clock=clock) as facade:
         assert facade.drain_current_only_maintenance(_DURATION) is (
             VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
@@ -390,14 +388,14 @@ def test_fatal_failures_propagate_and_uncommitted_batch_rolls_back(
     _seed_open_cycle(db_config)
     checkpoints = _checkpoints(db_config)
     clock = _Clock()
-    original = VNextCleanupRepository.advance_current_only_cycle
+    original = CleanupCycleRepository.advance_current_only_cycle
 
     def fail(*args: Any, **kwargs: Any) -> Any:
         original(*args, **kwargs)
         raise error
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(fail)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(fail)
     )
     with VNextIngestFacade(db_config, clock=clock) as facade:
         with pytest.raises(type(error)) as raised:
@@ -418,7 +416,7 @@ def test_every_slow_batch_yields_and_finite_work_still_reaches_done(
     _seed_open_cycle(db_config)
     original_jobs = _job_identities(db_config)
     clock = _Clock()
-    original = VNextCleanupRepository.advance_current_only_cycle
+    original = CleanupCycleRepository.advance_current_only_cycle
     advances = 0
 
     def slow_batch(*args: Any, **kwargs: Any) -> Any:
@@ -429,7 +427,7 @@ def test_every_slow_batch_yields_and_finite_work_still_reaches_done(
         return result
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(slow_batch)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(slow_batch)
     )
     with VNextIngestFacade(db_config, clock=clock) as facade:
         for expected_rows in (2, 1, 0):
@@ -459,7 +457,7 @@ def test_rolled_back_attempt_never_reports_progress(
     _seed_open_cycle(db_config)
     checkpoints = _checkpoints(db_config)
     clock = _Clock()
-    original = VNextCleanupRepository.advance_current_only_cycle
+    original = CleanupCycleRepository.advance_current_only_cycle
 
     def unavailable(*args: Any, **kwargs: Any) -> Any:
         original(*args, **kwargs)
@@ -467,7 +465,7 @@ def test_rolled_back_attempt_never_reports_progress(
         raise MaintenanceGateUnavailableError("injected authorization failure")
 
     monkeypatch.setattr(
-        VNextCleanupRepository,
+        CleanupCycleRepository,
         "advance_current_only_cycle",
         staticmethod(unavailable),
     )
@@ -545,11 +543,11 @@ def test_failure_compensation_preserves_primary_or_explicit_error_chain(
         raise release_error
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(fail)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(fail)
     )
     monkeypatch.setattr(
-        VNextIngestFacade,
-        "_VNextIngestFacade__release_current_only_lease",
+        CurrentOnlyMaintenance,
+        "_release_lease",
         fail_release,
     )
     unavailable = type(release_error) is MaintenanceGateUnavailableError

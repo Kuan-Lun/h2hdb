@@ -16,7 +16,11 @@ from vnext_test_database import (
     open_generated_database,
 )
 
-from h2hdb import vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.keys as cleanup_keys
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.registry as cleanup_registry
+import h2hdb._cleanup.roots as cleanup_roots
+import h2hdb._cleanup.static as cleanup_static
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_transaction import VNextUnitOfWork
@@ -26,7 +30,7 @@ pytestmark = [pytest.mark.cleanup_acceptance, pytest.mark.deep]
 _TABLE = "catalog_analysis_exclusion_delta_anchors"
 _PHASE = "AR_EXCLUSION_ANCHOR"
 _RETAINED = bytes((23, 255)) + bytes(14)
-_PLAN = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.ANALYSIS_RUN]
+_PLAN = cleanup_registry._STATIC_PLANS[cleanup_model.CleanupTargetKind.ANALYSIS_RUN]
 
 
 def _root(index: int) -> bytes:
@@ -85,19 +89,21 @@ def _seed(
         )
 
 
-def _operation(connector: SQLConnector, root_count: int) -> cleanup._CleanupOperation:
-    kind = cleanup.CleanupTargetKind.ANALYSIS_RUN
-    cycle = cleanup.CleanupCycle(
-        cleanup._cleanup_id(kind, 23, 1),
+def _operation(
+    connector: SQLConnector, root_count: int
+) -> cleanup_model._CleanupOperation:
+    kind = cleanup_model.CleanupTargetKind.ANALYSIS_RUN
+    cycle = cleanup_model.CleanupCycle(
+        cleanup_model._cleanup_id(kind, 23, 1),
         kind,
         23,
-        cleanup._target_key(kind, 23),
+        cleanup_model._target_key(kind, 23),
         1,
         100,
         256,
         0,
     )
-    return cleanup._CleanupOperation(
+    return cleanup_model._CleanupOperation(
         VNextUnitOfWork(connector, backend=connector_backend(connector)),
         cycle,
         None,
@@ -144,7 +150,7 @@ def test_analysis_owned_complete_phase_keeps_skewed_roots_and_cursor(
         removed: list[bytes] = []
         for _step in range((sum(distribution) + 255) // 256 + 2):
             with connector.transaction():
-                result = cleanup._run_static_phase(
+                result = cleanup_static._run_static_phase(
                     _operation(connector, len(distribution)), cursor, plan, _PHASE
                 )
             assert len(result.row_keys) <= 256
@@ -155,7 +161,9 @@ def test_analysis_owned_complete_phase_keeps_skewed_roots_and_cursor(
         else:
             pytest.fail("analysis anchor phase exceeded its bounded batch count")
         expected = {
-            cleanup._encode_static_cursor(0, (_root(root), _root(root), _file(index)))
+            cleanup_keys._encode_static_cursor(
+                0, (_root(root), _root(root), _file(index))
+            )
             for root, size in enumerate(distribution)
             for index in range(1, size + 1)
         }
@@ -179,14 +187,14 @@ def test_analysis_range_work_rejects_the_unbounded_historical_shape(
         after = (_root(0), _root(0), _file(16384))
         with connector.transaction():
             operation = _operation(connector, 1)
-            shard = cleanup._static_shard_parameters(_PLAN, operation.cycle)
-            frozen, bindings = cleanup._frozen_root_predicate(
+            shard = cleanup_keys._static_shard_parameters(_PLAN, operation.cycle)
+            frozen, bindings = cleanup_roots._frozen_root_predicate(
                 _PLAN, operation.frozen_roots
             )
             budget = 150000 if connector_backend(connector) == "sqlite" else 1024
 
             def selected() -> list[tuple[Any, ...]]:
-                return cleanup._select_static_candidates(
+                return cleanup_static._select_static_candidates(
                     operation,
                     plan=_PLAN,
                     spec=spec,
@@ -203,7 +211,7 @@ def test_analysis_range_work_rejects_the_unbounded_historical_shape(
             assert rows == [(_root(0), _root(0), _file(i)) for i in range(16385, 16641)]
             with monkeypatch.context() as patch:
                 patch.setattr(
-                    cleanup, "_analysis_owned_suffix", lambda _plan, _spec: None
+                    cleanup_static, "_analysis_owned_suffix", lambda _plan, _spec: None
                 )
                 with _native_cost(connector) as cost:
                     assert selected() == rows
@@ -216,7 +224,7 @@ def test_analysis_range_work_rejects_the_unbounded_historical_shape(
             )
 
             def prefix_exists() -> bool:
-                return cleanup._static_raw_responsibility_exists(
+                return cleanup_static._static_raw_responsibility_exists(
                     operation.work,
                     plan=_PLAN,
                     spec=spec,
@@ -231,7 +239,7 @@ def test_analysis_range_work_rejects_the_unbounded_historical_shape(
                 assert cost() <= budget
             with monkeypatch.context() as patch:
                 patch.setattr(
-                    cleanup, "_analysis_owned_suffix", lambda _plan, _spec: None
+                    cleanup_static, "_analysis_owned_suffix", lambda _plan, _spec: None
                 )
                 with _native_cost(connector) as cost:
                     assert not prefix_exists()
@@ -253,17 +261,17 @@ def test_analysis_cursor_owner_mismatch_is_rejected(
         _seed(connector, (1,))
         with (
             connector.transaction(),
-            pytest.raises(cleanup.CleanupCorruptionError, match="owner prefix"),
+            pytest.raises(cleanup_model.CleanupCorruptionError, match="owner prefix"),
         ):
             operation = _operation(connector, 1)
-            cleanup._select_static_candidates(
+            cleanup_static._select_static_candidates(
                 operation,
                 plan=_PLAN,
                 spec=_PLAN.phases[_PHASE][0],
                 after=(_root(0), _root(1), _file(1)),
                 eligibility=None,
                 policy=(),
-                shard=cleanup._static_shard_parameters(_PLAN, operation.cycle),
+                shard=cleanup_keys._static_shard_parameters(_PLAN, operation.cycle),
                 remaining=256,
             )
 
@@ -276,16 +284,16 @@ def test_analysis_raw_prefix_covers_earlier_roots_and_retention_blocks_completio
         plan = replace(_PLAN, phases={_PHASE: _PLAN.phases[_PHASE]})
         with connector.transaction():
             operation = _operation(connector, 3)
-            frozen, bindings = cleanup._frozen_root_predicate(
+            frozen, bindings = cleanup_roots._frozen_root_predicate(
                 plan, operation.frozen_roots
             )
-            assert cleanup._static_raw_responsibility_exists(
+            assert cleanup_static._static_raw_responsibility_exists(
                 operation.work,
                 plan=plan,
                 spec=plan.phases[_PHASE][0],
                 frozen_root_predicate=frozen,
                 frozen_root_parameters=bindings,
-                shard_parameters=cleanup._static_shard_parameters(
+                shard_parameters=cleanup_keys._static_shard_parameters(
                     plan, operation.cycle
                 ),
                 through=(_root(2), _root(2), _file(0)),
@@ -294,15 +302,15 @@ def test_analysis_raw_prefix_covers_earlier_roots_and_retention_blocks_completio
                 "UPDATE operational_source_working_builds SET build_id = %s WHERE slot = 1",
                 (_root(2),),
             )
-            result = cleanup._run_static_phase(operation, b"", plan, _PHASE)
+            result = cleanup_static._run_static_phase(operation, b"", plan, _PHASE)
             assert len(result.row_keys) == 1
         with (
             connector.transaction(),
             pytest.raises(
-                cleanup.CleanupRetentionBlockedError, match="still owns rows"
+                cleanup_model.CleanupRetentionBlockedError, match="still owns rows"
             ),
         ):
-            cleanup._run_static_phase(
+            cleanup_static._run_static_phase(
                 _operation(connector, 3), result.next_cursor, plan, _PHASE
             )
         with connector.read_transaction():

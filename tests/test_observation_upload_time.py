@@ -32,8 +32,8 @@ from h2hdb import (
     VNextIngestFacade,
 )
 from h2hdb import catalog_refinement as refinement
+from h2hdb._cleanup.keys import _encode_static_cursor
 from h2hdb.catalog_refinement import CatalogSemanticValidationError
-from h2hdb.vnext_cleanup_repository import _encode_static_cursor
 from h2hdb.vnext_identity import (
     encode_gallery_observation_metadata,
     validate_gallery_observation_metadata_parts,

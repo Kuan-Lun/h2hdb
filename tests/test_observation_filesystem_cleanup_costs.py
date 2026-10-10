@@ -19,8 +19,11 @@ from vnext_pipeline import initialize_database
 from vnext_publication_cleanup_fixtures import partial_publication_setup
 from vnext_test_database import atomic_fixture
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.plan as cleanup_plan
+import h2hdb._cleanup.static as cleanup_static
 from h2hdb import CoreConfig
+from h2hdb._cleanup.cycle import CleanupCycleRepository
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector, measure_sql
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -116,12 +119,12 @@ def _seed_observation(connector: SQLConnector, *, observation: int, files: int) 
 
 def _begin(
     config: CoreConfig, gate: GateLease, *, now: int = 2
-) -> cleanup.CleanupCycle:
+) -> cleanup_model.CleanupCycle:
     with closing(open_connector(config)) as connector, connector.transaction():
-        return cleanup.VNextCleanupRepository.begin_cycle(
+        return CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=backend_of(config)),
             gate_lease=gate,
-            target_kind=cleanup.CleanupTargetKind.GALLERY_OBSERVATION,
+            target_kind=cleanup_model.CleanupTargetKind.GALLERY_OBSERVATION,
             shard_no=_GALLERY,
             cycle_cutoff_at=100,
             max_rows_per_transaction=256,
@@ -129,7 +132,9 @@ def _begin(
         )
 
 
-def _seed(config: CoreConfig, files: int) -> tuple[GateLease, cleanup.CleanupCycle]:
+def _seed(
+    config: CoreConfig, files: int
+) -> tuple[GateLease, cleanup_model.CleanupCycle]:
     initialize_database(config)
     backend = backend_of(config)
     with closing(open_connector(config)) as connector:
@@ -154,22 +159,22 @@ def _seed(config: CoreConfig, files: int) -> tuple[GateLease, cleanup.CleanupCyc
 def _drain(
     config: CoreConfig,
     gate: GateLease,
-    cycle: cleanup.CleanupCycle,
+    cycle: cleanup_model.CleanupCycle,
     monkeypatch: pytest.MonkeyPatch,
     *,
     files: int,
     now: int = 3,
 ) -> tuple[_Sample, ...]:
     samples: list[_Sample] = []
-    original = cleanup._run_static_phase
+    original = cleanup_static._run_static_phase
 
     def observed(
-        operation: cleanup._CleanupOperation,
+        operation: cleanup_model._CleanupOperation,
         cursor: bytes,
-        plan: cleanup._StaticTargetPlan,
+        plan: cleanup_plan._StaticTargetPlan,
         phase: str,
         **kwargs: Any,
-    ) -> cleanup._Mutation:
+    ) -> cleanup_model._Mutation:
         if phase not in _PHASES:
             return original(operation, cursor, plan, phase, **kwargs)
         counter = _Counter()
@@ -180,14 +185,14 @@ def _drain(
 
     all_calls = _Counter()
     with monkeypatch.context() as patch, measure_sql(all_calls, observe_nested=True):
-        patch.setattr(cleanup, "_run_static_phase", observed)
+        patch.setattr(cleanup_static, "_run_static_phase", observed)
         with closing(open_connector(config)) as raw:
             if isinstance(raw, SQLiteConnector):
                 raw.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
             connector = instrument_connector(raw)
             for step in range(64):
                 with connector.transaction():
-                    result = cleanup.VNextCleanupRepository.advance_current_only_cycle(
+                    result = CleanupCycleRepository.advance_current_only_cycle(
                         VNextUnitOfWork(connector, backend=backend_of(config)),
                         gate_lease=gate,
                         cycle=cycle,
@@ -288,7 +293,7 @@ def test_cost_oracle_rejects_scalar_deletion_with_correct_retained_results(
 ) -> None:
     files = 65
     gate, cycle = _seed(db_config, files)
-    original = cleanup._delete_static_key_page
+    original = cleanup_static._delete_static_key_page
 
     def scalar(work: VNextUnitOfWork, **kwargs: Any) -> None:
         if kwargs["phase"] in _PHASES:
@@ -298,7 +303,7 @@ def test_cost_oracle_rejects_scalar_deletion_with_correct_retained_results(
             original(work, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(cleanup, "_delete_static_key_page", scalar)
+        patch.setattr(cleanup_static, "_delete_static_key_page", scalar)
         samples = _drain(db_config, gate, cycle, monkeypatch, files=files)
     with pytest.raises(AssertionError, match="SQL cost"):
         _assert_costs(samples, files=files)
@@ -309,7 +314,7 @@ def test_observation_batch_failure_rolls_back_rows_and_checkpoint_then_resumes(
 ) -> None:
     files = 65
     gate, cycle = _seed(db_config, files)
-    original = cleanup._delete_static_key_page
+    original = cleanup_static._delete_static_key_page
     injected = False
 
     def fail_after_delete(work: VNextUnitOfWork, **kwargs: Any) -> None:
@@ -323,7 +328,7 @@ def test_observation_batch_failure_rolls_back_rows_and_checkpoint_then_resumes(
         monkeypatch.context() as patch,
         closing(open_connector(db_config)) as connector,
     ):
-        patch.setattr(cleanup, "_delete_static_key_page", fail_after_delete)
+        patch.setattr(cleanup_static, "_delete_static_key_page", fail_after_delete)
         for step in range(32):
             with connector.read_transaction():
                 before = connector.fetch_all(
@@ -333,7 +338,7 @@ def test_observation_batch_failure_rolls_back_rows_and_checkpoint_then_resumes(
                 )
             try:
                 with connector.transaction():
-                    cleanup.VNextCleanupRepository.advance_current_only_cycle(
+                    CleanupCycleRepository.advance_current_only_cycle(
                         VNextUnitOfWork(connector, backend=backend_of(db_config)),
                         gate_lease=gate,
                         cycle=cycle,

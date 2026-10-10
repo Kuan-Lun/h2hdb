@@ -19,15 +19,14 @@ from vnext_manifest_fixtures import seed_sealed_source_build
 from vnext_pipeline import initialize_database
 
 from h2hdb import CoreConfig
-from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchResult,
+from h2hdb._cleanup.cycle import CleanupBatchResult, CleanupCycleRepository
+from h2hdb._cleanup.model import (
     CleanupCorruptionError,
     CleanupCycle,
     CleanupRetentionBlockedError,
     CleanupTargetKind,
-    VNextCleanupRepository,
 )
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -85,7 +84,7 @@ def _seed(
             lease_duration=100_000,
         )
     with connector.transaction():
-        cycle = VNextCleanupRepository.begin_cycle(
+        cycle = CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=backend),
             gate_lease=gate,
             target_kind=CleanupTargetKind.ANALYSIS_RUN,
@@ -114,7 +113,7 @@ def _advance(
         patch.object(connector, "fetch_one", wraps=connector.fetch_one) as one,
         patch.object(connector, "fetch_all", wraps=connector.fetch_all) as many,
     ):
-        results = VNextCleanupRepository.advance_current_only_cycle(
+        results = CleanupCycleRepository.advance_current_only_cycle(
             VNextUnitOfWork(connector, backend=backend_of(config)),
             gate_lease=gate,
             cycle=cycle,
@@ -211,7 +210,7 @@ def test_next_transaction_revalidates_loaded_cleanup_authority(
     with closing(open_connector(db_config)) as connector:
         gate, cycle = _seed(db_config, connector)
         with connector.transaction():
-            VNextCleanupRepository.resume_cycle(
+            CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=backend_of(db_config)),
                 gate_lease=gate,
                 cycle=cycle,

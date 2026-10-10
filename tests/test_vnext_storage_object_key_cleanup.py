@@ -11,13 +11,9 @@ from vnext_test_database import (
     set_foreign_key_checks,
 )
 
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupBatchCommand, CleanupCycle, CleanupTargetKind
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
@@ -50,7 +46,7 @@ def _drain(
     generation = 1
     for batches in range(1, 128):
         with connector.transaction():
-            result = VNextCleanupRepository.advance(
+            result = CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -107,7 +103,7 @@ def test_storage_object_key_cleanup_is_bounded_and_retains_live_key(
 
         gate = _exclusive(connector)
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.STORAGE_OBJECT_KEY,
@@ -195,7 +191,7 @@ def test_gallery_observation_cleanup_deletes_adapter_role_before_file_anchor(
 
         gate = _exclusive(connector)
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.GALLERY_OBSERVATION,

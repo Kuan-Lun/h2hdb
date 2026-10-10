@@ -22,6 +22,7 @@ from vnext_pipeline import (
 from vnext_test_database import inspect_one
 
 from h2hdb import CoreConfig, VNextIngestFacade
+from h2hdb._cleanup.model import CleanupTargetKind
 from h2hdb.schema_epoch import SchemaEpochValidationError
 from h2hdb.source_collection_refinement import (
     check_source_collection_consumption_fencing_v1,
@@ -175,7 +176,6 @@ def test_cleanup_proof_is_once_per_validation_and_rejects_repeated_audit_mutant(
 
     import h2hdb.operational_refinement as operational
     from h2hdb.source_collection_refinement import _CleanupAudit
-    from h2hdb.vnext_cleanup_repository import CleanupTargetKind
 
     _one_gallery(db_config)
     with (

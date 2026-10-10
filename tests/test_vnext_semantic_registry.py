@@ -8,9 +8,9 @@ from typing import Any, cast
 import pytest
 
 from h2hdb import catalog_refinement, catalog_writer
+from h2hdb._cleanup.cycle import CleanupCycleRepository
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.vnext_analysis_repository import AnalysisRepository
-from h2hdb.vnext_cleanup_repository import VNextCleanupRepository
 from h2hdb.vnext_gallery_staging_repository import GalleryObservationStagingRepository
 from h2hdb.vnext_source_marker_repository import SourceMarkerRepository
 
@@ -132,9 +132,9 @@ def test_source_qualification_validator_and_writers_cover_the_exact_authority() 
         GalleryObservationStagingRepository.put_metadata,
         GalleryObservationStagingRepository.seal,
         SourceMarkerRepository.reuse,
-        VNextCleanupRepository.begin_cycle,
-        VNextCleanupRepository.resume_cycle,
-        VNextCleanupRepository.advance,
+        CleanupCycleRepository.begin_cycle,
+        CleanupCycleRepository.resume_cycle,
+        CleanupCycleRepository.advance,
     )
     assert binding.mutation_relations == frozenset(
         {

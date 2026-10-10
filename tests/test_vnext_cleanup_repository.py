@@ -55,23 +55,32 @@ from vnext_test_database import (
     trace_statements,
 )
 
+import h2hdb._cleanup.keys as cleanup_keys
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.registry as cleanup_registry
+import h2hdb._cleanup.roots as cleanup_roots
+import h2hdb._cleanup.static as cleanup_static
+import h2hdb._cleanup.targets.analysis as cleanup_analysis
+import h2hdb._cleanup.targets.canonical as cleanup_canonical
+import h2hdb._cleanup.targets.gallery as cleanup_gallery
+import h2hdb._cleanup.targets.publication_commit as cleanup_publication_commit
+import h2hdb._cleanup.targets.source as cleanup_source
 import h2hdb.operational_refinement as operational_refinement_module
-import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
-from h2hdb.domain import CurrentOnlyCleanupTerminalState
-from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
-from h2hdb.vnext_cleanup_repository import (
+from h2hdb._cleanup.cycle import CleanupBatchResult, CleanupCycleRepository
+from h2hdb._cleanup.model import (
     CatalogPublicationMaintenanceState,
     CleanupBatchCommand,
-    CleanupBatchResult,
     CleanupCorruptionError,
     CleanupCycle,
     CleanupRetentionBlockedError,
     CleanupTargetKind,
     CleanupUnavailableError,
-    VNextCleanupRepository,
 )
+from h2hdb._cleanup.selection import CleanupSelectionRepository
+from h2hdb.domain import CurrentOnlyCleanupTerminalState
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
@@ -111,7 +120,7 @@ def _begin(
     now: int = 2,
 ) -> CleanupCycle:
     with connector.transaction():
-        return VNextCleanupRepository.begin_cycle(
+        return CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             target_kind=kind,
@@ -132,7 +141,7 @@ def _advance(
     now: int,
 ) -> CleanupBatchResult:
     with connector.transaction():
-        return VNextCleanupRepository.advance(
+        return CleanupCycleRepository.advance(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
@@ -154,7 +163,7 @@ def _drain(
     for attempt in range(512):
         if current_only:
             with connector.transaction():
-                batch = VNextCleanupRepository.advance_current_only_cycle(
+                batch = CleanupCycleRepository.advance_current_only_cycle(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -1695,23 +1704,25 @@ def test_cleanup_predicates_fail_closed_for_sibling_analysis_corruption() -> Non
     """Retain defense for audit-bypassing corruption unreachable in epoch 3."""
 
     assert (
-        cleanup_module._SOURCE_BUILD_REACHABILITY_ELIGIBILITY.count(
+        cleanup_source._SOURCE_BUILD_REACHABILITY_ELIGIBILITY.count(
             "catalog_analysis_run_descriptor sibling"
         )
         == 1
     )
     assert (
-        cleanup_module._ANALYSIS_RUN_REACHABILITY_ELIGIBILITY.count(
+        cleanup_analysis._ANALYSIS_RUN_REACHABILITY_ELIGIBILITY.count(
             "catalog_analysis_run_descriptor sibling"
         )
         == 2
     )
     for predicate in (
-        cleanup_module._SOURCE_BUILD_REACHABILITY_ELIGIBILITY,
-        cleanup_module._ANALYSIS_RUN_REACHABILITY_ELIGIBILITY,
+        cleanup_source._SOURCE_BUILD_REACHABILITY_ELIGIBILITY,
+        cleanup_analysis._ANALYSIS_RUN_REACHABILITY_ELIGIBILITY,
     ):
         assert "sibling.analysis_id <> retired.analysis_id" in predicate
-    safe_release = cleanup_module._PUBLICATION_COMMIT_SAFE_BUILD_BASE_RELEASE
+    safe_release = (
+        cleanup_publication_commit._PUBLICATION_COMMIT_SAFE_BUILD_BASE_RELEASE
+    )
     assert "FROM catalog_analysis_run_descriptor analysis" in safe_release
     assert "provenance.analysis_id = analysis.analysis_id" in safe_release
     assert "analysis_state.state NOT IN ('COMPLETE', 'ABANDONED')" in safe_release
@@ -1822,7 +1833,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
 
         gate = _exclusive(connector)
         with connector.transaction():
-            first = VNextCleanupRepository.next_current_only_cycle(
+            first = CleanupSelectionRepository.next_current_only_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
@@ -1849,7 +1860,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
             (build_id,),
         )
         with connector.transaction():
-            second = VNextCleanupRepository.next_current_only_cycle(
+            second = CleanupSelectionRepository.next_current_only_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
@@ -1861,7 +1872,7 @@ def test_current_only_source_build_waits_for_publication_base_release_then_rewin
         assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
 
         with connector.transaction():
-            third = VNextCleanupRepository.next_current_only_cycle(
+            third = CleanupSelectionRepository.next_current_only_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
@@ -2184,7 +2195,7 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(
             "SELECT file_sha256 FROM catalog_content_blobs ORDER BY file_sha256",
         ) == [(outside_shard,)]
         with connector.transaction():
-            resumed = VNextCleanupRepository.resume_cycle(
+            resumed = CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -2233,7 +2244,7 @@ def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identit
 
         with pytest.raises(RuntimeError, match="abort cleanup successor"):
             with connector.transaction():
-                successor = VNextCleanupRepository.begin_cycle(
+                successor = CleanupCycleRepository.begin_cycle(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     target_kind=kind,
@@ -2243,7 +2254,7 @@ def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identit
                     now=4,
                 )
                 assert successor.cycle_generation == first.cycle_generation + 1
-                assert successor.cleanup_id == cleanup_module._cleanup_id(
+                assert successor.cleanup_id == cleanup_model._cleanup_id(
                     kind,
                     shard,
                     successor.cycle_generation,
@@ -2265,7 +2276,7 @@ def test_cleanup_successor_cas_and_transaction_rollback_preserve_attempt_identit
 
         successor = _begin(connector, gate, kind, shard, max_rows=1, now=6)
         assert successor.cycle_generation == first.cycle_generation + 1
-        assert successor.cleanup_id == cleanup_module._cleanup_id(
+        assert successor.cleanup_id == cleanup_model._cleanup_id(
             kind,
             shard,
             successor.cycle_generation,
@@ -2658,7 +2669,7 @@ def test_all_strategies_match_the_closed_phase_registry(
     }
     assert set(expected) == set(CleanupTargetKind)
     assert {
-        kind: strategy.phases for kind, strategy in cleanup_module._STRATEGIES.items()
+        kind: strategy.phases for kind, strategy in cleanup_registry._STRATEGIES.items()
     } == expected
 
     connector = _database(
@@ -2758,7 +2769,7 @@ def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
             (source, fingerprint),
         ) == (b"z" * 32,)
 
-        duplicate_digest = cleanup_module._frozen_root_set_sha256(
+        duplicate_digest = cleanup_roots._frozen_root_set_sha256(
             cycle.cleanup_id,
             (frame, frame),
         )
@@ -2794,18 +2805,18 @@ def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
 
 
 def test_frozen_root_source_gallery_name_has_exact_260_byte_boundary() -> None:
-    plan = cleanup_module._STATIC_PLANS[CleanupTargetKind.SOURCE_GALLERY_NAME_GID]
+    plan = cleanup_registry._STATIC_PLANS[CleanupTargetKind.SOURCE_GALLERY_NAME_GID]
     maximum_name = b"x" * 255
-    cleanup_module._validate_frozen_root_values(plan, (maximum_name,))
-    encoded = cleanup_module._encode_frozen_root_key((maximum_name,))
+    cleanup_roots._validate_frozen_root_values(plan, (maximum_name,))
+    encoded = cleanup_roots._encode_frozen_root_key((maximum_name,))
     assert len(encoded) == 260
-    assert cleanup_module._decode_frozen_root_key(
+    assert cleanup_roots._decode_frozen_root_key(
         encoded,
         root_arity=1,
     ) == (maximum_name,)
 
     with pytest.raises(ValueError, match=r"source_gallery_name.*1\.\.255"):
-        cleanup_module._validate_frozen_root_values(plan, (b"x" * 256,))
+        cleanup_roots._validate_frozen_root_values(plan, (b"x" * 256,))
 
 
 def test_frozen_root_set_accepts_exact_256_root_boundary(
@@ -2858,9 +2869,9 @@ def test_frozen_root_set_accepts_exact_256_root_boundary(
             connector, "SELECT COUNT(*) FROM operational_hash_cache_observations"
         ) == (0,)
 
-        assert cleanup_module._require_frozen_root_count(256) == 256
+        assert cleanup_roots._require_frozen_root_count(256) == 256
         with pytest.raises(CleanupCorruptionError, match="hard cap"):
-            cleanup_module._require_frozen_root_count(257)
+            cleanup_roots._require_frozen_root_count(257)
     finally:
         connector.close()
 
@@ -2910,7 +2921,7 @@ def test_frozen_root_terminal_completion_rolls_back_atomically(
         command = CleanupBatchCommand(b"4" * 32, 2)
         with pytest.raises(RuntimeError, match="abort frozen completion"):
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -2986,7 +2997,7 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend=connector_backend(connector))
             assert (
-                VNextCleanupRepository.current_only_maintenance_state(
+                CleanupSelectionRepository.current_only_maintenance_state(
                     work,
                     cycle_cutoff_at=100,
                     gate_lease=gate,
@@ -2994,7 +3005,7 @@ def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
                 )
                 is CatalogPublicationMaintenanceState.ACTIONABLE
             )
-            resumed = VNextCleanupRepository.next_current_only_cycle(
+            resumed = CleanupSelectionRepository.next_current_only_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle_cutoff_at=100,
@@ -3176,7 +3187,7 @@ def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
         )
 
         with connector.transaction():
-            completed = VNextCleanupRepository.resume_cycle(
+            completed = CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -3207,10 +3218,10 @@ def test_publication_commit_frozen_root_binds_exact_preparation_authority(
             max_rows=8,
         )
         wrong_preparation = b"z" * 16
-        wrong_frame = cleanup_module._encode_frozen_root_key(
+        wrong_frame = cleanup_roots._encode_frozen_root_key(
             (old_receipt, wrong_preparation)
         )
-        wrong_digest = cleanup_module._frozen_root_set_sha256(
+        wrong_digest = cleanup_roots._frozen_root_set_sha256(
             cycle.cleanup_id,
             (wrong_frame,),
         )
@@ -5002,7 +5013,7 @@ def test_catalog_publication_next_shard_prioritizes_interrupted_cycle(
         gate = _exclusive(connector)
         with connector.transaction():
             assert (
-                VNextCleanupRepository.catalog_publication_next_maintenance_shard(
+                CleanupSelectionRepository.catalog_publication_next_maintenance_shard(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     now=2,
@@ -5020,7 +5031,7 @@ def test_catalog_publication_next_shard_prioritizes_interrupted_cycle(
         )
         with connector.transaction():
             assert (
-                VNextCleanupRepository.catalog_publication_next_maintenance_shard(
+                CleanupSelectionRepository.catalog_publication_next_maintenance_shard(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     now=4,
@@ -5278,7 +5289,7 @@ def test_catalog_publication_cleanup_preserves_live_predecessor_base(
 
 
 def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
-    source = cleanup_module._STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases
+    source = cleanup_registry._STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases
     assert tuple(spec.table for spec in source["SB_GALLERY"]) == (
         "catalog_source_build_sealed_ats",
         "operational_source_build_discovery_checkpoints",
@@ -5296,7 +5307,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_source_build_descriptor",
     )
 
-    analysis = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
+    analysis = cleanup_registry._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
     assert tuple(spec.table for spec in analysis["AR_BATCH"]) == (
         "catalog_analysis_batch_receipt_stored",
     )
@@ -5316,7 +5327,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         _ANALYSIS_FILE_HASH_ANCHOR_TABLES
     )
 
-    canonical = cleanup_module._STATIC_PLANS[CleanupTargetKind.CANONICAL_VALUE].phases
+    canonical = cleanup_registry._STATIC_PLANS[CleanupTargetKind.CANONICAL_VALUE].phases
     assert tuple(spec.table for spec in canonical["CV_DICTIONARY"]) == (
         "catalog_search_lexemes",
         "catalog_display_title_choices",
@@ -5344,7 +5355,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "WHERE artifact_semantics_sha256 = %s",
     )
 
-    observation = cleanup_module._STATIC_PLANS[
+    observation = cleanup_registry._STATIC_PLANS[
         CleanupTargetKind.GALLERY_OBSERVATION
     ].phases
     assert tuple(spec.table for spec in observation["GO_FILESYSTEM_SEAL"]) == (
@@ -5672,7 +5683,7 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
         )
         with connector.read_transaction():
             assert (
-                VNextCleanupRepository.current_only_maintenance_state(
+                CleanupSelectionRepository.current_only_maintenance_state(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     cycle_cutoff_at=100,
                 )
@@ -5710,7 +5721,7 @@ def test_candidate_cleanup_retains_unresolved_protection_families(
         )
         with connector.read_transaction():
             assert (
-                VNextCleanupRepository.current_only_maintenance_state(
+                CleanupSelectionRepository.current_only_maintenance_state(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     cycle_cutoff_at=100,
                 )
@@ -6971,7 +6982,7 @@ def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_lo
             ],
         )
 
-        observation_phases = cleanup_module._STATIC_PLANS[
+        observation_phases = cleanup_registry._STATIC_PLANS[
             CleanupTargetKind.GALLERY_OBSERVATION
         ].phases
         assert tuple(
@@ -7265,10 +7276,10 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
             ],
         )
         assert "catalog_analysis_impacted_content" in (
-            cleanup_module._GALLERY_IDENTITY_ELIGIBILITY
+            cleanup_gallery._GALLERY_IDENTITY_ELIGIBILITY
         )
         assert "catalog_a_impacted_gid_provenance_storage" in (
-            cleanup_module._GALLERY_IDENTITY_ELIGIBILITY
+            cleanup_gallery._GALLERY_IDENTITY_ELIGIBILITY
         )
 
         gate = _exclusive(connector)
@@ -7481,13 +7492,13 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             _source_scope_family_rows(connector),
         )
         assert "FROM catalog_source_scopes scope_root" in (
-            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+            cleanup_canonical._CANONICAL_VALUE_ELIGIBILITY
         )
         assert "JOIN catalog_source_build_descriptor build" in (
-            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+            cleanup_canonical._CANONICAL_VALUE_ELIGIBILITY
         )
         assert "JOIN catalog_gallery_identities gallery" in (
-            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+            cleanup_canonical._CANONICAL_VALUE_ELIGIBILITY
         )
 
         gate = _exclusive(connector)
@@ -7784,7 +7795,7 @@ def test_canonical_source_scope_delete_faults_roll_back_every_child_boundary(
         )
         family_before = _source_scope_family_rows(connector)
         protocol_before = _cleanup_protocol_snapshot(connector)
-        source_scope_spec = cleanup_module._STATIC_PLANS[
+        source_scope_spec = cleanup_registry._STATIC_PLANS[
             CleanupTargetKind.CANONICAL_VALUE
         ].phases["CV_DICTIONARY"][3]
         tables = tuple(
@@ -8016,8 +8027,8 @@ def test_static_terminal_rejects_earlier_spec_reappearance_after_later_cursor(
             now=21,
         )
         assert second.phase == "AR_OVERLAY" and second.row_count == 1
-        plan = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
-        relation_index, _cursor_values = cleanup_module._decode_static_cursor(
+        plan = cleanup_registry._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
+        relation_index, _cursor_values = cleanup_keys._decode_static_cursor(
             second.cursor,
             plan.phases["AR_OVERLAY"],
             len(plan.root_key),
@@ -8394,7 +8405,7 @@ def test_analysis_wide_root_delete_fault_rolls_back_and_retries(
         )
         generation = 1
         phase_count = len(
-            cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
+            cleanup_registry._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
         )
         for attempt in range(phase_count):
             result = _advance(
@@ -8414,9 +8425,9 @@ def test_analysis_wide_root_delete_fault_rolls_back_and_retries(
 
         family_before = _analysis_run_family_rows(connector, analysis_id)
         protocol_before = _cleanup_protocol_snapshot(connector)
-        root_spec = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases[
-            "AR_ROOT"
-        ][0]
+        root_spec = cleanup_registry._STATIC_PLANS[
+            CleanupTargetKind.ANALYSIS_RUN
+        ].phases["AR_ROOT"][0]
         tables = tuple(statement.split()[2] for statement in root_spec.delete_sql)
         assert tables == ("catalog_analysis_run_descriptor",)
         original_execute_affected = connector.execute_affected
@@ -8509,7 +8520,7 @@ def test_canonical_policy_delete_faults_roll_back_every_child_boundary(
         protocol_before = _cleanup_protocol_snapshot(connector)
         tables = tuple(
             spec.table
-            for spec in cleanup_module._STATIC_PLANS[
+            for spec in cleanup_registry._STATIC_PLANS[
                 CleanupTargetKind.CANONICAL_VALUE
             ].phases["CV_SEMANTIC_LINK"]
         )
@@ -8583,7 +8594,7 @@ def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
             artifact_semantics_sha256=semantics,
         )
         protocol_before = _cleanup_protocol_snapshot(connector)
-        semantic_spec = cleanup_module._STATIC_PLANS[
+        semantic_spec = cleanup_registry._STATIC_PLANS[
             CleanupTargetKind.CANONICAL_VALUE
         ].phases["CV_DICTIONARY"][-1]
         tables = tuple(statement.split()[2] for statement in semantic_spec.delete_sql)
@@ -9488,7 +9499,7 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
         def advance(*, now: int) -> None:
             if current_only:
                 with connector.transaction():
-                    VNextCleanupRepository.advance_current_only_cycle(
+                    CleanupCycleRepository.advance_current_only_cycle(
                         VNextUnitOfWork(
                             connector, backend=connector_backend(connector)
                         ),
@@ -9676,7 +9687,10 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
     database_factory: DatabaseFactory,
     tmp_path: Path,
 ) -> None:
-    source = Path(cleanup_module.__file__).read_text(encoding="utf-8").upper()
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path(cleanup_registry.__file__).parent.rglob("*.py"))
+    ).upper()
     assert "SELECT COUNT(" not in source
     assert "SUM(" not in source
     assert "SELECT RELATION" not in source
@@ -9694,26 +9708,24 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
         database_factory.config(str(tmp_path / "cleanup-explain.sqlite3"))
     )
     try:
-        target = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
+        target = cleanup_registry._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
         spec = target.phases["AR_ROOT"][0]
-        sql = cleanup_module._static_select_sql(
+        sql = cleanup_static._static_select_sql(
             target,
             spec,
             exact=False,
             frozen_root_predicate="1 = 1",
             has_after=False,
         )
-        parameters = cleanup_module._static_shard_parameters(
+        parameters = cleanup_keys._static_shard_parameters(
             target,
             CleanupCycle(
-                cleanup_id=cleanup_module._cleanup_id(
+                cleanup_id=cleanup_model._cleanup_id(
                     CleanupTargetKind.ANALYSIS_RUN, 0, 1
                 ),
                 target_kind=CleanupTargetKind.ANALYSIS_RUN,
                 shard_no=0,
-                target_key=cleanup_module._target_key(
-                    CleanupTargetKind.ANALYSIS_RUN, 0
-                ),
+                target_key=cleanup_model._target_key(CleanupTargetKind.ANALYSIS_RUN, 0),
                 cycle_generation=1,
                 cycle_cutoff_at=100,
                 max_rows_per_transaction=8,

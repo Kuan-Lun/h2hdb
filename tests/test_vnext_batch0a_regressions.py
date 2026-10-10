@@ -19,8 +19,8 @@ from vnext_test_database import (
 
 import h2hdb.vnext_publication_repository as publication_module
 from h2hdb import catalog_refinement
+from h2hdb._cleanup.model import CleanupTargetKind
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import CleanupTargetKind
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 

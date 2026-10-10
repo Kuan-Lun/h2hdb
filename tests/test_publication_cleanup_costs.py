@@ -27,11 +27,14 @@ from vnext_publication_cleanup_fixtures import (
 )
 from vnext_test_database import DatabaseFactory, inspect_all, inspect_one
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.plan as cleanup_plan
+import h2hdb._cleanup.static as cleanup_static
 from h2hdb import CoreConfig
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupCycle
 from h2hdb.sql_performance import instrument_connector, measure_sql
 from h2hdb.sqlite_connector import SQLiteConnector
-from h2hdb.vnext_cleanup_repository import CleanupCycle, VNextCleanupRepository
 from h2hdb.vnext_maintenance_gate_repository import GateLease
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -103,15 +106,15 @@ def _drain(
     start_at: int = 3,
 ) -> tuple[_PhaseSample, ...]:
     samples: list[_PhaseSample] = []
-    original = cleanup._run_static_phase
+    original = cleanup_static._run_static_phase
 
     def observed(
-        operation: cleanup._CleanupOperation,
+        operation: cleanup_model._CleanupOperation,
         cursor: bytes,
-        plan: cleanup._StaticTargetPlan,
+        plan: cleanup_plan._StaticTargetPlan,
         current_phase: str,
         **kwargs: Any,
-    ) -> cleanup._Mutation:
+    ) -> cleanup_model._Mutation:
         if current_phase != phase:
             return original(operation, cursor, plan, current_phase, **kwargs)
         # Count the whole production phase, not merely the optimized helper.
@@ -139,7 +142,7 @@ def _drain(
 
     all_calls = _Counter()
     with monkeypatch.context() as patch:
-        patch.setattr(cleanup, "_run_static_phase", observed)
+        patch.setattr(cleanup_static, "_run_static_phase", observed)
         with closing(open_connector(config)) as raw:
             if isinstance(raw, SQLiteConnector):
                 raw.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
@@ -147,7 +150,7 @@ def _drain(
                 connector = instrument_connector(raw)
                 for step in range(32):
                     with connector.transaction():
-                        result = VNextCleanupRepository.advance_current_only_cycle(
+                        result = CleanupCycleRepository.advance_current_only_cycle(
                             VNextUnitOfWork(connector, backend=backend_of(config)),
                             gate_lease=gate,
                             cycle=cycle,
@@ -208,7 +211,7 @@ def _assert_costs(
 def test_runtime_capacity_matches_constructed_model(model_costs: _ModelCosts) -> None:
     for (fixed, arity, _rows), (capacity, _chunks, _sql) in model_costs.items():
         assert (
-            cleanup._static_delete_page_size(fixed_binds=fixed, key_arity=arity)
+            cleanup_static._static_delete_page_size(fixed_binds=fixed, key_arity=arity)
             == capacity
         )
         assert fixed + capacity * arity + 1 <= 900
@@ -273,7 +276,7 @@ def test_cost_oracle_rejects_real_per_row_regression_despite_correct_deletion(
 
     config = database_factory.config("degraded")
     gate, cycle = seed_publication_cleanup(config, rows=65, phase=phase)
-    original = cleanup._delete_static_key_page
+    original = cleanup_static._delete_static_key_page
 
     def degraded(work: VNextUnitOfWork, **kwargs: Any) -> None:
         if kwargs["phase"] != phase:
@@ -289,7 +292,7 @@ def test_cost_oracle_rejects_real_per_row_regression_despite_correct_deletion(
             original(work, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(cleanup, "_delete_static_key_page", degraded)
+        patch.setattr(cleanup_static, "_delete_static_key_page", degraded)
         samples = _drain(config, gate, cycle, monkeypatch, phase=phase)
     with pytest.raises(AssertionError, match="SQL cost"):
         _assert_costs(samples, model_costs, expected_rows=65)
@@ -347,10 +350,10 @@ def test_fresh_cleanup_cycles_repeat_the_same_sql_cost_without_cached_authority(
                     children,
                 )
             with connector.transaction():
-                cycle = VNextCleanupRepository.begin_cycle(
+                cycle = CleanupCycleRepository.begin_cycle(
                     VNextUnitOfWork(connector, backend=backend_of(config)),
                     gate_lease=gate,
-                    target_kind=cleanup.CleanupTargetKind.CATALOG_PUBLICATION,
+                    target_kind=cleanup_model.CleanupTargetKind.CATALOG_PUBLICATION,
                     shard_no=PUBLICATION_KEY[0],
                     cycle_cutoff_at=100,
                     max_rows_per_transaction=256,

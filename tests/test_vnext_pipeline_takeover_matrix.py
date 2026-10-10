@@ -50,12 +50,12 @@ from h2hdb import (
     VNextIngestFacade,
     VNextIngestSession,
 )
+from h2hdb._cleanup.model import CleanupUnavailableError
 from h2hdb.vnext_analysis_repository import AnalysisNotReadyError
 from h2hdb.vnext_artifact_preparation_repository import (
     ArtifactPreparationNotReadyError,
 )
 from h2hdb.vnext_canonical_value_repository import CanonicalValueNotReadyError
-from h2hdb.vnext_cleanup_repository import CleanupUnavailableError
 from h2hdb.vnext_download_ingest_repository import DownloadIngestUnavailableError
 from h2hdb.vnext_gallery_staging_repository import GalleryStagingNotReadyError
 from h2hdb.vnext_ingest_fence_repository import IngestFenceUnavailableError

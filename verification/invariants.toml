@@ -1843,10 +1843,10 @@ directness = "direct"
 claim = "The production cleanup repository uses the fixed twenty-three-kind phase registry, deterministic reusable target identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. PUBLICATION_GENERATION freezes the oldest complete contiguous eligible prefix regardless of the slot selected by its first generation, so a completed bounded cycle always restores a contiguous suffix; OPEN PG_EDGE and PG_ROOT gaps remain exact sealed-root/cursor transitions. STORAGE_OBJECT_KEY reclaims only unreachable normalized key families; CATALOG_PUBLICATION removes only finalized non-head payload; PUBLICATION_CANDIDATE retains unresolved resource protection families; OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement."
 assumptions = ["Every bounded cleanup transaction requires exact live EXCLUSIVE authority at admission under the gate lock. A multi-transaction cleanup cycle can outlive one lease; its durable checkpoint remains resumable under a newly claimed generation. Logical row bounds do not guarantee that a transaction finishes before a wall-clock lease deadline.", "Generic raw postconditions prove the declared responsibility source and predicate; compound or owner-losing families use explicit direct postconditions rather than claiming a universal scan of every physical satellite."]
 [[evidence.location]]
-path = "src/h2hdb/vnext_cleanup_repository.py"
-symbol = "VNextCleanupRepository"
+path = "src/h2hdb/_cleanup/cycle.py"
+symbol = "CleanupCycleRepository"
 [[evidence.location]]
-path = "src/h2hdb/vnext_cleanup_repository.py"
+path = "src/h2hdb/_cleanup/cycle.py"
 symbol = "advance"
 
 [[evidence]]
@@ -1947,10 +1947,10 @@ directness = "direct"
 claim = "Cleanup begin admits globally one OPEN cycle, freezes and seals at most 256 initially eligible typed roots using the exact maximum-260-byte canonical protocol frame, freezes PUBLICATION_COMMIT as an exact receipt_id/preparation_id pair, and makes every static phase reload the count/digest-validated set before restricting typed SQL predicates to those roots; completion removes membership in the same transaction."
 assumptions = ["The exact EXCLUSIVE maintenance gate serializes begin and advance transactions."]
 [[evidence.location]]
-path = "src/h2hdb/vnext_cleanup_repository.py"
+path = "src/h2hdb/_cleanup/roots.py"
 symbol = "_freeze_static_cycle_roots"
 [[evidence.location]]
-path = "src/h2hdb/vnext_cleanup_repository.py"
+path = "src/h2hdb/_cleanup/roots.py"
 symbol = "_load_frozen_roots"
 
 [[evidence]]

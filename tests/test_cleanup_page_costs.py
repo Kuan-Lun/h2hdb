@@ -25,7 +25,7 @@ from vnext_test_database import (
     open_generated_database,
 )
 
-from h2hdb.vnext_cleanup_repository import CleanupTargetKind
+from h2hdb._cleanup.model import CleanupTargetKind
 
 pytestmark = [pytest.mark.cleanup_acceptance, pytest.mark.deep]
 

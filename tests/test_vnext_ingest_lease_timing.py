@@ -11,8 +11,8 @@ from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 
 from h2hdb import CoreConfig, VNextIngestFacade
+from h2hdb._cleanup.selection import CleanupSelectionRepository
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import VNextCleanupRepository
 from h2hdb.vnext_download_ingest_repository import DownloadIngestRepository
 from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
@@ -50,7 +50,7 @@ def _delay_once(
 
     match point:
         case "maintenance":
-            original_probe = VNextCleanupRepository.current_only_maintenance_state
+            original_probe = CleanupSelectionRepository.current_only_maintenance_state
 
             def probe(*args: Any, **kwargs: Any) -> Any:
                 result = original_probe(*args, **kwargs)
@@ -58,7 +58,7 @@ def _delay_once(
                 return result
 
             monkeypatch.setattr(
-                VNextCleanupRepository,
+                CleanupSelectionRepository,
                 "current_only_maintenance_state",
                 staticmethod(probe),
             )
@@ -234,7 +234,7 @@ def test_contended_gate_rejects_before_expensive_maintenance_probes(
         raise AssertionError("a contended gate must not scan maintenance candidates")
 
     monkeypatch.setattr(
-        VNextCleanupRepository,
+        CleanupSelectionRepository,
         "current_only_maintenance_state",
         staticmethod(forbidden_probe),
     )

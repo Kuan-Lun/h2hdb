@@ -223,7 +223,7 @@ def _is_static_relation_literal(
     # dispatch evidence.
     if PurePosixPath(source).name == "_generated_vnext_schema.py":
         return False
-    cleanup_dispatch = PurePosixPath(source).name == "vnext_cleanup_repository.py"
+    cleanup_dispatch = "_cleanup" in PurePosixPath(source).parts
 
     parent = parents.get(node)
     if isinstance(parent, (ast.Assign, ast.AnnAssign)):

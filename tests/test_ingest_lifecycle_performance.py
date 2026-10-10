@@ -21,7 +21,8 @@ from vnext_pipeline import (
 )
 from vnext_test_database import DatabaseFactory, set_foreign_key_checks
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.selection as cleanup_selection
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
 from h2hdb.config_loader import LoggerConfig
 from h2hdb.database_performance import DatabasePerformance
@@ -319,15 +320,17 @@ def test_idle_cleanup_and_claim_identify_slow_empty_candidate_at_info(
     """A zero-result scan is attributed to its target in both lifecycle paths."""
     initialize_database(db_config)
     timing = _Timing()
-    original = cleanup._next_static_candidate_shard
+    original = cleanup_selection._next_static_candidate_shard
 
     def slow_candidate(*args: Any, **kwargs: Any) -> Any:
         result = original(*args, **kwargs)
-        if args[1].kind is cleanup.CleanupTargetKind.CANONICAL_VALUE:
+        if args[1].kind is cleanup_model.CleanupTargetKind.CANONICAL_VALUE:
             timing.now += 61.0
         return result
 
-    monkeypatch.setattr(cleanup, "_next_static_candidate_shard", slow_candidate)
+    monkeypatch.setattr(
+        cleanup_selection, "_next_static_candidate_shard", slow_candidate
+    )
     config = db_config.model_copy(
         update={"logger": LoggerConfig.model_validate({"level": "info"})}
     )
@@ -362,8 +365,8 @@ def test_idle_cleanup_and_claim_identify_slow_empty_candidate_at_info(
     assert cleanup_event["labels"]["committed_logical_rows"] == 0
     # One query per current-only target, plus open-cycle, pending-effect and
     # publication-finalization probes. The hash-cache target is excluded.
-    current_targets = set(cleanup.CleanupTargetKind) - {
-        cleanup.CleanupTargetKind.HASH_CACHE_OBSERVATION
+    current_targets = set(cleanup_model.CleanupTargetKind) - {
+        cleanup_model.CleanupTargetKind.HASH_CACHE_OBSERVATION
     }
     assert cleanup_event["sql_calls"] == len(current_targets) + 3
     measured_targets = {

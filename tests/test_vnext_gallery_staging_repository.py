@@ -36,18 +36,18 @@ import h2hdb.domain as domain_module
 import h2hdb.vnext_gallery_staging_budget as staging_budget_module
 import h2hdb.vnext_gallery_staging_repository as staging_module
 from h2hdb import CoreConfig
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import (
+    CleanupBatchCommand,
+    CleanupCorruptionError,
+    CleanupCycle,
+    CleanupTargetKind,
+)
 from h2hdb.domain import GalleryStagingOwner
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from h2hdb.vnext_allocator_repository import (
     IdentityStream,
     VNextAllocatorRepository,
-)
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupCorruptionError,
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
 )
 from h2hdb.vnext_domains import INT63_MAX
 from h2hdb.vnext_gallery_identity_repository import GalleryIdentityHandoff
@@ -594,7 +594,7 @@ def _begin_cleanup(
     now: int,
 ) -> CleanupCycle:
     with connector.transaction():
-        return VNextCleanupRepository.begin_cycle(
+        return CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             target_kind=kind,
@@ -3659,7 +3659,7 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             connector.transaction(),
             pytest.raises(CleanupCorruptionError, match="authority is corrupt"),
         ):
-            VNextCleanupRepository.advance(
+            CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=exclusive,
                 cycle=cycle,
@@ -3695,7 +3695,7 @@ def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
             connector.transaction(),
             pytest.raises(CleanupCorruptionError, match="frozen root disappeared"),
         ):
-            VNextCleanupRepository.advance(
+            CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=exclusive,
                 cycle=cycle,
@@ -4297,7 +4297,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             connector.transaction(),
             pytest.raises(CleanupCorruptionError, match="authority is corrupt"),
         ):
-            VNextCleanupRepository.advance(
+            CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=exclusive,
                 cycle=observation_cycle,

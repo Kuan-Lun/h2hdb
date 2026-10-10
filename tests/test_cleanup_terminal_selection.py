@@ -10,24 +10,25 @@ import pytest
 from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 
-import h2hdb.vnext_cleanup_repository as cleanup
-import h2hdb.vnext_ingest_facade as facade_module
+import h2hdb._cleanup.selection as cleanup
+import h2hdb._ingest.maintenance as maintenance_module
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
-from h2hdb.domain import CurrentOnlyCleanupTerminalState
-from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import (
     CleanupTargetKind,
     CurrentOnlyCleanupSelection,
-    VNextCleanupRepository,
 )
+from h2hdb._ingest.maintenance import CurrentOnlyMaintenance
+from h2hdb.domain import CurrentOnlyCleanupTerminalState
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 pytestmark = pytest.mark.cleanup_acceptance
 
 _DURATION = 1_000
-_NEXT = "_VNextIngestFacade__next_current_only_cycle"
-_STATE = "_VNextIngestFacade__current_only_state"
+_NEXT = "_next_cycle"
+_STATE = "_state"
 _CANONICAL_PROBE = (
     "SELECT r.value_sha256 FROM catalog_canonical_value_allocation_anchors AS r "
 )
@@ -56,7 +57,7 @@ def _seed(config: CoreConfig) -> None:
                 lease_duration=_DURATION,
             )
         with connector.transaction():
-            VNextCleanupRepository.begin_cycle(
+            CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=backend_of(config)),
                 gate_lease=lease,
                 target_kind=CleanupTargetKind.CONTENT_BLOB,
@@ -109,23 +110,23 @@ def test_terminal_scan_budget_rejects_duplicate_scan_negative_control(
     _seed(db_config)
     evidence = _observe_sql(db_config, monkeypatch)
     if duplicate_proof:
-        select = getattr(VNextIngestFacade, _NEXT)
+        select = getattr(CurrentOnlyMaintenance, _NEXT)
 
-        def repeated(self: VNextIngestFacade, *args: Any, **kwargs: Any) -> Any:
+        def repeated(self: CurrentOnlyMaintenance, *args: Any, **kwargs: Any) -> Any:
             result = select(self, *args, **kwargs)
             assert isinstance(result, CurrentOnlyCleanupSelection)
             if isinstance(result.cycle, CurrentOnlyCleanupTerminalState):
                 # Carry the just-committed selection evidence, exactly as the
-                # facade does. CANONICAL_VALUE has no reusable absence fact,
-                # so this deliberately redundant state call must still issue
-                # its second canonical candidate query and fail the budget.
+                # maintenance owner does. CANONICAL_VALUE has no reusable
+                # absence fact, so this deliberately redundant state call must
+                # still issue its second canonical query and fail the budget.
                 state_arguments = dict(
                     kwargs, eligibility_proof=result.eligibility_proof
                 )
                 getattr(self, _STATE)(*args, **state_arguments)
             return result
 
-        monkeypatch.setattr(VNextIngestFacade, _NEXT, repeated)
+        monkeypatch.setattr(CurrentOnlyMaintenance, _NEXT, repeated)
 
     with VNextIngestFacade(db_config, clock=_Clock()) as facade:
         assert facade.drain_current_only_maintenance(_DURATION) is (
@@ -155,9 +156,9 @@ def test_batch_budget_still_requires_complete_final_state(
     db_config: CoreConfig, monkeypatch: pytest.MonkeyPatch, budget: int
 ) -> None:
     _seed(db_config)
-    monkeypatch.setattr(facade_module, "_CURRENT_ONLY_BATCHES_PER_ATTEMPT", budget)
+    monkeypatch.setattr(maintenance_module, "_CURRENT_ONLY_BATCHES_PER_ATTEMPT", budget)
     evidence = _observe_sql(db_config, monkeypatch)
-    state = getattr(VNextIngestFacade, _STATE)
+    state = getattr(CurrentOnlyMaintenance, _STATE)
     final_calls = 0
 
     def recorded(*args: Any, **kwargs: Any) -> Any:
@@ -165,7 +166,7 @@ def test_batch_budget_still_requires_complete_final_state(
         final_calls += 1
         return state(*args, **kwargs)
 
-    monkeypatch.setattr(VNextIngestFacade, _STATE, recorded)
+    monkeypatch.setattr(CurrentOnlyMaintenance, _STATE, recorded)
     with VNextIngestFacade(db_config, clock=_Clock()) as facade:
         assert facade.drain_current_only_maintenance(_DURATION) is (
             VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
@@ -184,7 +185,7 @@ def test_expiry_or_takeover_after_terminal_selection_never_returns_done(
 ) -> None:
     _seed(db_config)
     clock = _Clock()
-    select = getattr(VNextIngestFacade, _NEXT)
+    select = getattr(CurrentOnlyMaintenance, _NEXT)
     terminals: list[CurrentOnlyCleanupTerminalState] = []
     replacement: list[GateLease] = []
 
@@ -208,7 +209,7 @@ def test_expiry_or_takeover_after_terminal_selection_never_returns_done(
                     )
         return result
 
-    monkeypatch.setattr(VNextIngestFacade, _NEXT, expire)
+    monkeypatch.setattr(CurrentOnlyMaintenance, _NEXT, expire)
     with VNextIngestFacade(db_config, clock=clock) as facade:
         assert facade.drain_current_only_maintenance(_DURATION) is (
             VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
@@ -254,8 +255,8 @@ def test_terminal_commit_response_loss_is_not_reported_as_done(
         connector_type = type(connector)
     commit = connector_type.commit
     classify = cleanup._current_only_terminal_state
-    release = "_VNextIngestFacade__release_current_only_lease"
-    release_method = getattr(VNextIngestFacade, release)
+    release = "_release_lease"
+    release_method = getattr(CurrentOnlyMaintenance, release)
     armed = False
     injected = False
 
@@ -280,7 +281,7 @@ def test_terminal_commit_response_loss_is_not_reported_as_done(
             raise RuntimeError("lost terminal COMMIT response")
 
     monkeypatch.setattr(cleanup, "_current_only_terminal_state", classified)
-    monkeypatch.setattr(VNextIngestFacade, release, releasing)
+    monkeypatch.setattr(CurrentOnlyMaintenance, release, releasing)
     monkeypatch.setattr(connector_type, "commit", lost)
     with VNextIngestFacade(db_config, clock=_Clock()) as facade:
         with pytest.raises(RuntimeError, match="lost terminal COMMIT response"):

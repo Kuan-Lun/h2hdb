@@ -29,17 +29,14 @@ from vnext_pipeline import (
 )
 from vnext_test_database import assert_foreign_key_integrity
 
+import h2hdb._cleanup.selection as cleanup_selection
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
-from h2hdb import vnext_cleanup_repository as cleanup_repository
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.eligibility import CurrentOnlyEligibilityProof
+from h2hdb._cleanup.model import CleanupCycle, CleanupTargetKind
 from h2hdb.domain import ArtifactReleaseStorageEvidence, StorageObjectKey
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_artifact_release_repository import ArtifactReleaseRepository
-from h2hdb.vnext_cleanup_eligibility import CurrentOnlyEligibilityProof
-from h2hdb.vnext_cleanup_repository import (
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -146,7 +143,7 @@ def test_restarted_cleanup_finds_new_orphans_after_done(
     """Neither DONE nor an empty candidate result survives a new public turn."""
 
     selector_calls = 0
-    select_candidate = cleanup_repository._next_current_only_candidate
+    select_candidate = cleanup_selection._next_current_only_candidate
 
     def counted_candidate(
         work: VNextUnitOfWork,
@@ -165,7 +162,7 @@ def test_restarted_cleanup_finds_new_orphans_after_done(
         )
 
     monkeypatch.setattr(
-        cleanup_repository, "_next_current_only_candidate", counted_candidate
+        cleanup_selection, "_next_current_only_candidate", counted_candidate
     )
     previous_tokens: set[bytes] = set()
     clock = _LeaseClock(Clock())
@@ -270,7 +267,7 @@ def test_stale_positive_hint_requires_empty_issue_and_fresh_done_proof(
         release_calls = len(pipeline.library.release_calls)
         pending = ArtifactReleaseRepository.has_pending_release
         issue = ArtifactReleaseRepository.issue_page
-        select = cleanup_repository._next_current_only_candidate
+        select = cleanup_selection._next_current_only_candidate
         forced_hint = False
         issued_terminal: list[bool] = []
         selector_calls = 0
@@ -312,7 +309,7 @@ def test_stale_positive_hint_requires_empty_issue_and_fresh_done_proof(
             ArtifactReleaseRepository, "issue_page", staticmethod(issued_page)
         )
         monkeypatch.setattr(
-            cleanup_repository, "_next_current_only_candidate", counted_candidate
+            cleanup_selection, "_next_current_only_candidate", counted_candidate
         )
         outcome = facade.drain_current_only_maintenance(
             LEASE_MICROSECONDS,
@@ -410,7 +407,7 @@ def _open_hash_cleanup(pipeline: Pipeline, clock: Callable[[], int]) -> CleanupC
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=backend),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.HASH_CACHE_OBSERVATION,
@@ -437,7 +434,7 @@ def test_interrupted_cycle_precedes_release_even_after_the_hint(
     armed = False
     transaction = SQLConnector.transaction
     has_pending_release = ArtifactReleaseRepository.has_pending_release
-    advance_cycle = VNextCleanupRepository.advance_current_only_cycle
+    advance_cycle = CleanupCycleRepository.advance_current_only_cycle
     completed: list[CleanupCycle] = []
 
     if insertion_point == "before_hint":
@@ -472,7 +469,7 @@ def test_interrupted_cycle_precedes_release_even_after_the_hint(
     )
     monkeypatch.setattr(SQLConnector, "transaction", insert_before_claim)
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(advance)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(advance)
     )
     start = len(pipeline.library.release_calls)
     with VNextIngestFacade(pipeline.config, clock=clock) as facade:

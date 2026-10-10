@@ -24,12 +24,12 @@ from collections.abc import Callable
 from typing import Any
 
 from . import vnext_domains
+from ._cleanup.cycle import CleanupCycleRepository
 from .schema_epoch import SchemaEpochRunner
 from .vnext_analysis_repository import AnalysisRepository
 from .vnext_artifact_preparation_repository import ArtifactPreparationRepository
 from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import CanonicalValueRepository
-from .vnext_cleanup_repository import VNextCleanupRepository
 from .vnext_gallery_identity_repository import GalleryIdentityRepository
 from .vnext_gallery_staging_repository import GalleryObservationStagingRepository
 from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
@@ -313,7 +313,7 @@ CATALOG_PHYSICAL_DOMAIN_WRITERS: tuple[PhysicalDomainEntrypoint, ...] = (
     ArtifactReleaseRepository.commit_page,
     PublicationRepository.commit,
     PublicationFinalizationRepository.commit_page,
-    VNextCleanupRepository.advance,
+    CleanupCycleRepository.advance,
 )
 
 CATALOG_PHYSICAL_DOMAIN_GUARDS: tuple[PhysicalDomainGuard, ...] = (
@@ -354,8 +354,8 @@ OPERATIONAL_PHYSICAL_DOMAIN_WRITERS: tuple[PhysicalDomainEntrypoint, ...] = (
     OperationalEffectRepository.begin,
     OperationalEffectRepository.append_batch,
     OperationalEffectRepository.seal,
-    VNextCleanupRepository.begin_cycle,
-    VNextCleanupRepository.advance,
+    CleanupCycleRepository.begin_cycle,
+    CleanupCycleRepository.advance,
     VNextStorageInstanceRepository.bind,
 )
 

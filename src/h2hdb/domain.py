@@ -2,6 +2,7 @@ from __future__ import annotations
 
 __all__ = [
     "CurrentOnlyCleanupTerminalState",
+    "VNextCurrentOnlyMaintenanceOutcome",
     "DatabaseAuditPolicy",
     "DatabaseAuditReason",
     "DatabaseAuditReport",
@@ -267,6 +268,15 @@ class GalleryStagingOwner:
         if self.kind not in {"SOURCE_BUILD", "COLLECTION"}:
             raise ValueError("staging owner kind is unknown")
         require_uuid16(self.owner_id, field="staging owner_id")
+
+
+class VNextCurrentOnlyMaintenanceOutcome(StrEnum):
+    """Result of one bounded public current-only maintenance attempt."""
+
+    DONE = "DONE"
+    PROGRESSED = "PROGRESSED"
+    BLOCKED = "BLOCKED"
+    CONTENDED = "CONTENDED"
 
 
 class CurrentOnlyCleanupTerminalState(StrEnum):

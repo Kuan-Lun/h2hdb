@@ -123,14 +123,14 @@ def test_nested_diagnostic_families_preserve_exact_physical_counts(
 def test_failed_probe_preserves_original_exception_and_restores_patches(
     probe: ModuleType,
 ) -> None:
-    original = probe.VNextCleanupRepository.current_only_maintenance_state
+    original = probe.CleanupSelectionRepository.current_only_maintenance_state
 
     def failure() -> None:
         raise ValueError("synthetic measurement failure")
 
     with pytest.raises(ValueError, match="synthetic measurement failure"):
         probe.measure(failure)
-    assert probe.VNextCleanupRepository.current_only_maintenance_state is original
+    assert probe.CleanupSelectionRepository.current_only_maintenance_state is original
 
 
 @pytest.mark.backend_specific(
@@ -214,7 +214,7 @@ def test_idle_mode_measures_each_target_and_preserves_real_catalog(
     assert report["pages_per_gallery"] == 2
     assert [case["overlay_depth"] for case in report["cases"]] == [0, 1]
     targets = {
-        kind.value for kind in probe.cleanup_repository._CURRENT_ONLY_TARGET_PRIORITY
+        kind.value for kind in probe.cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY
     }
     for case in report["cases"]:
         assert case["idle_catalog_snapshot_unchanged"]

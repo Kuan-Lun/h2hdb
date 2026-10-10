@@ -29,7 +29,8 @@ from vnext_fault_harness import (
 from vnext_pipeline import Clock, full_check, takeover_clock
 from vnext_test_database import DatabaseFactory
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.cycle as cleanup_cycle
+import h2hdb._cleanup.model as cleanup_model
 import h2hdb.vnext_source_collection_repository as collections
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -84,20 +85,20 @@ def test_exact_fault_target_retains_collection_shard_branch(
     target_shard = PREFIX_SHARD if collides else TARGET_SHARD
     other_shard = TARGET_SHARD if collides else PREFIX_SHARD
     source_cycle_transactions: list[int] = []
-    original_begin = cleanup._begin_cycle_under_exclusive
+    original_begin = cleanup_cycle._begin_cycle_under_exclusive
     dry = FaultInjector()
 
     def observe_begin(
         work: VNextUnitOfWork,
         *,
-        kind: cleanup.CleanupTargetKind,
+        kind: cleanup_model.CleanupTargetKind,
         shard: int,
         cutoff: int,
         max_rows: int,
         max_age: int,
         now: int,
-    ) -> cleanup.CleanupCycle:
-        if kind is cleanup.CleanupTargetKind.SOURCE_COLLECTION:
+    ) -> cleanup_model.CleanupCycle:
+        if kind is cleanup_model.CleanupTargetKind.SOURCE_COLLECTION:
             source_cycle_transactions.append(len(dry.transactions))
         return original_begin(
             work,
@@ -112,7 +113,7 @@ def test_exact_fault_target_retains_collection_shard_branch(
     config, source, library = baseline.fresh_copy()
     with collection_identities(TARGET_NAMESPACE, shard=target_shard):
         with monkeypatch.context() as patch:
-            patch.setattr(cleanup, "_begin_cycle_under_exclusive", observe_begin)
+            patch.setattr(cleanup_cycle, "_begin_cycle_under_exclusive", observe_begin)
             with fault_injection(monkeypatch, dry):
                 matrix._turn(config, source, library, clock=Clock())
     assert len(source_cycle_transactions) == 1

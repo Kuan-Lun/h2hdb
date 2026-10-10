@@ -2809,7 +2809,7 @@ def validate_cross_manifest_contracts(
             or budget_contract.retirement_release_writer
             != "GalleryObservationStagingRepository.retire_sealed"
             or budget_contract.cleanup_release_writer
-            != "VNextCleanupRepository.advance"
+            != "CleanupCycleRepository.advance"
             or budget_contract.retirement_release_phase != "REQUEST_IDENTITY"
             or budget_contract.cleanup_release_phases
             != ("GOS_REQUEST_IDENTITY", "GO_STAGING_REQUEST_IDENTITY")

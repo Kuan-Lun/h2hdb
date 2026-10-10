@@ -25,7 +25,7 @@ from vnext_pipeline import (
     run_ingest_turn,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.targets.canonical as cleanup_canonical
 from h2hdb import CoreConfig, VNextIngestFacade, vnext_identity
 from h2hdb.sql_connector import SQLConnector
 
@@ -69,7 +69,7 @@ def _eligible(connector: SQLConnector) -> set[bytes]:
         for row in connector.fetch_all(
             "SELECT r.value_sha256 "
             "FROM catalog_canonical_value_allocation_anchors r "
-            f"WHERE {cleanup._CANONICAL_VALUE_ELIGIBILITY}"
+            f"WHERE {cleanup_canonical._CANONICAL_VALUE_ELIGIBILITY}"
         )
     }
 
@@ -116,13 +116,13 @@ def _live(connector: SQLConnector, title: _Title) -> tuple[bool, bool]:
         "SELECT 1 FROM catalog_display_title_choices choice "
         "WHERE choice.display_title_policy_id = %s "
         "AND choice.source_title_sha256 = %s AND choice.source_gallery_name = %s "
-        f"AND ({cleanup._live_display_title_choice('choice')})",
+        f"AND ({cleanup_canonical._live_display_title_choice('choice')})",
         (title.policy, title.source, title.name),
     )
     sort = connector.fetch_one(
         "SELECT 1 FROM catalog_title_sorts title_sort "
         "WHERE title_sort.title_sort_policy_id = %s AND title_sort.title_sha256 = %s "
-        f"AND ({cleanup._live_title_sort('title_sort')})",
+        f"AND ({cleanup_canonical._live_title_sort('title_sort')})",
         (title.sort_policy, title.display),
     )
     return bool(choice), bool(sort)

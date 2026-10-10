@@ -17,18 +17,15 @@ from vnext_test_database import (
     open_generated_database,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.cycle as cleanup_cycle
+import h2hdb._cleanup.registry as cleanup_registry
 from h2hdb import (
     VNextCurrentOnlyMaintenanceOutcome,
     VNextIngestFacade,
 )
+from h2hdb._cleanup.cycle import CleanupBatchResult, CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupCycle, CleanupTargetKind
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchResult,
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     LockedGateRenewal,
@@ -55,7 +52,7 @@ def _begin(
     kind: CleanupTargetKind,
 ) -> CleanupCycle:
     with connector.transaction():
-        return VNextCleanupRepository.begin_cycle(
+        return CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             target_kind=kind,
@@ -70,7 +67,7 @@ def _advance(
     connector: SQLConnector, gate: GateLease, cycle: CleanupCycle, *, now: int = 3
 ) -> tuple[CleanupBatchResult, ...]:
     with connector.transaction():
-        return VNextCleanupRepository.advance_current_only_cycle(
+        return CleanupCycleRepository.advance_current_only_cycle(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
@@ -78,7 +75,7 @@ def _advance(
         )
 
 
-@pytest.mark.parametrize("kind", cleanup._CURRENT_ONLY_TARGET_PRIORITY)
+@pytest.mark.parametrize("kind", cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY)
 def test_empty_phases_share_one_exact_gate_check_and_finish_fixed_cycle(
     database_factory: DatabaseFactory,
     tmp_path: Path,
@@ -102,7 +99,7 @@ def test_empty_phases_share_one_exact_gate_check_and_finish_fixed_cycle(
         monkeypatch.setattr(LockedGateRenewal, "require_live", checked)
         results = _advance(connector, gate, cycle)
         assert checks == [3]
-        assert len(results) == len(cleanup._STRATEGIES[kind].phases)
+        assert len(results) == len(cleanup_registry._STRATEGIES[kind].phases)
         assert all(result.row_count == 0 and not result.replayed for result in results)
         assert results[-1].cycle_complete
         assert inspect_one(
@@ -123,7 +120,7 @@ def test_failure_after_empty_transition_rolls_back_all_receipts_and_resumes(
         gate = _claim(connector)
         cycle = _begin(connector, gate, CleanupTargetKind.SOURCE_BUILD)
         before = inspect_all(connector, "SELECT * FROM operational_cleanup_checkpoints")
-        original = cleanup._insert_checkpoint
+        original = cleanup_cycle._insert_checkpoint
         transitions = 0
 
         def interrupted(*args: Any, **kwargs: Any) -> None:
@@ -133,7 +130,7 @@ def test_failure_after_empty_transition_rolls_back_all_receipts_and_resumes(
             if transitions == 2:
                 raise RuntimeError("interrupted after durable empty transition")
 
-        monkeypatch.setattr(cleanup, "_insert_checkpoint", interrupted)
+        monkeypatch.setattr(cleanup_cycle, "_insert_checkpoint", interrupted)
         with pytest.raises(RuntimeError, match="interrupted after durable"):
             _advance(connector, gate, cycle)
         assert transitions == 2
@@ -223,7 +220,7 @@ def test_facade_renews_only_at_half_life_and_revalidates_each_batch(
     now = 100
     advances = 0
     renewals: list[int] = []
-    original_advance = VNextCleanupRepository.advance_current_only_cycle
+    original_advance = CleanupCycleRepository.advance_current_only_cycle
     original_renew = LockedGateRenewal.renew
 
     def advance(*args: Any, **kwargs: Any) -> tuple[CleanupBatchResult, ...]:
@@ -239,7 +236,7 @@ def test_facade_renews_only_at_half_life_and_revalidates_each_batch(
         return original_renew(*args, **kwargs)
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", staticmethod(advance)
+        CleanupCycleRepository, "advance_current_only_cycle", staticmethod(advance)
     )
     monkeypatch.setattr(LockedGateRenewal, "renew", renew)
     with VNextIngestFacade(

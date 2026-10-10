@@ -138,13 +138,15 @@ from vnext_pipeline import (  # noqa: E402 - public protocol fixtures.
     run_source,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup  # noqa: E402 - observation only.
 from h2hdb import (  # noqa: E402
     CoreConfig,
     LoggerConfig,
     VNextCatalogFacade,
     VNextIngestFacade,
 )
+from h2hdb._cleanup import model as cleanup_model  # noqa: E402 - observation only.
+from h2hdb._cleanup import plan as cleanup_plan  # noqa: E402 - observation only.
+from h2hdb._cleanup import static as cleanup_static  # noqa: E402 - observation only.
 from h2hdb.sql_performance import measure_sql  # noqa: E402
 from h2hdb.vnext_identity import effective_content_digest  # noqa: E402
 
@@ -388,15 +390,15 @@ def parse_replacement(value: str) -> tuple[int, int]:
 @contextmanager
 def observe_retirement(samples: list[dict[str, Any]]) -> Iterator[None]:
     """Observe real phase bodies without changing plans, transactions or results."""
-    original = cleanup._run_static_phase
+    original = cleanup_static._run_static_phase
 
     def observed(
-        operation: cleanup._CleanupOperation,
+        operation: cleanup_model._CleanupOperation,
         cursor: bytes,
-        plan: cleanup._StaticTargetPlan,
+        plan: cleanup_plan._StaticTargetPlan,
         phase: str,
         **kwargs: Any,
-    ) -> cleanup._Mutation:
+    ) -> cleanup_model._Mutation:
         if phase not in GO_FILE_MULTIPLICITY:
             return original(operation, cursor, plan, phase, **kwargs)
         counter = AcceptanceObserver()
@@ -412,7 +414,7 @@ def observe_retirement(samples: list[dict[str, Any]]) -> Iterator[None]:
         )
         return result
 
-    with patch.object(cleanup, "_run_static_phase", observed):
+    with patch.object(cleanup_static, "_run_static_phase", observed):
         yield
 
 

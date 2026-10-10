@@ -32,6 +32,8 @@ from vnext_test_database import (
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb import vnext_source_build_repository as source_build_module
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupBatchCommand, CleanupTargetKind
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
@@ -43,11 +45,6 @@ from h2hdb.vnext_allocator_repository import (
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
-)
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupTargetKind,
-    VNextCleanupRepository,
 )
 from h2hdb.vnext_gallery_staging_budget import (
     lock_gallery_staging_request_budget,
@@ -654,7 +651,7 @@ def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
         duration=100,
     )
     with connector.transaction():
-        cycle = VNextCleanupRepository.begin_cycle(
+        cycle = CleanupCycleRepository.begin_cycle(
             _work(connector),
             gate_lease=gate,
             target_kind=CleanupTargetKind.HASH_CACHE_OBSERVATION,
@@ -677,7 +674,7 @@ def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
 
     def advance(batch_key: bytes, generation: int, now: int) -> Any:
         with connector.transaction():
-            return VNextCleanupRepository.advance(
+            return CleanupCycleRepository.advance(
                 _work(connector),
                 gate_lease=gate,
                 cycle=cycle,
@@ -695,7 +692,7 @@ def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
     command = CleanupBatchCommand(b"4" * 32, 2)
     with pytest.raises(RuntimeError, match="abort frozen completion"):
         with connector.transaction():
-            completed = VNextCleanupRepository.advance(
+            completed = CleanupCycleRepository.advance(
                 _work(connector),
                 gate_lease=gate,
                 cycle=cycle,
@@ -768,7 +765,7 @@ def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
         generation = 1
         for attempt in range(64):
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     _work(connector),
                     gate_lease=gate,
                     cycle=cycle,
@@ -785,7 +782,7 @@ def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
         raise AssertionError("canonical cleanup did not terminate")
 
     with connector.transaction():
-        retained_cycle = VNextCleanupRepository.begin_cycle(
+        retained_cycle = CleanupCycleRepository.begin_cycle(
             _work(connector),
             gate_lease=gate,
             target_kind=CleanupTargetKind.CANONICAL_VALUE,
@@ -807,7 +804,7 @@ def test_live_mariadb_canonical_cleanup_retains_contributor_facet_value(
         connector.execute(
             "DELETE FROM catalog_contributor_facet_order WHERE revision = 99"
         )
-        released_cycle = VNextCleanupRepository.begin_cycle(
+        released_cycle = CleanupCycleRepository.begin_cycle(
             _work(connector),
             gate_lease=gate,
             target_kind=CleanupTargetKind.CANONICAL_VALUE,
