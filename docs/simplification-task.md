@@ -17,13 +17,16 @@ R15 收斂完整 CBZ 解析責任並建立 Ingest 內部 artifact 子套件，�
 
 ## 目前任務快照
 
-2026-10-10：本輪 R17 已實作 **Core cleanup 完整內部分割**，目前採用待驗收／整合。
+2026-10-10：本輪 R17 已完成 **Core cleanup 完整內部分割** 與必要人工驗收。
+整合狀態以 Git ancestry、code-review evidence 與 exact-tree full release receipt 核對；
+本紀錄在合併前提交，不代替正式 gate。
 19 個 `_cleanup` modules 分開 durable cycle、selection、absence proof、typed
 plan／cursor、frozen roots 與八個 target families；`_ingest/maintenance.py` 擁有
 完整 current-only attempt。原 cleanup repository／eligibility 私有模組已刪除，
 沒有 forwarding shim；facade 保留公開入口。詳細驗收與限制見 R17 證據段落。
 
-本輪來源 Core `41c8d8d`／`0.45.8`，候選 `0.45.9`；其餘五庫來源未改：
+本輪來源 Core `41c8d8d`／`0.45.8`，候選 `0.45.9`；實作 `60dd824`、
+升版 `d494ebb`。其餘五庫來源未改：
 
 | Repository | 已核對 HEAD | Version |
 | --- | --- | --- |
@@ -143,7 +146,7 @@ Komga Java server、H@H、galleryinfo parser 及其他第三方套件是外部�
 | 階段 | 工作範圍 | 目前狀態 |
 | --- | --- | --- |
 | S0 | 七個 workspace 的來源與依賴盤點 | 本次建立基線；功能必要性仍未審核 |
-| S1 | Core／Ingest 的內部責任分割與相關精簡 | R01／R02／R15 已整合；R17 cleanup 分割採用待整合，其餘範圍未完成 |
+| S1 | Core／Ingest 的內部責任分割與相關精簡 | R01／R02／R15 已整合；R17 cleanup 分割／人工驗收完成，整合查 Git evidence；其餘範圍未完成 |
 | S2 | OPDS、Komga sync、Downloader、hbrowser 的自身設計 | 待審核；不以 S1 是否碰到它們作為啟動條件 |
 | S3 | 部署控制流程與跨 repository 工程工具重複責任 | 待審核；按實際契約和維護成本選單元 |
 | S4 | 全系統重查與逐項拆包決定 | 待 S1–S3 的證據；不是自動發布套件 |
@@ -256,7 +259,7 @@ R01／R02／R15 已整合，2026-10-10 已核對 Git ancestry；R15 為單一 ar
 | R14 | Source append SQL 成本；已重現超標、待定位 | C01／C04；R01 完整流程的 source attribution | 沿用既有 source 預算，固定代表形狀與退化反例，驗證重複工作後採用或拒絕 |
 | R15 | Canonical CBZ 單一解析與 artifact 內部分割；完成已整合 | I02、E02；Ingest `artifact/`、Core deployment acceptance probe；下節驗收 | 格式、writer 或 source/cache 邊界變更時重查；不另建平行 presentation package |
 | R16 | 完整 analysis 內部 ownership；待實作，順序後移 | C02／C04；`vnext_analysis_repository.py`、overlay families 與 facade 編排 | 四組 BUILD／VALIDATE／replay 隨各 family 集中；保留各信任邊界，不用大量 flags 掩蓋差異，不以先減碼為門檻 |
-| R17 | Cleanup 完整內部 ownership；實作完成、待驗收／整合 | C04／C05、E02；`_cleanup/`、`_ingest/maintenance.py`；下節雙 backend／consumer 證據 | 更改 target retention、cycle fencing、adapter release 或 absence proof 生命週期時重查；分割不代表 R03 成本達標 |
+| R17 | Cleanup 完整內部 ownership；實作與人工驗收完成，整合查 Git evidence | C04／C05、E02；`_cleanup/`、`_ingest/maintenance.py`；下節雙 backend／consumer 證據 | 更改 target retention、cycle fencing、adapter release 或 absence proof 生命週期時重查；分割不代表 R03 成本達標 |
 
 ## R01：file decision validation step 調查（歷史紀錄）
 
@@ -817,6 +820,8 @@ Audit validators 繼續獨立判斷，沒有借用 writer eligibility 作 oracle
 原 `vnext_cleanup_repository.py`／`vnext_cleanup_eligibility.py` 私有 owner 已移除，
 沒有 compatibility shim；同步所有 tests、cost probes、deployment fault hook、installed
 method 登記與 physical/formal bindings，沒有放寬 writer method identity 驗證。
+Private instrumentation 的來源證據改記各 owner module 的 hash；舊單檔 provenance
+不是本輪工具的輸入格式，沒有新增歷史 owner fallback。
 
 公開 facade signature、outcome values、log、SQL、persisted cursor／receipt／schema 不變，
 判定為「品質優先後恰好向後相容」。Public outcome enum 移到 neutral domain，既有
@@ -836,7 +841,7 @@ wheel-resident provider。解碼前後 artifact 逐欄比對只有 `source_prove
 Node 最新候選不變，現有 bounds 全部滿足；dependency manifest 不改。
 `.release/dependency-audit.json` 綁定候選 version 與 manifest hash；不代替 full gate。
 
-已取得驗收（整合前續填實際結果，未執行項目不當成通過）：
+已取得人工驗收（正式 merge profile 與手動結果分開，未執行項目不當成通過）：
 
 - `scripts/check-fast.sh`、formal `coverage --validate-only`（39 invariants／212 evidence）
   與 `schema` 通過；coverage metadata 不是 production readiness。
@@ -851,14 +856,78 @@ Node 最新候選不變，現有 bounds 全部滿足；dependency manifest 不�
   `tests/test_vnext_gallery_staging_repository.py::test_generic_staging_cleanup_revalidates_sealed_byte_authority`、
   `::test_terminal_retirement_is_child_first_bounded_and_replayable`、
   `::test_metadata_256_leaf_boundary_carries_to_one_minimal_root`。
-- Manual `scripts/run-pytest.py cleanup-acceptance`、maintenance／consumer／real fixture、
-  Compose 衍生 `--instrumented --cleanup-faults` 與正式 review/full gate 尚待結果。
+- Maintenance／lease／terminal selection／READY retirement／deployment probe 的
+  Core 四檔手動選集 124 passed、零 skip；使用 `H2HDB_TEST_MARIADB=1`、
+  `-n 0 --check-backend-pairs -m ''`，SQLite／MariaDB 均實際執行。
+- 額外 cleanup family／replay／retention MariaDB 137 passed、146 deselected、零 skip；
+  storage SQLite 補驗 2 passed。23 個 runtime／artifact 測前測後 hashes 完全相同。
+- 部署工具以明確含 Ingest／Pillow 的 `H2HDB_ACCEPTANCE_PYTHON` 跑
+  `tests/test_deployment_acceptance_fixture.py -k test_real`：雙 backend 共 6 passed，
+  32 deselected、零 skip，驗證真實 CBZ／raster oracle。
+- 實際 Compose／Dockerfile／cohort 控制來源的隔離副本，以六個明確 candidate wheels
+  正常解析並通過 `pip check`，核對 METADATA、direct URL、source／wheel／installed
+  bytes。共用 cohort 檢查四角色含 jobs；實際建置／執行 Ingest、OPDS images，
+  未執行 Downloader／Komga job 本身。六庫 committed source 與 wheel 逐 byte 相符。
+- `--backend both --instrumented --cleanup-faults`：401.92 秒、兩個 backend 各六情境
+  全通過，包含 fresh、unchanged restart、append、cleanup 非空 committed shard 後
+  SIGTERM／SIGKILL 恢復與後續 handoff。Publication、cleanup DONE、next claim 分開驗證；
+  最後 sentinel 成功取得新工作並發布 revision 5。各 backend 的前五 phase
+  `next_ingest_claim=passed`；最後 sentinel 沒有額外輸入，該欄為 `not_requested`。
+  Reports 的 correctness／measurement 均 passed、issues 為空、finally
+  `verified_empty=true`；本機 candidate images 保留為驗收 artifact。
+  每個 backend 的 measurement 另記錄 5 個 `incomplete_processes`，表示 final counters
+  不完整；未用其推算完整成本，correctness 使用各流程的獨立 assertions。
+- 第一次 image build 選中同版號 index OPDS 的不同 artifact，來源核對即拒絕並清空
+  該次環境；正式結果來自六包 direct-wheel constraints 的第二次建置，仍正常解析
+  全部依賴，沒有 `--no-deps` 或忽略 bounds。這是 candidate 替代 index 的隔離證據，
+  不證明正式 index-backed Compose 已可部署。
+- Manual `.venv/bin/python scripts/run-pytest.py cleanup-acceptance`：SQLite
+  259 passed／7,124 deselected／368.45 秒；live MariaDB 242 passed／7,141 deselected／
+  2,003.15 秒，兩階段與 runner 均 exit 0、零 skip。這是手動 cleanup 選集，
+  不是完整 deep matrices，也不屬於 bounded merge receipt。
+- Core 手動 source tests 載入本輪 source，但原 editable distribution metadata 是
+  `0.45.3`；fixtures 全為新建 synthetic databases。已另以乾淨 wheel／images 驗證
+  實際安裝 `0.45.9`。正式 merge gate 前，用
+  `uv pip install --python .venv/bin/python --offline -e '.[dev]'` 的標準隔離建置
+  刷新 metadata 至 `0.45.9`，其餘依賴未更動；不把先前 source tests 說成 wheel 安裝證據。
+- Ingest consumer 原 run：161 passed、零 skip、2,386.48 秒。使用候選 wheel clean
+  environment，`env -u PYTHONPATH H2HDB_TEST_MARIADB=1 <candidate-python> -m pytest
+  -o addopts= -n 0 --check-backend-pairs tests/test_resident.py tests/test_runtime_progress.py
+  tests/test_database_audit_runtime.py tests/test_runtime_e2e.py
+  tests/test_source_publication_quota.py -q --junitxml=<report>`；含雙 backend 的
+  127／128／129／1,024-gallery deep quota 案例，沒有中斷或重跑，不稱完整 deep suite。
+  Ingest source 未改，完整 collection 2,166 cases 的 backend-pair 檢查另通過。
+- 正式 code review 與 full gate 由 `scripts/git-flow-merge.sh` 對真正 two-parent
+  candidate 執行；是否完成以 Git metadata 的 evidence／receipt 為準，本文件不預寫通過。
 
-本輪 runtime 淨增 431、tests 淨增 54、dev tooling 淨增 56；generated code 淨增零
-（loader／Lean provenance 各一行替換，binary 大小不變）。此為文件回寫前的程式差異，
-最終完整 LOC 另依本 task 相對 primary 的 diff 記錄。新增模組全歸 C04／C05；相關
-private probes 歸 E02，沒有新部署角色，沒有獨立發行套件。搬檔不算刪碼，沒有端到端
-加速、R03 成本達標、完整 deep 或正式 index-backed Compose 可部署的主張。
+持久人工證據為本 checkout 的
+`.manual-evidence/cleanup-ownership-0.45.9.tar.gz`（既有 ignore，未 commit），
+SHA-256 `e7bf198f47e8bf1d3da76304885883dc968bdc89da57d8be05f55190257deaee`；
+38,661,319 bytes、701 files，archive 內逐檔 hash 已核對。解壓後的
+`cleanup-ownership-0.45.9/commands.json` 是重建索引，包含明確六庫來源／wheels、
+乾淨解析環境、Compose 衍生 build／run、fixture／consumer 與 AST／plan parity 命令；
+`build/` 保存 candidate overlay，`provenance.json`、`wheel-manifest.json` 與
+`artifact-files.json` 保存來源及 hash。Core source 對應實作／升版 commits，後續僅改本紀錄。
+12-case staging 選集保留原 tool result 與精確 invocation，沒有完整 stdout artifact；
+其他所列測試的實際 logs／JUnit 均已收入，不補造缺少的 stdout。
+
+相對 `41c8d8d` 的實體文字行差異如下，採 `git diff --no-renames --numstat`；
+新增／刪除包含搬移，不把搬檔當成刪碼成果。Code 的分類與獨立 blob 行數核對
+保存在 archive 的 LOC evidence，文件與總計以本紀錄最後內容重算。
+
+| 分類 | 新增 | 刪除 | 淨增 |
+| --- | --- | --- | --- |
+| Runtime（非 generated） | 8,643 | 8,212 | 431 |
+| Tests | 551 | 497 | 54 |
+| Dev tooling | 160 | 104 | 56 |
+| Generated code | 2 | 2 | 0 |
+| 版本／audit／manifests 等其他文字 | 11 | 11 | 0 |
+| 文件 | 213 | 77 | 136 |
+| 合計 | 9,580 | 8,903 | 677 |
+
+Generated loader／Lean provenance 各一行替換，binary 仍為 4,437,047 bytes。
+新增模組全歸 C04／C05，private probes 歸 E02，沒有新部署角色或獨立發行套件。
+沒有端到端加速、R03 成本達標、完整 deep 或正式 index-backed Compose 可部署的主張。
 
 ## 下一輪入口
 
@@ -869,6 +938,15 @@ private probes 歸 E02，沒有新部署角色，沒有獨立發行套件。搬�
 postings、facet/tag directory exact comparison 及其 callers，集中完整 oracle lifecycle，
 讓 builtin validator registry 保留裝配責任。Shared canonical validation 與 catalog
 registry 的 dependency direction 須先確定，不能拆出反向呼叫原大模組的 wrappers。
+本輪已核對 `_validate_active_discovery_projection` 擁有 temporary expected SQLite
+plan 與 bounded canonical cache；shared `_CanonicalValidationCache`、canonical spool
+validation／comparison 同時被 retained title sort 使用，應下放共同 owner，使依賴為
+registry → discovery → canonical/static。保留同一 read-only READY transaction；
+temporary audit scratch 不是第二個 production schema，也不能借用 publication writer
+結果當作獨立 oracle。既有 discovery-exactness invariant 的 runtime／fault／SQLite
+integration evidence，以及 active discovery corruption／omission、same-cardinality
+title/posting substitution、descriptor count、partial artifact coverage 與 typed disk plan／
+tag directory replay tests 是下一輪的直接驗收入口。
 
 `database_audit.py` 已擁有 scheduling session／lease／success bookkeeping，不直接
 擁有 expensive validator scan；不為檔名或 log 的 81 分鐘就先搬 scheduler。
@@ -945,6 +1023,7 @@ ownership，各 family 擁有 BUILD／VALIDATE／replay，shared batch 不反向
 5. 內部模組化與獨立拆包各自有決定及依據；說明實際消除的重複責任和維護成本，
    列出分類 LOC 與總增減。不能只以減行數判定完成，也不能隱去沒有減碼的結果。
 
-目前進度：R01、R02、R15 已整合並重核 ancestry；R17 cleanup 分割採用待驗收／整合。
+目前進度：R01、R02、R15 已整合並重核 ancestry；R17 cleanup 分割與必要人工驗收完成，
+其正式整合由 Git ancestry 與 exact-tree evidence 核對。
 最新 log 只涵蓋 startup audit／maintenance，不是 ingest 端到端效能驗收。
 具體剩餘工作以上表為準，S1–S4 及全系統尚未完成。
