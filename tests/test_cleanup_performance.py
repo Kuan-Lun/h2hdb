@@ -12,12 +12,13 @@ import pytest
 from vnext_fault_harness import backend_of, open_connector
 from vnext_pipeline import initialize_database
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.cycle as cleanup_cycle
 from h2hdb import CoreConfig, VNextCurrentOnlyMaintenanceOutcome, VNextIngestFacade
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupTargetKind
 from h2hdb.config_loader import LoggerConfig
 from h2hdb.settings import LOG_LEVEL
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import CleanupTargetKind, VNextCleanupRepository
 from h2hdb.vnext_maintenance_gate_repository import (
     LockedGateRenewal,
     MaintenanceGateRepository,
@@ -53,7 +54,7 @@ def _seed(config: CoreConfig, *, rows: int, max_rows: int = 256) -> CoreConfig:
                 work, now=1, lease_duration=_DURATION
             )
         with connector.transaction():
-            VNextCleanupRepository.begin_cycle(
+            CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=backend_of(config)),
                 gate_lease=lease,
                 target_kind=CleanupTargetKind.CONTENT_BLOB,
@@ -132,13 +133,13 @@ def test_failed_mutation_records_unconfirmed_batch_without_committed_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _seed(db_config, rows=3)
-    original = cleanup._advance_checkpoint
+    original = cleanup_cycle._advance_checkpoint
 
     def fail_after_delete(*args: Any, **kwargs: Any) -> Any:
         original(*args, **kwargs)
         raise RuntimeError("private source path must not appear in diagnostic payload")
 
-    monkeypatch.setattr(cleanup, "_advance_checkpoint", fail_after_delete)
+    monkeypatch.setattr(cleanup_cycle, "_advance_checkpoint", fail_after_delete)
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):
         with VNextIngestFacade(config, clock=_Clock()) as facade:
             with pytest.raises(RuntimeError, match="private source"):
@@ -161,7 +162,7 @@ def test_committed_progress_remains_visible_when_following_lease_expires(
 ) -> None:
     config = _seed(db_config, rows=3, max_rows=1)
     clock = _Clock()
-    original = VNextCleanupRepository.advance_current_only_cycle
+    original = CleanupCycleRepository.advance_current_only_cycle
     first = True
 
     def slow_batch(*args: Any, **kwargs: Any) -> Any:
@@ -173,7 +174,7 @@ def test_committed_progress_remains_visible_when_following_lease_expires(
         return result
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", slow_batch
+        CleanupCycleRepository, "advance_current_only_cycle", slow_batch
     )
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):
         with VNextIngestFacade(config, clock=clock) as facade:
@@ -290,7 +291,7 @@ def test_commit_response_loss_never_claims_confirmed_deletion(
     with closing(open_connector(config)) as connector:
         connector_type = type(connector)
     commit = connector_type.commit
-    advance = VNextCleanupRepository.advance_current_only_cycle
+    advance = CleanupCycleRepository.advance_current_only_cycle
     fail_commit = False
 
     def completed_advance(*args: Any, **kwargs: Any) -> Any:
@@ -307,7 +308,7 @@ def test_commit_response_loss_never_claims_confirmed_deletion(
             raise RuntimeError("injected lost COMMIT response")
 
     monkeypatch.setattr(
-        VNextCleanupRepository, "advance_current_only_cycle", completed_advance
+        CleanupCycleRepository, "advance_current_only_cycle", completed_advance
     )
     monkeypatch.setattr(connector_type, "commit", lost_response)
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):

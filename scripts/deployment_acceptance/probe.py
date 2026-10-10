@@ -607,8 +607,10 @@ def _install_ingest_lifecycle(state: _Probe) -> None:
     original_publication = facade.commit_publication_step
     original_complete = facade.complete_ingest
     original_drain = facade.drain_current_only_maintenance
-    advance_name = "_VNextIngestFacade__advance_current_only_shard"
-    original_advance = getattr(facade, advance_name)
+    maintenance = importlib.import_module(
+        "h2hdb._ingest.maintenance"
+    ).CurrentOnlyMaintenance
+    original_advance = maintenance._advance_shard
 
     @functools.wraps(original_claim)
     def claim(*args: Any, **kwargs: Any) -> Any:
@@ -668,7 +670,7 @@ def _install_ingest_lifecycle(state: _Probe) -> None:
     @functools.wraps(original_advance)
     def advance(*args: Any, **kwargs: Any) -> Any:
         result = original_advance(*args, **kwargs)
-        # This facade method has exited its managed transaction. row_count is
+        # This maintenance method has exited its managed transaction. row_count is
         # this shard's work; deleted_count is cumulative and cannot prove work.
         if (
             result
@@ -702,7 +704,7 @@ def _install_ingest_lifecycle(state: _Probe) -> None:
     facade.commit_publication_step = publication
     facade.complete_ingest = complete
     facade.drain_current_only_maintenance = drain
-    setattr(facade, advance_name, advance)
+    maintenance._advance_shard = advance
 
 
 def _expected_source_size(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int:

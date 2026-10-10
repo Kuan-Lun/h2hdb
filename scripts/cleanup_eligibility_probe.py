@@ -47,11 +47,11 @@ from vnext_pipeline import (  # noqa: E402 - local fixture paths
 )
 
 from h2hdb import VNextIngestFacade  # noqa: E402 - checkout source
-from h2hdb import vnext_cleanup_repository as cleanup  # noqa: E402 - checkout source
-from h2hdb.sql_connector import SQLConnector  # noqa: E402 - checkout source
-from h2hdb.vnext_cleanup_eligibility import (  # noqa: E402 - checkout source
+from h2hdb._cleanup.eligibility import (  # noqa: E402 - checkout source
     CurrentOnlyEligibilityProof,
 )
+from h2hdb._cleanup.targets import resources  # noqa: E402 - checkout source
+from h2hdb.sql_connector import SQLConnector  # noqa: E402 - checkout source
 from h2hdb.vnext_transaction import VNextUnitOfWork  # noqa: E402 - checkout source
 
 _TABLES = (
@@ -146,7 +146,7 @@ def _trial(
     with ExitStack() as patches:
         for name in _PROBES:
             patches.enter_context(
-                patch.object(cleanup, name, measured(name, getattr(cleanup, name)))
+                patch.object(resources, name, measured(name, getattr(resources, name)))
             )
         if variant == "baseline":
             original = CurrentOnlyEligibilityProof.under_validated_gate

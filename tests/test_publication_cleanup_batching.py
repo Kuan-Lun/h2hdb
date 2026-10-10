@@ -24,17 +24,20 @@ from vnext_publication_cleanup_fixtures import (
     seed_publication_cleanup,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.cycle as cleanup_cycle
+import h2hdb._cleanup.keys as cleanup_keys
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.plan as cleanup_plan
+import h2hdb._cleanup.registry as cleanup_registry
 from h2hdb import CoreConfig, vnext_identity
-from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
+from h2hdb._cleanup.cycle import CleanupBatchResult, CleanupCycleRepository
+from h2hdb._cleanup.model import (
     CleanupBatchCommand,
-    CleanupBatchResult,
     CleanupCycle,
     CleanupRetentionBlockedError,
     CleanupUnavailableError,
-    VNextCleanupRepository,
 )
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.vnext_maintenance_gate_repository import GateLease
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -69,7 +72,7 @@ def _advance(
     *,
     now: int = 3,
 ) -> tuple[CleanupBatchResult, ...]:
-    return VNextCleanupRepository.advance_current_only_cycle(
+    return CleanupCycleRepository.advance_current_only_cycle(
         VNextUnitOfWork(connector, backend=backend_of(config)),
         gate_lease=gate,
         cycle=cycle,
@@ -128,7 +131,9 @@ def _finish(config: CoreConfig, gate: GateLease, cycle: CleanupCycle) -> None:
 def test_batch_opt_in_refuses_partial_key_or_compound_delete_contracts(
     change: dict[str, Any],
 ) -> None:
-    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CATALOG_PUBLICATION]
+    plan = cleanup_registry._STATIC_PLANS[
+        cleanup_model.CleanupTargetKind.CATALOG_PUBLICATION
+    ]
     spec = plan.phases["CP_SUBJECT"][0]
     with pytest.raises(RuntimeError, match="one exact primary-key delete"):
         replace(spec, **change)
@@ -160,7 +165,7 @@ def _assert_complete_physical_key(
 
 
 def _assert_batch_manifest_keys(
-    spec: cleanup._StaticDeleteSpec,
+    spec: cleanup_plan._StaticDeleteSpec,
     relations: dict[str, dict[str, Any]],
 ) -> None:
     primary_key = _assert_complete_physical_key(relations[spec.table], spec.primary_key)
@@ -179,18 +184,18 @@ def _assert_batch_manifest_keys(
 
 def test_every_batch_opt_in_matches_the_complete_manifest_primary_key() -> None:
     relations = _physical_cleanup_relations()
-    targets: set[cleanup.CleanupTargetKind] = set()
-    for plan in cleanup._STATIC_PLANS.values():
+    targets: set[cleanup_model.CleanupTargetKind] = set()
+    for plan in cleanup_registry._STATIC_PLANS.values():
         for specs in plan.phases.values():
             for spec in specs:
                 if spec.batch_exact_primary_keys:
                     targets.add(plan.kind)
                     _assert_batch_manifest_keys(spec, relations)
     assert targets == {
-        cleanup.CleanupTargetKind.ANALYSIS_RUN,
-        cleanup.CleanupTargetKind.CATALOG_PUBLICATION,
-        cleanup.CleanupTargetKind.GALLERY_OBSERVATION,
-        cleanup.CleanupTargetKind.CANONICAL_VALUE,
+        cleanup_model.CleanupTargetKind.ANALYSIS_RUN,
+        cleanup_model.CleanupTargetKind.CATALOG_PUBLICATION,
+        cleanup_model.CleanupTargetKind.GALLERY_OBSERVATION,
+        cleanup_model.CleanupTargetKind.CANONICAL_VALUE,
     }
 
 
@@ -232,7 +237,9 @@ def test_batch_manifest_oracle_rejects_nonunique_or_invalid_projected_keys(
 
 
 def test_compound_manifest_oracle_rejects_wrong_selected_value_projection() -> None:
-    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+    plan = cleanup_registry._STATIC_PLANS[
+        cleanup_model.CleanupTargetKind.CANONICAL_VALUE
+    ]
     spec = replace(
         plan.phases["CV_PAGE"][0],
         delete_parameter_indexes=((0, 1, 2, 3), (0,), (3,), (3,)),
@@ -261,7 +268,9 @@ def test_compound_manifest_oracle_rejects_wrong_selected_value_projection() -> N
 def test_compound_batch_opt_in_refuses_incomplete_metadata_or_invalid_indexes(
     change: dict[str, Any], reason: str
 ) -> None:
-    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+    plan = cleanup_registry._STATIC_PLANS[
+        cleanup_model.CleanupTargetKind.CANONICAL_VALUE
+    ]
     with pytest.raises(RuntimeError, match=reason):
         replace(plan.phases["CV_PAGE"][0], **change)
 
@@ -381,13 +390,13 @@ def test_later_page_or_checkpoint_failure_rolls_back_all_pages_and_receipts(
 
         monkeypatch.setattr(connector, "execute_affected", affected)
         if fault == "checkpoint":
-            advance_checkpoint = cleanup._advance_checkpoint
+            advance_checkpoint = cleanup_cycle._advance_checkpoint
 
             def abort_checkpoint(*args: Any, **kwargs: Any) -> Any:
                 advance_checkpoint(*args, **kwargs)
                 raise _AbortTransaction("after actual checkpoint update")
 
-            monkeypatch.setattr(cleanup, "_advance_checkpoint", abort_checkpoint)
+            monkeypatch.setattr(cleanup_cycle, "_advance_checkpoint", abort_checkpoint)
         expected = (
             _AbortTransaction if fault == "checkpoint" else CleanupUnavailableError
         )
@@ -459,7 +468,7 @@ def test_duplicate_candidate_join_is_deleted_once_and_advances_sql_cursor(
         with connector.transaction():
             result = _advance(db_config, connector, gate, cycle)[-1]
         assert injected and result.row_count == result.deleted_count == 3
-        assert result.cursor == cleanup._encode_static_cursor(
+        assert result.cursor == cleanup_keys._encode_static_cursor(
             0, (1, PUBLICATION_KEY, 1, (3).to_bytes(32, "big"), PUBLICATION_KEY)
         )
     _finish(db_config, gate, cycle)
@@ -511,7 +520,7 @@ def test_lost_commit_response_replays_without_reissuing_page_deletes(
     with pytest.raises(_LostCommittedResponse):
         with closing(open_connector(db_config)) as connector:
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=backend_of(db_config)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -525,7 +534,7 @@ def test_lost_commit_response_replays_without_reissuing_page_deletes(
         with patch.object(
             connector, "execute_affected", wraps=connector.execute_affected
         ) as mutations:
-            replay = VNextCleanupRepository.advance(
+            replay = CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=backend_of(db_config)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -537,7 +546,7 @@ def test_lost_commit_response_replays_without_reissuing_page_deletes(
     assert _snapshot(db_config) == persisted
     with closing(open_connector(db_config)) as connector:
         with pytest.raises(CleanupUnavailableError), connector.transaction():
-            VNextCleanupRepository.advance(
+            CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=backend_of(db_config)),
                 gate_lease=gate,
                 cycle=cycle,

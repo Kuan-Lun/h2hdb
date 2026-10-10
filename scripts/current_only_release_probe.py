@@ -53,13 +53,14 @@ from h2hdb import (  # noqa: E402 - measured source path.
     vnext_artifact_release_repository as artifact_release,
 )
 from h2hdb import (  # noqa: E402 - measured source path.
-    vnext_cleanup_repository as cleanup,
-)
-from h2hdb import (  # noqa: E402 - measured source path.
-    vnext_ingest_facade as ingest,
-)
-from h2hdb import (  # noqa: E402 - measured source path.
     vnext_maintenance_gate_repository as gate,
+)
+from h2hdb._cleanup import cycle as cleanup_cycle  # noqa: E402 - measured source path.
+from h2hdb._cleanup import registry as cleanup_registry  # noqa: E402 - measured source path.
+from h2hdb._cleanup import selection as cleanup_selection  # noqa: E402 - measured source path.
+from h2hdb._cleanup.targets import resources as cleanup_resources  # noqa: E402 - measured source path.
+from h2hdb._ingest import (  # noqa: E402 - measured source path.
+    maintenance,
 )
 from h2hdb.domain import (  # noqa: E402 - measured source path.
     CurrentOnlyCleanupTerminalState,
@@ -99,14 +100,13 @@ N_TABLES = (
     "catalog_prepared_artifacts",
 )
 PROBES = (
-    "_next_static_candidate_shard",
-    "_next_artifact_blob_candidate_shard",
-    "_next_publication_identity_candidate_shard",
-    "_next_file_name_candidate_shard",
-    "_next_content_blob_candidate_shard",
+    (cleanup_selection, "_next_static_candidate_shard"),
+    (cleanup_resources, "_next_artifact_blob_candidate_shard"),
+    (cleanup_resources, "_next_publication_identity_candidate_shard"),
+    (cleanup_resources, "_next_file_name_candidate_shard"),
+    (cleanup_resources, "_next_content_blob_candidate_shard"),
 )
 _REUSABLE_ABSENCES = frozenset({"CONTENT_BLOB", "FILE_NAME_IDENTITY"})
-_FACADE_PREFIX = "_VNextIngestFacade__"
 
 
 def _proof_record(proof: Any) -> dict[str, Any] | None:
@@ -126,13 +126,13 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
 
     Each measurement owns a new ledger: absence cannot cross public calls. The
     original fence and candidate functions run unchanged. Failed transactions
-    append no committed event; the facade helpers return only after COMMIT.
+    append no committed event; maintenance helpers return only after COMMIT.
     """
 
     events: list[dict[str, Any]] = []
     active: dict[str, Any] | None = None
     release_locks: list[gate.LockedGateRenewal] = []
-    original_fence = cleanup._require_exclusive_gate
+    original_fence = cleanup_cycle._require_exclusive_gate
     original_lock = gate.MaintenanceGateRepository.lock_for_renewal
     original_live = gate.LockedGateRenewal.require_live
 
@@ -215,7 +215,7 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
             finally:
                 active = None
                 release_locks.clear()
-            # Appending after the private facade helper returns records COMMIT,
+            # Appending after the private maintenance helper returns records COMMIT,
             # not merely a repository result from a still-open transaction.
             if kind == "selection":
                 event["proof_out"] = _proof_record(result.eligibility_proof)
@@ -238,27 +238,30 @@ def terminal_authority() -> Iterator[list[dict[str, Any]]]:
         return observed
 
     with ExitStack() as stack:
-        stack.enter_context(patch.object(cleanup, "_require_exclusive_gate", fence))
+        stack.enter_context(
+            patch.object(cleanup_cycle, "_require_exclusive_gate", fence)
+        )
         stack.enter_context(
             patch.object(gate.MaintenanceGateRepository, "lock_for_renewal", lock)
         )
         stack.enter_context(patch.object(gate.LockedGateRenewal, "require_live", live))
-        for name in PROBES:
+        for owner, name in PROBES:
             stack.enter_context(
-                patch.object(cleanup, name, probe(getattr(cleanup, name), name))
+                patch.object(owner, name, probe(getattr(owner, name), name))
             )
         for name, kind in (
-            ("next_current_only_cycle", "selection"),
-            ("current_only_state", "state"),
-            ("advance_current_only_shard", "advance"),
-            ("release_current_only_lease", "release"),
+            ("_next_cycle", "selection"),
+            ("_state", "state"),
+            ("_advance_shard", "advance"),
+            ("_release_lease", "release"),
         ):
-            attribute = _FACADE_PREFIX + name
             stack.enter_context(
                 patch.object(
-                    VNextIngestFacade,
-                    attribute,
-                    transaction(getattr(VNextIngestFacade, attribute), kind),
+                    maintenance.CurrentOnlyMaintenance,
+                    name,
+                    transaction(
+                        getattr(maintenance.CurrentOnlyMaintenance, name), kind
+                    ),
                 )
             )
         yield events
@@ -272,7 +275,9 @@ def terminal_evidence(events: list[dict[str, Any]]) -> dict[str, bool]:
     budget is relaxed: skipped SQL remains skipped work, not a synthetic probe.
     """
 
-    priority = [target.value for target in cleanup._CURRENT_ONLY_TARGET_PRIORITY]
+    priority = [
+        target.value for target in cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY
+    ]
     known: set[str] = set()
     identity: tuple[Any, ...] | None = None
     terminal = False
@@ -456,10 +461,8 @@ def native_candidates(backend: str) -> Iterator[list[dict[str, int]]]:
         return measured
 
     with ExitStack() as stack:
-        for name in PROBES:
-            stack.enter_context(
-                patch.object(cleanup, name, wrap(getattr(cleanup, name)))
-            )
+        for owner, name in PROBES:
+            stack.enter_context(patch.object(owner, name, wrap(getattr(owner, name))))
         yield records
 
 
@@ -707,7 +710,7 @@ def run_case(
     released_before = len(library.release_calls)
     with (
         closing(VNextIngestFacade(config, clock=takeover_clock())) as facade,
-        patch.object(ingest, "_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT", 1),
+        patch.object(maintenance, "_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT", 1),
     ):
         for _ in range(MAX_DRAIN_CALLS):
             if len(library.release_calls) - released_before == pool - backlog:
@@ -746,7 +749,9 @@ def run_case(
     started = time.perf_counter()
     with (
         closing(VNextIngestFacade(config, clock=takeover_clock())) as facade,
-        patch.object(ingest, "_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT", capacity),
+        patch.object(
+            maintenance, "_CURRENT_ONLY_ARTIFACT_RELEASE_PAGE_LIMIT", capacity
+        ),
     ):
         for ordinal in range(MAX_DRAIN_CALLS):
             released = len(library.release_calls)
@@ -854,7 +859,17 @@ def main() -> int:
             "path": str(module.__file__),
             "sha256": sha256(Path(str(module.__file__)).read_bytes()).hexdigest(),
         }
-        for module in (cleanup, ingest, artifact_release, gate)
+        for module in (
+            *(
+                module
+                for name, module in sorted(sys.modules.items())
+                if name == "h2hdb._cleanup" or name.startswith("h2hdb._cleanup.")
+            ),
+            sys.modules["h2hdb.vnext_ingest_facade"],
+            maintenance,
+            artifact_release,
+            gate,
+        )
     }
     if any(
         not Path(value["path"]).is_relative_to(SOURCE_ROOT / "src")

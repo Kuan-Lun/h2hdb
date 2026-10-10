@@ -18,12 +18,9 @@ from vnext_publication_fixtures import (
 )
 
 from h2hdb import CoreConfig, vnext_identity
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupCycle, CleanupTargetKind
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -220,7 +217,7 @@ def seed_publication_cleanup(
                 lease_duration=100_000,
             )
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=backend),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.CATALOG_PUBLICATION,

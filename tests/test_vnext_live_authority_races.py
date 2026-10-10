@@ -51,6 +51,12 @@ from h2hdb import (
     VNextDownloadQueueFacade,
     VNextIngestFacade,
 )
+from h2hdb._cleanup.model import (
+    CleanupCycleExhaustedError,
+    CleanupTargetKind,
+    _cleanup_id,
+    _target_key,
+)
 from h2hdb.vnext_allocator_repository import (
     AllocatorExhaustedError,
     IdentityStream,
@@ -59,12 +65,6 @@ from h2hdb.vnext_allocator_repository import (
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
-)
-from h2hdb.vnext_cleanup_repository import (
-    CleanupCycleExhaustedError,
-    CleanupTargetKind,
-    _cleanup_id,
-    _target_key,
 )
 from h2hdb.vnext_domains import INT63_MAX
 from h2hdb.vnext_download_ingest_repository import (

@@ -3619,7 +3619,7 @@ def check_gallery_staging_request_budget_v1(
             "normal_terminal_staging_maximum_per_build": 1,
             "reserve_writer": "GalleryObservationStagingRepository._persist_request_identity",
             "retirement_release_writer": "GalleryObservationStagingRepository.retire_sealed",
-            "cleanup_release_writer": "VNextCleanupRepository.advance",
+            "cleanup_release_writer": "CleanupCycleRepository.advance",
             "retirement_release_phase": "REQUEST_IDENTITY",
             "cleanup_release_phases": [
                 "GOS_REQUEST_IDENTITY",

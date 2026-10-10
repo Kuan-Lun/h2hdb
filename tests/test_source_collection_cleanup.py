@@ -23,17 +23,13 @@ from vnext_pipeline import (
 )
 
 from h2hdb import CoreConfig, VNextIngestFacade
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupBatchCommand, CleanupCycle, CleanupTargetKind
 from h2hdb.schema_epoch import SchemaEpochValidationError
 from h2hdb.source_collection_refinement import (
     check_source_collection_durable_observations_v1,
 )
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -101,7 +97,7 @@ def _begin(
     now: int,
 ) -> CleanupCycle:
     with connector.transaction():
-        return VNextCleanupRepository.begin_cycle(
+        return CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=backend_of(config)),
             gate_lease=gate,
             target_kind=kind,
@@ -122,7 +118,7 @@ def _advance(
     now: int,
 ) -> Any:
     with connector.transaction():
-        return VNextCleanupRepository.advance(
+        return CleanupCycleRepository.advance(
             VNextUnitOfWork(connector, backend=backend_of(config)),
             gate_lease=gate,
             cycle=cycle,

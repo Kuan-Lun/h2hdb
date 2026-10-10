@@ -122,7 +122,7 @@ def _advance_one(config: CoreConfig) -> VNextCurrentOnlyMaintenanceOutcome:
     # of transactions per call exposes genuine committed crash boundaries;
     # neither the 256-row transaction limit nor a writer is replaced.
     with (
-        patch("h2hdb.vnext_ingest_facade._CURRENT_ONLY_BATCHES_PER_ATTEMPT", 1),
+        patch("h2hdb._ingest.maintenance._CURRENT_ONLY_BATCHES_PER_ATTEMPT", 1),
         VNextIngestFacade(config, clock=takeover_clock()) as facade,
     ):
         return facade.drain_current_only_maintenance(LEASE_MICROSECONDS)

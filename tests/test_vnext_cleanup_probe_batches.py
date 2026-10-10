@@ -17,16 +17,21 @@ from vnext_test_database import (
     set_foreign_key_checks,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup
-from h2hdb.sql_connector import SQLConnector
-from h2hdb.sqlite_connector import SQLiteConnector
-from h2hdb.vnext_cleanup_repository import (
+import h2hdb._cleanup.keys as cleanup_keys
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.plan as cleanup_plan
+import h2hdb._cleanup.registry as cleanup_registry
+import h2hdb._cleanup.roots as cleanup_roots
+import h2hdb._cleanup.static as cleanup_static
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import (
     CleanupBatchCommand,
     CleanupCycle,
     CleanupRetentionBlockedError,
     CleanupTargetKind,
-    VNextCleanupRepository,
 )
+from h2hdb.sql_connector import SQLConnector
+from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
@@ -38,10 +43,10 @@ pytestmark = pytest.mark.cleanup_acceptance
 
 def _cycle(kind: CleanupTargetKind) -> CleanupCycle:
     return CleanupCycle(
-        cleanup_id=cleanup._cleanup_id(kind, 1, 1),
+        cleanup_id=cleanup_model._cleanup_id(kind, 1, 1),
         target_kind=kind,
         shard_no=1,
-        target_key=cleanup._target_key(kind, 1),
+        target_key=cleanup_model._target_key(kind, 1),
         cycle_generation=1,
         cycle_cutoff_at=100,
         max_rows_per_transaction=256,
@@ -50,18 +55,22 @@ def _cycle(kind: CleanupTargetKind) -> CleanupCycle:
 
 
 def _query_roots(
-    plan: cleanup._StaticTargetPlan, count: int
-) -> tuple[tuple[cleanup._StaticScalar, ...], ...]:
+    plan: cleanup_plan._StaticTargetPlan, count: int
+) -> tuple[tuple[cleanup_model._StaticScalar, ...], ...]:
     """Produce bind/parse inputs; these are not fabricated durable authority."""
 
-    roots: list[tuple[cleanup._StaticScalar, ...]] = []
+    roots: list[tuple[cleanup_model._StaticScalar, ...]] = []
     for ordinal in range(count):
-        values: list[cleanup._StaticScalar] = []
-        for attribute in cleanup._frozen_root_attributes(plan):
-            if attribute in cleanup._FROZEN_ROOT_INT_ATTRIBUTES:
+        values: list[cleanup_model._StaticScalar] = []
+        for attribute in cleanup_roots._frozen_root_attributes(plan):
+            if attribute in cleanup_roots._FROZEN_ROOT_INT_ATTRIBUTES:
                 values.append(ordinal + 1)
             else:
-                width = 16 if attribute in cleanup._FROZEN_ROOT_UUID_ATTRIBUTES else 32
+                width = (
+                    16
+                    if attribute in cleanup_roots._FROZEN_ROOT_UUID_ATTRIBUTES
+                    else 32
+                )
                 values.append(b"\x01" + ordinal.to_bytes(width - 1, "big"))
         roots.append(tuple(values))
     return tuple(roots)
@@ -78,17 +87,17 @@ def test_all_terminal_plans_execute_below_a_999_variable_connection_limit(
     ) as connector:
         if isinstance(connector, SQLiteConnector):
             connector.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-        for kind, plan in cleanup._STATIC_PLANS.items():
+        for kind, plan in cleanup_registry._STATIC_PLANS.items():
             roots = _query_roots(plan, root_count)
-            predicate, bindings = cleanup._frozen_root_predicate(plan, roots)
+            predicate, bindings = cleanup_roots._frozen_root_predicate(plan, roots)
             specs = tuple(spec for phase in plan.phases.values() for spec in phase)
             queries = tuple(
-                cleanup._static_terminal_probe_batches(
+                cleanup_static._static_terminal_probe_batches(
                     plan=plan,
                     specs=specs,
                     frozen_root_predicate=predicate,
                     frozen_root_parameters=bindings,
-                    shard_parameters=cleanup._static_shard_parameters(
+                    shard_parameters=cleanup_keys._static_shard_parameters(
                         plan, _cycle(kind)
                     ),
                 )
@@ -128,7 +137,7 @@ def _advance(
     connector: SQLConnector, gate: GateLease, cycle: CleanupCycle, *, now: int
 ) -> None:
     with connector.transaction():
-        VNextCleanupRepository.advance(
+        CleanupCycleRepository.advance(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
@@ -181,7 +190,7 @@ def test_terminal_probe_rejects_hidden_family_and_preserves_checkpoint(
         set_foreign_key_checks(connector, enabled=True)
         gate = _claim(connector)
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.ANALYSIS_RUN,

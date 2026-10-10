@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
+import h2hdb._cleanup.targets.canonical as cleanup_canonical
 from h2hdb import CoreConfig
-from h2hdb import vnext_cleanup_repository as cleanup
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def test_linear_target_uses_independent_cardinalities(cost_probe: ModuleType) ->
 def test_historical_control_preserves_query_boundary(cost_probe: ModuleType) -> None:
     prefix = "SELECT r.value_sha256 FROM catalog_canonical_value_allocation_anchors AS r WHERE ("
     suffix = ") ORDER BY r.value_sha256 LIMIT 1"
-    query = prefix + cleanup._CANONICAL_VALUE_ELIGIBILITY + suffix
+    query = prefix + cleanup_canonical._CANONICAL_VALUE_ELIGIBILITY + suffix
     historical = cost_probe.historical_query(query)
     assert historical != query
     assert historical.startswith(prefix) and historical.endswith(suffix)

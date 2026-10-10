@@ -24,7 +24,9 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 
 from ingest_growth_hash_probe import databases  # noqa: E402 - checkout-only fixture.
 
-from h2hdb import vnext_cleanup_repository as cleanup  # noqa: E402 - checkout.
+from h2hdb._cleanup import model as cleanup_model  # noqa: E402 - checkout.
+from h2hdb._cleanup import registry as cleanup_registry  # noqa: E402 - checkout.
+from h2hdb._cleanup import static as cleanup_static  # noqa: E402 - checkout.
 from h2hdb.sql_connector import SQLConnector  # noqa: E402 - checkout.
 from h2hdb.sql_performance import (  # noqa: E402 - checkout.
     instrument_connector,
@@ -225,7 +227,9 @@ def measure_phase(
     scalar: bool,
 ) -> dict[str, Any]:
     """Run the actual phase in fresh bounded transactions, excluding reseeding."""
-    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+    plan = cleanup_registry._STATIC_PLANS[
+        cleanup_model.CleanupTargetKind.CANONICAL_VALUE
+    ]
     if scalar:
         # Deliberately degraded execution is confined to this dev-only control;
         # production has no runtime switch or legacy fallback.
@@ -236,11 +240,11 @@ def measure_phase(
         )
         plan = replace(plan, phases=phases)
     saved, retained = _snapshot(raw)
-    cycle = cleanup.CleanupCycle(
-        cleanup._cleanup_id(plan.kind, 129, 1),
+    cycle = cleanup_model.CleanupCycle(
+        cleanup_model._cleanup_id(plan.kind, 129, 1),
         plan.kind,
         129,
-        cleanup._target_key(plan.kind, 129),
+        cleanup_model._target_key(plan.kind, 129),
         1,
         100,
         256,
@@ -254,7 +258,7 @@ def measure_phase(
         cursor = b""
         for _ in range(32):
             with database.transaction():
-                operation = cleanup._CleanupOperation(
+                operation = cleanup_model._CleanupOperation(
                     VNextUnitOfWork(
                         database,
                         backend="sqlite"
@@ -266,7 +270,9 @@ def measure_phase(
                     False,
                     roots,
                 )
-                result = cleanup._run_static_phase(operation, cursor, plan, "CV_PAGE")
+                result = cleanup_static._run_static_phase(
+                    operation, cursor, plan, "CV_PAGE"
+                )
             if len(result.row_keys) > 256:
                 raise AssertionError(
                     "canonical-page transaction exceeded its key bound"

@@ -32,6 +32,7 @@ from importlib import import_module
 from types import MappingProxyType
 from typing import Any
 
+from ._cleanup.cycle import CleanupCycleRepository
 from ._generated_vnext_schema import ARTIFACT
 from .database_audit import DatabaseAuditStateRepository
 from .schema_epoch import SchemaEpochRunner
@@ -40,7 +41,6 @@ from .vnext_analysis_repository import AnalysisRepository
 from .vnext_artifact_preparation_repository import ArtifactPreparationRepository
 from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import CanonicalValueRepository
-from .vnext_cleanup_repository import VNextCleanupRepository
 from .vnext_download_ingest_repository import (
     DownloadIngestRepository,
     LockedCoordinatedIngestClaim,
@@ -260,7 +260,7 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         "h2hdb.vnext_canonical_value_repository": frozenset(
             {"CanonicalValueRepository"}
         ),
-        "h2hdb.vnext_cleanup_repository": frozenset({"VNextCleanupRepository"}),
+        "h2hdb._cleanup.cycle": frozenset({"CleanupCycleRepository"}),
         "h2hdb.vnext_download_ingest_repository": frozenset(
             {
                 "DownloadIngestRepository",
@@ -725,9 +725,9 @@ _BUILD_GENERATION_WRITERS: tuple[WriterEntrypoint, ...] = (
 )
 
 _CLEANUP_WRITERS: tuple[WriterEntrypoint, ...] = (
-    VNextCleanupRepository.begin_cycle,
-    VNextCleanupRepository.resume_cycle,
-    VNextCleanupRepository.advance,
+    CleanupCycleRepository.begin_cycle,
+    CleanupCycleRepository.resume_cycle,
+    CleanupCycleRepository.advance,
 )
 
 _ARTIFACT_RELEASE_WRITERS: tuple[WriterEntrypoint, ...] = (

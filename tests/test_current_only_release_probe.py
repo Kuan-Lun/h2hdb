@@ -37,7 +37,9 @@ def release_probe() -> Iterator[ModuleType]:
 
 
 def _operations(probe: ModuleType) -> list[dict[str, Any]]:
-    targets = [target.value for target in probe.cleanup._CURRENT_ONLY_TARGET_PRIORITY]
+    targets = [
+        target.value for target in probe.cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY
+    ]
     proof = {
         "owner_token": "12" * 16,
         "gate_generation": 1,

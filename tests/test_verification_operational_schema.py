@@ -28,7 +28,7 @@ from vnext_test_database import (
     set_foreign_key_checks,
 )
 
-import h2hdb.vnext_cleanup_repository as cleanup_module
+import h2hdb._cleanup.registry as cleanup_registry
 from h2hdb import CoreConfig
 from h2hdb.vnext_identity import (
     GALLERY_OBSERVATION_DURABLE_PARSER_PHASES,
@@ -1500,7 +1500,7 @@ def test_static_cleanup_eligibility_mentions_every_declared_blocker_relation() -
         str(item["target_kind"]): item for item in operational["cleanup_target"]
     }
     missing_by_kind: dict[str, set[str]] = {}
-    for kind, plan in cleanup_module._STATIC_PLANS.items():
+    for kind, plan in cleanup_registry._STATIC_PLANS.items():
         target = target_by_kind[kind.value]
         blockers = (
             *target.get("retained_fk_edges", ()),

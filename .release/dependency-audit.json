@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-09T16:02:15+00:00",
+  "checked_at": "2026-10-10T08:28:27+00:00",
   "manifest_sha256": "ad69b44b30eed90e24b1eb95992390ab897daae41a3e1752d8003f0c805b1cb5",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.45.8",
+  "project_version": "0.45.9",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -104,7 +104,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.10",
+      "latest": "0.17.0",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -121,7 +121,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every registry candidate against the 0.45.7 receipt: all latest direct Python and Node versions are unchanged and remain inside the existing justified bounds. R02 consolidates private ingest validation without dependency, public API, schema, protocol, or platform changes. The previous exact-tree gate validated this dependency cohort; this task has also passed 90 targeted non-MariaDB tests. MariaDB, candidate-wheel consumer validation, and the final full gate are separate evidence, not asserted by this audit.",
+    "note": "Reviewed all direct registry candidates against the 0.45.8 receipt. Only Ruff changed, from 0.16.10 to 0.17.0. Read https://github.com/astral-sh/ruff/releases/tag/0.17.0: Python/default-rule changes do not override our explicit py314 target and selected rules; Unicode identifier/escape data, pragma formatting, CLI diagnostics and legacy LSP removal were assessed. Installed Ruff 0.17.0 in the repository venv and validated lint and formatting with the unchanged configuration. Other latest Python/Node candidates are unchanged and satisfy existing bounds; no manifest range change. Cleanup ownership changes private modules only; DDL, seeds, obligations and persisted formats remain identical. Final full gate and manual dual-backend/consumer acceptance are separate evidence.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

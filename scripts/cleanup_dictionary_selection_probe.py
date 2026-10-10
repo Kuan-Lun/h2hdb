@@ -37,7 +37,11 @@ from vnext_pipeline import (  # noqa: E402 - generated schema admission.
 )
 
 from h2hdb import CoreConfig  # noqa: E402 - explicit checkout source.
-from h2hdb import vnext_cleanup_repository as cleanup  # noqa: E402
+from h2hdb._cleanup import keys as cleanup_keys  # noqa: E402 - checkout source.
+from h2hdb._cleanup import model as cleanup_model  # noqa: E402 - checkout source.
+from h2hdb._cleanup import plan as cleanup_plan  # noqa: E402 - checkout source.
+from h2hdb._cleanup import registry as cleanup_registry  # noqa: E402 - checkout source.
+from h2hdb._cleanup import static as cleanup_static  # noqa: E402 - checkout source.
 from h2hdb.mariadb_connector import MariaDBConnector  # noqa: E402
 from h2hdb.sql_connector import SQLConnector  # noqa: E402
 from h2hdb.sqlite_connector import SQLiteConnector  # noqa: E402
@@ -45,7 +49,7 @@ from h2hdb.vnext_transaction import VNextUnitOfWork  # noqa: E402
 
 Scalar = bytes | int | str
 Row = tuple[Scalar, ...]
-PLAN = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE]
+PLAN = cleanup_registry._STATIC_PLANS[cleanup_model.CleanupTargetKind.CANONICAL_VALUE]
 DICTIONARIES = PLAN.phases["CV_DICTIONARY"][1:3]
 CONTRACT: dict[str, Any] = {
     "retained_dictionary_rows": [32_768, 131_072],
@@ -251,20 +255,20 @@ def seed(
 
 def operation(
     connector: SQLConnector, roots: tuple[bytes, ...], *, limit: int = 64
-) -> cleanup._CleanupOperation:
-    kind = cleanup.CleanupTargetKind.CANONICAL_VALUE
+) -> cleanup_model._CleanupOperation:
+    kind = cleanup_model.CleanupTargetKind.CANONICAL_VALUE
     shard = roots[0][0] if roots else 238
-    cycle = cleanup.CleanupCycle(
-        cleanup._cleanup_id(kind, shard, 1),
+    cycle = cleanup_model.CleanupCycle(
+        cleanup_model._cleanup_id(kind, shard, 1),
         kind,
         shard,
-        cleanup._target_key(kind, shard),
+        cleanup_model._target_key(kind, shard),
         1,
         0,
         limit,
         0,
     )
-    return cleanup._CleanupOperation(
+    return cleanup_model._CleanupOperation(
         VNextUnitOfWork(connector, backend=backend_of(connector)),
         cycle,
         None,
@@ -275,7 +279,7 @@ def operation(
 
 def select(
     connector: SQLConnector,
-    spec: cleanup._StaticDeleteSpec,
+    spec: cleanup_plan._StaticDeleteSpec,
     roots: tuple[bytes, ...],
     *,
     after: Row | None = None,
@@ -283,14 +287,14 @@ def select(
     limit: int = 64,
 ) -> list[tuple[object, ...]]:
     op = operation(connector, roots, limit=limit)
-    return cleanup._select_static_candidates(
+    return cleanup_static._select_static_candidates(
         op,
         plan=PLAN,
         spec=replace(spec, canonical_dictionary_columns=None) if baseline else spec,
         after=after,
         eligibility=None,
         policy=(),
-        shard=cleanup._static_shard_parameters(PLAN, op.cycle),
+        shard=cleanup_keys._static_shard_parameters(PLAN, op.cycle),
         remaining=limit,
     )
 
@@ -344,7 +348,7 @@ def selector_budget(backend: str, *, roots: int, rows: int, empty_fixture: bool)
 
 def selector_diagnostics(
     connector: SQLConnector,
-    spec: cleanup._StaticDeleteSpec,
+    spec: cleanup_plan._StaticDeleteSpec,
     roots: tuple[bytes, ...],
     *,
     after: Row | None,
@@ -413,7 +417,7 @@ def compare_selectors(
                     gathered.extend(page)
                     if len(page) < 64:
                         break
-                    after = cleanup._static_values(page[-1])
+                    after = cleanup_keys._static_values(page[-1])
                 else:
                     raise RuntimeError(
                         "dictionary full-set oracle exceeded its page budget"
@@ -554,7 +558,9 @@ def run_phase(
     for _ in range(64):
         with connector.transaction():
             op = operation(connector, tuple(target(i) for i in range(16)))
-            mutation = cleanup._run_static_phase(op, cursor, plan, "CV_DICTIONARY")
+            mutation = cleanup_static._run_static_phase(
+                op, cursor, plan, "CV_DICTIONARY"
+            )
             cursor = mutation.next_cursor
             trace.append((cursor, mutation.row_keys))
         if not mutation.row_keys:
@@ -615,8 +621,11 @@ def compare_phases(connector: SQLConnector, corpus: Corpus) -> dict[str, Any]:
 
 
 def run_case(config: CoreConfig, *, retained_rows: int) -> dict[str, Any]:
-    runtime_path = ROOT / "src/h2hdb/vnext_cleanup_repository.py"
-    runtime_hash = sha256(runtime_path.read_bytes()).hexdigest()
+    runtime_paths = tuple(sorted((ROOT / "src/h2hdb/_cleanup").rglob("*.py")))
+    runtime_hashes = {
+        str(path.relative_to(ROOT)): sha256(path.read_bytes()).hexdigest()
+        for path in runtime_paths
+    }
     initialize_database(config)
     with closing(open_connector(config)) as connector:
         corpus = seed(connector, retained_rows)
@@ -630,7 +639,10 @@ def run_case(config: CoreConfig, *, retained_rows: int) -> dict[str, Any]:
             selectors = compare_selectors(connector, corpus, diagnostics=True)
             control = negative_control(connector)
         phases = compare_phases(connector, corpus)
-    if sha256(runtime_path.read_bytes()).hexdigest() != runtime_hash:
+    if runtime_hashes != {
+        str(path.relative_to(ROOT)): sha256(path.read_bytes()).hexdigest()
+        for path in sorted((ROOT / "src/h2hdb/_cleanup").rglob("*.py"))
+    }:
         raise RuntimeError("cleanup runtime changed while the experiment was running")
     return {
         "backend": config.database.sql_type,
@@ -640,7 +652,7 @@ def run_case(config: CoreConfig, *, retained_rows: int) -> dict[str, Any]:
         "selectors": selectors,
         "phases": phases,
         "negative_control": control,
-        "runtime_sha256": runtime_hash,
+        "runtime_sha256": runtime_hashes,
     }
 
 

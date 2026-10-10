@@ -14,7 +14,9 @@ from vnext_fault_harness import open_connector
 from vnext_pipeline import initialize_database
 from vnext_test_database import DatabaseFactory
 
-from h2hdb import vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.registry as cleanup_registry
+import h2hdb._cleanup.static as cleanup_static
 
 
 @pytest.fixture(scope="module")
@@ -68,7 +70,7 @@ def test_dictionary_phase_preserves_exact_deletions_and_resumes_after_rollback(
             operation = dictionary_probe.operation(
                 connector, tuple(dictionary_probe.target(index) for index in range(16))
             )
-            mutation = cleanup._run_static_phase(
+            mutation = cleanup_static._run_static_phase(
                 operation, b"", dictionary_probe.PLAN, "CV_DICTIONARY"
             )
             assert 0 < len(mutation.row_keys) <= 64
@@ -114,8 +116,8 @@ def test_dictionary_root_admission_is_fresh_and_terminal_retention_stays_exact(
             )
             assert dictionary_probe.select(connector, spec, roots) == []
             assert dictionary_probe.select(connector, spec, roots, baseline=True) == []
-            with pytest.raises(cleanup.CleanupRetentionBlockedError):
-                cleanup._run_static_phase(
+            with pytest.raises(cleanup_model.CleanupRetentionBlockedError):
+                cleanup_static._run_static_phase(
                     dictionary_probe.operation(connector, roots),
                     b"",
                     dictionary_probe.PLAN,
@@ -130,9 +132,9 @@ def test_dictionary_root_admission_is_fresh_and_terminal_retention_stays_exact(
 
 
 def test_dictionary_metadata_rejects_unproved_sort_and_reference_shapes() -> None:
-    spec = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.CANONICAL_VALUE].phases[
-        "CV_DICTIONARY"
-    ][1]
+    spec = cleanup_registry._STATIC_PLANS[
+        cleanup_model.CleanupTargetKind.CANONICAL_VALUE
+    ].phases["CV_DICTIONARY"][1]
     with pytest.raises(RuntimeError, match="selection metadata"):
         replace(spec, primary_key=("source_gallery_name",))
     with pytest.raises(RuntimeError, match="selection metadata"):

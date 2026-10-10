@@ -24,17 +24,14 @@ from vnext_test_database import (
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb import vnext_ingest_publication as ingest_publication
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupBatchCommand, CleanupTargetKind
 from h2hdb.domain import (
     CatalogResourceKind,
     StorageObjectKey,
     VNextLibraryActivationCursor,
 )
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
@@ -479,7 +476,7 @@ def _cleanup_analysis_shard_to_fixed_point(
     remaining_counts: list[int] = []
     for cycle_index in range(18):
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.ANALYSIS_RUN,
@@ -492,7 +489,7 @@ def _cleanup_analysis_shard_to_fixed_point(
         for attempt in range(64):
             timestamp += 1
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,

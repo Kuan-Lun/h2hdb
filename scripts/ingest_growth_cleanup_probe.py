@@ -60,8 +60,17 @@ from h2hdb import (  # noqa: E402 - use this checkout's source, not an installed
     VNextCurrentOnlyMaintenanceOutcome,
     VNextIngestFacade,
 )
-from h2hdb import (  # noqa: E402 - select checkout.
-    vnext_cleanup_repository as cleanup_repository,
+from h2hdb._cleanup import registry as cleanup_registry  # noqa: E402 - select checkout.
+from h2hdb._cleanup import selection as cleanup_selection  # noqa: E402 - select checkout.
+from h2hdb._cleanup.cycle import (  # noqa: E402 - checkout source path is set above.
+    CleanupBatchResult,
+    CleanupCycleRepository,
+)
+from h2hdb._cleanup.selection import (  # noqa: E402 - checkout source path is set above.
+    CleanupSelectionRepository,
+)
+from h2hdb._cleanup.targets import (  # noqa: E402 - checkout source path is set above.
+    resources as cleanup_resources,
 )
 from h2hdb.sql_connector import SQLConnector  # noqa: E402 - select checkout.
 from h2hdb.sql_performance import (  # noqa: E402 - select checkout.
@@ -69,10 +78,6 @@ from h2hdb.sql_performance import (  # noqa: E402 - select checkout.
     measure_sql,
 )
 from h2hdb.sqlite_connector import SQLiteConnector  # noqa: E402 - select checkout.
-from h2hdb.vnext_cleanup_repository import (  # noqa: E402 - checkout source path is set above.
-    CleanupBatchResult,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_identity import (  # noqa: E402 - select checkout.
     effective_content_digest,
 )
@@ -165,8 +170,8 @@ def measure[T](
     candidate_probes: list[dict[str, Any]] = []
     advances: list[dict[str, Any]] = []
     transaction_advances: list[int] = []
-    original_state = VNextCleanupRepository.current_only_maintenance_state
-    original_advance = VNextCleanupRepository.advance_current_only_cycle
+    original_state = CleanupSelectionRepository.current_only_maintenance_state
+    original_advance = CleanupCycleRepository.advance_current_only_cycle
 
     def candidate_probe(
         original: Callable[..., int | None], target: str | None
@@ -243,25 +248,35 @@ def measure[T](
         return results
 
     with (
-        patch.object(VNextCleanupRepository, "current_only_maintenance_state", state),
-        patch.object(VNextCleanupRepository, "advance_current_only_cycle", advance),
+        patch.object(
+            CleanupSelectionRepository, "current_only_maintenance_state", state
+        ),
+        patch.object(CleanupCycleRepository, "advance_current_only_cycle", advance),
         ExitStack() as probes,
         measure_sql(recorder, observe_nested=True),
     ):
         # Wrap the original functions, without copying their SQL or selection
         # logic. Each SQL event retains its own duration and discovery group.
-        for name, target in (
-            ("_next_static_candidate_shard", None),
-            ("_next_artifact_blob_candidate_shard", "ARTIFACT_BLOB"),
-            ("_next_publication_identity_candidate_shard", "PUBLICATION_IDENTITY"),
-            ("_next_file_name_candidate_shard", "FILE_NAME_IDENTITY"),
-            ("_next_content_blob_candidate_shard", "CONTENT_BLOB"),
+        for owner, name, target in (
+            (cleanup_selection, "_next_static_candidate_shard", None),
+            (cleanup_resources, "_next_artifact_blob_candidate_shard", "ARTIFACT_BLOB"),
+            (
+                cleanup_resources,
+                "_next_publication_identity_candidate_shard",
+                "PUBLICATION_IDENTITY",
+            ),
+            (
+                cleanup_resources,
+                "_next_file_name_candidate_shard",
+                "FILE_NAME_IDENTITY",
+            ),
+            (cleanup_resources, "_next_content_blob_candidate_shard", "CONTENT_BLOB"),
         ):
             probes.enter_context(
                 patch.object(
-                    cleanup_repository,
+                    owner,
                     name,
-                    candidate_probe(getattr(cleanup_repository, name), target),
+                    candidate_probe(getattr(owner, name), target),
                 )
             )
         started = time.perf_counter()
@@ -413,7 +428,11 @@ def source_provenance() -> dict[str, Any]:
         Path("tests/vnext_fault_harness.py"),
         Path("tests/compaction_contracts.py"),
         Path("src/h2hdb/vnext_ingest_facade.py"),
-        Path("src/h2hdb/vnext_cleanup_repository.py"),
+        Path("src/h2hdb/_ingest/maintenance.py"),
+        *(
+            path.relative_to(ROOT)
+            for path in sorted((ROOT / "src/h2hdb/_cleanup").rglob("*.py"))
+        ),
         Path("src/h2hdb/vnext_maintenance_gate_repository.py"),
     )
     return {
@@ -561,7 +580,7 @@ def measure_idle_sequence(
             profile_mariadb=True,
         )
         expected_targets = {
-            kind.value for kind in cleanup_repository._CURRENT_ONLY_TARGET_PRIORITY
+            kind.value for kind in cleanup_registry._CURRENT_ONLY_TARGET_PRIORITY
         }
         if (
             outcome is not VNextCurrentOnlyMaintenanceOutcome.DONE

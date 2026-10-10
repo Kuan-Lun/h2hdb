@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from .vnext_domains import require_int63, require_uuid16
-from .vnext_maintenance_gate_repository import GateLease, GateMode
+from ..vnext_domains import require_int63, require_uuid16
+from ..vnext_maintenance_gate_repository import GateLease, GateMode
 
 _PRESERVED_ABSENCES = frozenset({"CONTENT_BLOB", "FILE_NAME_IDENTITY"})
 

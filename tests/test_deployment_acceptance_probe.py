@@ -169,18 +169,21 @@ def test_lifecycle_observer_preserves_real_results_and_records_only_committed_fa
             calls.append("drain")
             return outcome
 
-    def advance(_self: object, *args: Any, **kwargs: Any) -> Any:
-        assert args == ("connector", "lease") and kwargs == {"cycle": "private-cycle"}
-        calls.append("advance")
-        return rows
+    class Maintenance:
+        def _advance_shard(self, *args: Any, **kwargs: Any) -> Any:
+            assert args == ("connector", "lease") and kwargs == {
+                "cycle": "private-cycle"
+            }
+            calls.append("advance")
+            return rows
 
-    name = "_VNextIngestFacade__advance_current_only_shard"
-    setattr(Facade, name, advance)
-    monkeypatch.setattr(
-        probe.importlib,
-        "import_module",
-        lambda _name: SimpleNamespace(VNextIngestFacade=Facade),
-    )
+    modules = {
+        "h2hdb": SimpleNamespace(VNextIngestFacade=Facade),
+        "h2hdb._ingest.maintenance": SimpleNamespace(
+            CurrentOnlyMaintenance=Maintenance
+        ),
+    }
+    monkeypatch.setattr(probe.importlib, "import_module", modules.__getitem__)
 
     def record_fault(operation: str, **details: Any) -> None:
         faults.append(operation)
@@ -202,6 +205,7 @@ def test_lifecycle_observer_preserves_real_results_and_records_only_committed_fa
     monkeypatch.setattr(state, "fault_gate", record_fault)
     probe._install_ingest_lifecycle(state)
     facade = Facade()
+    maintenance_owner = Maintenance()
     assert (
         facade.drain_current_only_maintenance(10, artifact_release_adapters={})
         is outcome
@@ -209,16 +213,19 @@ def test_lifecycle_observer_preserves_real_results_and_records_only_committed_fa
     assert facade.try_claim_ingest(True, 10) is session
     assert facade.commit_publication_step(session, publication) is publication
     assert facade.complete_ingest(session) is completion
-    assert getattr(facade, name)("connector", "lease", cycle="private-cycle") is rows
+    assert (
+        maintenance_owner._advance_shard("connector", "lease", cycle="private-cycle")
+        is rows
+    )
     assert (
         facade.drain_current_only_maintenance(10, artifact_release_adapters={})
         is outcome
     )
     rows[0].row_count = 0  # A cumulative deleted_count must not fake fresh work.
-    getattr(facade, name)("connector", "lease", cycle="private-cycle")
+    maintenance_owner._advance_shard("connector", "lease", cycle="private-cycle")
     rows[0].row_count = 2
     rows[0].replayed = True
-    getattr(facade, name)("connector", "lease", cycle="private-cycle")
+    maintenance_owner._advance_shard("connector", "lease", cycle="private-cycle")
     state.close()
     events = _events(tmp_path)
     assert calls == [
@@ -899,22 +906,23 @@ def test_cleanup_gate_ignores_startup_and_old_shards_without_consuming_its_token
         }
     )
     shard = (SimpleNamespace(row_count=1, replayed=False, cycle_complete=False),)
-    advance = "_VNextIngestFacade__advance_current_only_shard"
-    setattr(facade, advance, lambda *args, **kwargs: shard)
-    monkeypatch.setattr(
-        probe.importlib,
-        "import_module",
-        lambda _name: SimpleNamespace(VNextIngestFacade=facade),
-    )
+    maintenance = SimpleNamespace(_advance_shard=lambda *args, **kwargs: shard)
+    modules = {
+        "h2hdb": SimpleNamespace(VNextIngestFacade=facade),
+        "h2hdb._ingest.maintenance": SimpleNamespace(
+            CurrentOnlyMaintenance=maintenance
+        ),
+    }
+    monkeypatch.setattr(probe.importlib, "import_module", modules.__getitem__)
     probe._install_ingest_lifecycle(state)
     try:
         for generation in (None, 12, 13):
             state.completed_ingest_generation = generation
-            assert getattr(facade, advance)() is shard
+            assert maintenance._advance_shard() is shard
             assert state.fault_tokens == set()
             assert not any(row["event"] == "fault_reached" for row in _events(tmp_path))
         state.completed_ingest_generation = 14
-        assert getattr(facade, advance)() is shard
+        assert maintenance._advance_shard() is shard
         events = _events(tmp_path)
         committed = [row for row in events if row["event"] == "cleanup_shard_committed"]
         assert [row["after_ingest_generation"] for row in committed] == [
@@ -928,7 +936,7 @@ def test_cleanup_gate_ignores_startup_and_old_shards_without_consuming_its_token
         assert reached["completed_ingest_generation"] == 14
         assert reached["required_after_ingest_generation"] == 13
         assert state.fault_tokens == {"next-publication"}
-        getattr(facade, advance)()
+        maintenance._advance_shard()
         assert sum(row["event"] == "fault_reached" for row in _events(tmp_path)) == 1
     finally:
         state.close()

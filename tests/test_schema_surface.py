@@ -50,7 +50,7 @@ _RAW_SHA256 = "{hashlib.sha256(raw).hexdigest()}"
 def test_production_sql_does_not_use_mariadb_blob_reserved_alias() -> None:
     offenders = tuple(
         path.relative_to(ROOT).as_posix()
-        for path in sorted((ROOT / "src" / "h2hdb").glob("*.py"))
+        for path in sorted((ROOT / "src" / "h2hdb").rglob("*.py"))
         if any(
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
@@ -119,7 +119,7 @@ def cleanup_specs():
 
     references = gate.references_in_python(
         source,
-        source="vnext_cleanup_repository.py",
+        source="_cleanup/targets/gallery.py",
     )
 
     assert {reference.relation for reference in references} == {
@@ -136,7 +136,7 @@ class CleanupKind:
     assert (
         gate.references_in_python(
             source,
-            source="vnext_cleanup_repository.py",
+            source="_cleanup/targets/gallery.py",
         )
         == ()
     )
@@ -206,7 +206,7 @@ def cleanup_specs():
 
     mutations = gate.mutations_in_python(
         source,
-        source="vnext_cleanup_repository.py",
+        source="_cleanup/targets/gallery.py",
     )
 
     assert {(item.verb, item.relation) for item in mutations} == {
@@ -458,7 +458,10 @@ def test_catalog_hot_paths_do_not_read_b2_wide_views() -> None:
         "vnext_source_build_repository.py",
         "vnext_hash_cache_repository.py",
         "vnext_gallery_identity_repository.py",
-        "vnext_cleanup_repository.py",
+        *(
+            path.relative_to(ROOT / "src" / "h2hdb").as_posix()
+            for path in sorted((ROOT / "src" / "h2hdb" / "_cleanup").rglob("*.py"))
+        ),
         "vnext_catalog_reader_repository.py",
     )
 
@@ -487,7 +490,10 @@ def test_catalog_hot_paths_do_not_read_remaining_b3a_wide_views() -> None:
         "vnext_artifact_preparation_repository.py",
         "vnext_publication_candidate_repository.py",
         "vnext_catalog_reader_repository.py",
-        "vnext_cleanup_repository.py",
+        *(
+            path.relative_to(ROOT / "src" / "h2hdb").as_posix()
+            for path in sorted((ROOT / "src" / "h2hdb" / "_cleanup").rglob("*.py"))
+        ),
     )
 
     references = {
@@ -517,7 +523,10 @@ def test_catalog_hot_paths_do_not_read_b3b_wide_views() -> None:
         "vnext_publication_candidate_repository.py",
         "vnext_publication_repository.py",
         "vnext_operational_event_repository.py",
-        "vnext_cleanup_repository.py",
+        *(
+            path.relative_to(ROOT / "src" / "h2hdb").as_posix()
+            for path in sorted((ROOT / "src" / "h2hdb" / "_cleanup").rglob("*.py"))
+        ),
     )
 
     references = {

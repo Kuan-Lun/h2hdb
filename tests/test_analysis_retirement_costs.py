@@ -13,8 +13,12 @@ from vnext_pipeline import initialize_database
 from vnext_publication_cleanup_fixtures import partial_publication_setup
 from vnext_test_database import atomic_fixture
 
-import h2hdb.vnext_cleanup_repository as cleanup
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.plan as cleanup_plan
+import h2hdb._cleanup.registry as cleanup_registry
+import h2hdb._cleanup.static as cleanup_static
 from h2hdb import CoreConfig
+from h2hdb._cleanup.cycle import CleanupCycleRepository
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sql_performance import instrument_connector, measure_sql
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
@@ -96,12 +100,12 @@ def _seed_run(connector: SQLConnector, identity: bytes, files: int) -> None:
 
 def _begin(
     config: CoreConfig, gate: GateLease, *, now: int = 2
-) -> cleanup.CleanupCycle:
+) -> cleanup_model.CleanupCycle:
     with closing(open_connector(config)) as connector, connector.transaction():
-        return cleanup.VNextCleanupRepository.begin_cycle(
+        return CleanupCycleRepository.begin_cycle(
             VNextUnitOfWork(connector, backend=backend_of(config)),
             gate_lease=gate,
-            target_kind=cleanup.CleanupTargetKind.ANALYSIS_RUN,
+            target_kind=cleanup_model.CleanupTargetKind.ANALYSIS_RUN,
             shard_no=_OLD[0],
             cycle_cutoff_at=100,
             max_rows_per_transaction=256,
@@ -109,7 +113,9 @@ def _begin(
         )
 
 
-def _seed(config: CoreConfig, files: int) -> tuple[GateLease, cleanup.CleanupCycle]:
+def _seed(
+    config: CoreConfig, files: int
+) -> tuple[GateLease, cleanup_model.CleanupCycle]:
     initialize_database(config)
     with closing(open_connector(config)) as connector:
         with partial_publication_setup(connector, backend=backend_of(config)):
@@ -138,22 +144,22 @@ def _seed(config: CoreConfig, files: int) -> tuple[GateLease, cleanup.CleanupCyc
 def _drain(
     config: CoreConfig,
     gate: GateLease,
-    cycle: cleanup.CleanupCycle,
+    cycle: cleanup_model.CleanupCycle,
     monkeypatch: pytest.MonkeyPatch,
     *,
     files: int,
     now: int = 3,
 ) -> tuple[_Sample, ...]:
     samples: list[_Sample] = []
-    original = cleanup._run_static_phase
+    original = cleanup_static._run_static_phase
 
     def observed(
-        operation: cleanup._CleanupOperation,
+        operation: cleanup_model._CleanupOperation,
         cursor: bytes,
-        plan: cleanup._StaticTargetPlan,
+        plan: cleanup_plan._StaticTargetPlan,
         phase: str,
         **kwargs: Any,
-    ) -> cleanup._Mutation:
+    ) -> cleanup_model._Mutation:
         if phase not in _FACTS:
             return original(operation, cursor, plan, phase, **kwargs)
         counter = _Counter()
@@ -164,12 +170,12 @@ def _drain(
 
     all_calls = _Counter()
     with monkeypatch.context() as patch, measure_sql(all_calls, observe_nested=True):
-        patch.setattr(cleanup, "_run_static_phase", observed)
+        patch.setattr(cleanup_static, "_run_static_phase", observed)
         with closing(open_connector(config)) as raw:
             connector = instrument_connector(raw)
             for step in range(64):
                 with connector.transaction():
-                    result = cleanup.VNextCleanupRepository.advance_current_only_cycle(
+                    result = CleanupCycleRepository.advance_current_only_cycle(
                         VNextUnitOfWork(connector, backend=backend_of(config)),
                         gate_lease=gate,
                         cycle=cycle,
@@ -258,7 +264,7 @@ def test_analysis_cost_oracle_rejects_original_scalar_path(
 ) -> None:
     files = 65
     gate, cycle = _seed(db_config, files)
-    plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.ANALYSIS_RUN]
+    plan = cleanup_registry._STATIC_PLANS[cleanup_model.CleanupTargetKind.ANALYSIS_RUN]
     with monkeypatch.context() as patch:
         for phase in _FACTS:
             patch.setitem(

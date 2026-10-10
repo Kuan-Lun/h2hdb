@@ -40,9 +40,7 @@ from vnext_test_database import (  # noqa: E402 - repository-local fixtures
 )
 
 from h2hdb import CoreConfig  # noqa: E402 - repository-local source
-from h2hdb import (  # noqa: E402 - repository-local source
-    vnext_cleanup_repository as cleanup,
-)
+from h2hdb._cleanup import static as cleanup_static  # noqa: E402 - repository-local source
 from h2hdb.config_loader import DatabaseConfig  # noqa: E402 - repository-local source
 from h2hdb.sql_connector import SQLConnector  # noqa: E402 - repository-local source
 from h2hdb.sql_performance import (  # noqa: E402 - repository-local source
@@ -134,9 +132,9 @@ def _sample(
     sql = _SQLCost()
     durations: list[float] = []
     seen: set[bytes] = set()
-    original = cleanup._analysis_owned_suffix
+    original = cleanup_static._analysis_owned_suffix
     selector = (lambda _plan, _spec: None) if historical else original
-    with patch.object(cleanup, "_analysis_owned_suffix", selector):
+    with patch.object(cleanup_static, "_analysis_owned_suffix", selector):
         with (
             _native_cost(connector) as native_cost,
             measure_sql(sql, observe_nested=True),
@@ -150,7 +148,9 @@ def _sample(
                         _operation(connector, 3),
                         work=VNextUnitOfWork(measured, backend=backend),
                     )
-                    result = cleanup._run_static_phase(operation, cursor, plan, _PHASE)
+                    result = cleanup_static._run_static_phase(
+                        operation, cursor, plan, _PHASE
+                    )
                 durations.append(perf_counter() - batch_started)
                 if len(result.row_keys) > 256:
                     raise RuntimeError("transaction exceeded its 256-row contract")

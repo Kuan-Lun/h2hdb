@@ -65,6 +65,10 @@ from vnext_test_database import (
     set_foreign_key_checks,
 )
 
+import h2hdb._cleanup.cycle as cleanup_cycle
+import h2hdb._cleanup.keys as cleanup_keys
+import h2hdb._cleanup.model as cleanup_model
+import h2hdb._cleanup.roots as cleanup_roots
 from h2hdb import (
     CatalogFacetKind,
     CatalogRecentOrder,
@@ -83,18 +87,13 @@ from h2hdb import (
     catalog_refinement as catalog_refinement_module,
 )
 from h2hdb import (
-    vnext_cleanup_repository as cleanup_module,
-)
-from h2hdb import (
     vnext_publication_repository as publication_module,
 )
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupBatchCommand, CleanupTargetKind
+from h2hdb._cleanup.selection import CleanupSelectionRepository
 from h2hdb.catalog_refinement import CatalogSemanticValidationError
 from h2hdb.vnext_analysis_repository import _MAX_OVERLAY_DEPTH
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_operational_event_repository import OperationalEffectStateError
 from h2hdb.vnext_publication_repository import PublicationHeadRaceError
@@ -327,9 +326,9 @@ def _replay_with_exact_retirement(pipeline: Pipeline) -> IngestTurnReceipts:
     )
     before = snapshot_database(pipeline.config, tables=tables)
     with patch.object(
-        VNextCleanupRepository,
+        CleanupCycleRepository,
         "advance_current_only_cycle",
-        wraps=VNextCleanupRepository.advance_current_only_cycle,
+        wraps=CleanupCycleRepository.advance_current_only_cycle,
     ) as cleanup:
         receipts, _progressed = pipeline.turn()
     targets = {call.kwargs["cycle"].target_kind for call in cleanup.call_args_list}
@@ -961,7 +960,7 @@ def _drain_repository_cleanup_cycle(
     clock: Clock,
 ) -> None:
     with connector.transaction():
-        result = VNextCleanupRepository.resume_cycle(
+        result = CleanupCycleRepository.resume_cycle(
             VNextUnitOfWork(connector, backend=connector_backend(connector)),
             gate_lease=gate,
             cycle=cycle,
@@ -972,7 +971,7 @@ def _drain_repository_cleanup_cycle(
             return
         assert result.generation is not None
         with connector.transaction():
-            result = VNextCleanupRepository.advance(
+            result = CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -1221,9 +1220,9 @@ def test_compacted_snapshot_recurrence_rebases_and_preserves_fencing(
     before_replay = pipeline.view()
     renders = pipeline.library.render_calls
     with patch.object(
-        VNextCleanupRepository,
+        CleanupCycleRepository,
         "advance_current_only_cycle",
-        wraps=VNextCleanupRepository.advance_current_only_cycle,
+        wraps=CleanupCycleRepository.advance_current_only_cycle,
     ) as cleanup:
         replay, replay_progressed = pipeline.turn()
     assert replay.source.replayed
@@ -1353,7 +1352,7 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
@@ -1363,7 +1362,7 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
                 now=clock(),
             )
         with connector.transaction():
-            result = VNextCleanupRepository.resume_cycle(
+            result = CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -1407,7 +1406,7 @@ def test_full_check_accepts_each_durable_publication_commit_release_phase(
                 break
             assert result.generation is not None
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -1478,7 +1477,7 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
@@ -1488,7 +1487,7 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                 now=clock(),
             )
         with connector.transaction():
-            result = VNextCleanupRepository.resume_cycle(
+            result = CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -1549,7 +1548,7 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
                             "UPDATE operational_cleanup_jobs "
                             "SET frozen_root_set_sha256 = %s WHERE cleanup_id = %s",
                             (
-                                cleanup_module._frozen_root_set_sha256(
+                                cleanup_roots._frozen_root_set_sha256(
                                     cycle.cleanup_id,
                                     (forged_root,),
                                 ),
@@ -1596,7 +1595,7 @@ def test_full_check_rejects_forged_publication_commit_cleanup_proof(
             assert not result.cycle_complete
             assert result.generation is not None
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -1639,11 +1638,11 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
     # resident scheduling usually drains this state between turns.
     with monkeypatch.context() as maintenance_override:
         maintenance_override.setattr(
-            VNextCleanupRepository,
+            CleanupSelectionRepository,
             "current_only_maintenance_state",
             staticmethod(
                 lambda _work, *, cycle_cutoff_at: (
-                    cleanup_module.CatalogPublicationMaintenanceState.DONE
+                    cleanup_model.CatalogPublicationMaintenanceState.DONE
                 )
             ),
         )
@@ -1668,7 +1667,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
@@ -1678,7 +1677,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
                 now=clock(),
             )
         with connector.transaction():
-            result = VNextCleanupRepository.resume_cycle(
+            result = CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -1721,11 +1720,11 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
                     )
                     assert len(receipt) == 6
                     original_cursor = bytes(checkpoint[1])
-                    forged_cursor = cleanup_module._encode_static_cursor(
+                    forged_cursor = cleanup_keys._encode_static_cursor(
                         0,
                         (b"\xff" * 16, original_cursor[26:42]),
                     )
-                    forged_chain = cleanup_module._next_chain(
+                    forged_chain = cleanup_cycle._next_chain(
                         bytes(receipt[2]),
                         str(checkpoint[0]),
                         int(receipt[0]),
@@ -1763,7 +1762,7 @@ def test_full_check_accepts_multi_root_pcom_keyset_coverage(
                 break
             assert result.generation is not None
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -1811,7 +1810,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
-            commit_cycle = VNextCleanupRepository.begin_cycle(
+            commit_cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
@@ -1824,7 +1823,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
         assert full_check(db_config).state == "READY"
 
         with connector.transaction():
-            generation_cycle = VNextCleanupRepository.begin_cycle(
+            generation_cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_GENERATION,
@@ -1857,12 +1856,12 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
             )
             assert len(checkpoint) == 1
             phase = str(checkpoint[0])
-            rebound_cleanup_id = cleanup_module._cleanup_id(
+            rebound_cleanup_id = cleanup_model._cleanup_id(
                 CleanupTargetKind.PUBLICATION_GENERATION,
                 shard_no,
                 generation_cycle.cycle_generation,
             )
-            target_key = cleanup_module._target_key(
+            target_key = cleanup_model._target_key(
                 CleanupTargetKind.PUBLICATION_GENERATION,
                 shard_no,
             )
@@ -1880,7 +1879,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                         "WHERE cleanup_id = %s",
                         (
                             rebound_cleanup_id,
-                            cleanup_module._initial_chain(rebound_cleanup_id, phase),
+                            cleanup_cycle._initial_chain(rebound_cleanup_id, phase),
                             current_cleanup_id,
                         ),
                     )
@@ -1891,7 +1890,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                         (
                             rebound_cleanup_id,
                             target_key,
-                            cleanup_module._frozen_root_set_sha256(
+                            cleanup_roots._frozen_root_set_sha256(
                                 rebound_cleanup_id,
                                 roots,
                             ),
@@ -1942,7 +1941,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 "(successor_generation, predecessor_generation) VALUES (1, 0)"
             )
         with connector.transaction():
-            result = VNextCleanupRepository.resume_cycle(
+            result = CleanupCycleRepository.resume_cycle(
                 VNextUnitOfWork(connector, backend=connector_backend(connector)),
                 gate_lease=gate,
                 cycle=generation_cycle,
@@ -2018,7 +2017,7 @@ def test_full_check_accepts_each_durable_publication_generation_phase(
                 break
             assert result.generation is not None
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=connector_backend(connector)),
                     gate_lease=gate,
                     cycle=generation_cycle,
@@ -2101,7 +2100,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
                 lease_duration=LEASE_MICROSECONDS,
             )
         with connector.transaction():
-            commit_cycle = VNextCleanupRepository.begin_cycle(
+            commit_cycle = CleanupCycleRepository.begin_cycle(
                 work(),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_COMMIT,
@@ -2111,7 +2110,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
                 now=clock(),
             )
         with connector.transaction():
-            result = VNextCleanupRepository.resume_cycle(
+            result = CleanupCycleRepository.resume_cycle(
                 work(),
                 gate_lease=gate,
                 cycle=commit_cycle,
@@ -2150,7 +2149,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
                 break
             assert result.generation is not None
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     work(),
                     gate_lease=gate,
                     cycle=commit_cycle,
@@ -2165,7 +2164,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
         assert checked_open_pcom
 
         with connector.transaction():
-            generation_cycle = VNextCleanupRepository.begin_cycle(
+            generation_cycle = CleanupCycleRepository.begin_cycle(
                 work(),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.PUBLICATION_GENERATION,
@@ -2175,7 +2174,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
                 now=clock(),
             )
         with connector.transaction():
-            result = VNextCleanupRepository.resume_cycle(
+            result = CleanupCycleRepository.resume_cycle(
                 work(),
                 gate_lease=gate,
                 cycle=generation_cycle,
@@ -2201,7 +2200,7 @@ def test_live_mariadb_ready_audit_accepts_representative_cleanup_crash_states(
             assert not result.cycle_complete
             assert result.generation is not None
             with connector.transaction():
-                result = VNextCleanupRepository.advance(
+                result = CleanupCycleRepository.advance(
                     work(),
                     gate_lease=gate,
                     cycle=generation_cycle,

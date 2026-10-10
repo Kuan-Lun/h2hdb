@@ -31,6 +31,8 @@ from vnext_probe_databases import (
 from vnext_test_database import Backend, DatabaseFactory
 
 from h2hdb import CoreConfig
+from h2hdb._cleanup.model import CleanupTargetKind
+from h2hdb._cleanup.registry import _STATIC_PLANS
 
 
 @pytest.fixture(scope="module")
@@ -708,8 +710,7 @@ def test_real_replacement_rejects_scalar_cleanup_but_accepts_batched_cost(
         # Select the existing correct scalar implementation for the three
         # measured phases. Their facts/oracle remain exact, while real SQL work
         # deliberately loses batching; no fabricated call counts are supplied.
-        cleanup = acceptance.cleanup
-        plan = cleanup._STATIC_PLANS[cleanup.CleanupTargetKind.GALLERY_OBSERVATION]
+        plan = _STATIC_PLANS[CleanupTargetKind.GALLERY_OBSERVATION]
         for phase in acceptance.GO_FILE_MULTIPLICITY:
             monkeypatch.setitem(
                 plan.phases,

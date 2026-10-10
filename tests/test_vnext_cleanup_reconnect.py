@@ -17,13 +17,9 @@ from vnext_fault_harness import (
 from vnext_pipeline import full_check, initialize_database
 
 from h2hdb import CoreConfig
+from h2hdb._cleanup.cycle import CleanupCycleRepository
+from h2hdb._cleanup.model import CleanupBatchCommand, CleanupCycle, CleanupTargetKind
 from h2hdb.sql_connector import SQLConnector
-from h2hdb.vnext_cleanup_repository import (
-    CleanupBatchCommand,
-    CleanupCycle,
-    CleanupTargetKind,
-    VNextCleanupRepository,
-)
 from h2hdb.vnext_maintenance_gate_repository import GateLease, MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -58,7 +54,7 @@ def _seed(config: CoreConfig) -> tuple[GateLease, CleanupCycle]:
                 lease_duration=100_000,
             )
         with connector.transaction():
-            cycle = VNextCleanupRepository.begin_cycle(
+            cycle = CleanupCycleRepository.begin_cycle(
                 VNextUnitOfWork(connector, backend=backend),
                 gate_lease=gate,
                 target_kind=CleanupTargetKind.CONTENT_BLOB,
@@ -107,7 +103,7 @@ def _finish_after_reconnect(
     for deleted in range(already_deleted + 1, 4):
         with closing(open_connector(config)) as connector:
             with connector.transaction():
-                results = VNextCleanupRepository.advance_current_only_cycle(
+                results = CleanupCycleRepository.advance_current_only_cycle(
                     VNextUnitOfWork(connector, backend=backend),
                     gate_lease=gate,
                     cycle=cycle,
@@ -124,7 +120,7 @@ def _finish_after_reconnect(
                     if index >= deleted
                 )
     with closing(open_connector(config)) as connector, connector.transaction():
-        terminal = VNextCleanupRepository.advance_current_only_cycle(
+        terminal = CleanupCycleRepository.advance_current_only_cycle(
             VNextUnitOfWork(connector, backend=backend),
             gate_lease=gate,
             cycle=cycle,
@@ -136,7 +132,7 @@ def _finish_after_reconnect(
         assert _blobs(connector) == ()
     completed = _snapshot(config)
     with closing(open_connector(config)) as connector, connector.transaction():
-        replay = VNextCleanupRepository.advance_current_only_cycle(
+        replay = CleanupCycleRepository.advance_current_only_cycle(
             VNextUnitOfWork(connector, backend=backend),
             gate_lease=gate,
             cycle=cycle,
@@ -159,7 +155,7 @@ def test_nonempty_cleanup_abort_restores_exact_facts_and_checkpoint_after_reconn
     before = _snapshot(db_config)
     with pytest.raises(_AbortTransaction, match="after nonempty delete"):
         with closing(open_connector(db_config)) as connector, connector.transaction():
-            results = VNextCleanupRepository.advance_current_only_cycle(
+            results = CleanupCycleRepository.advance_current_only_cycle(
                 VNextUnitOfWork(connector, backend=backend_of(db_config)),
                 gate_lease=gate,
                 cycle=cycle,
@@ -185,7 +181,7 @@ def test_nonempty_cleanup_lost_commit_response_replays_exactly_after_reconnect(
     with pytest.raises(_LostCommittedResponse, match="after successful commit"):
         with closing(open_connector(db_config)) as connector:
             with connector.transaction():
-                committed = VNextCleanupRepository.advance(
+                committed = CleanupCycleRepository.advance(
                     VNextUnitOfWork(connector, backend=backend_of(db_config)),
                     gate_lease=gate,
                     cycle=cycle,
@@ -207,7 +203,7 @@ def test_nonempty_cleanup_lost_commit_response_replays_exactly_after_reconnect(
                 connector, "execute_affected", wraps=connector.execute_affected
             ) as execute_affected,
         ):
-            replay = VNextCleanupRepository.advance(
+            replay = CleanupCycleRepository.advance(
                 VNextUnitOfWork(connector, backend=backend_of(db_config)),
                 gate_lease=gate,
                 cycle=cycle,
