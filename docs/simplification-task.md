@@ -1,9 +1,10 @@
-# H2HDB 全系統精簡任務紀錄
+# H2HDB 全系統分割與精簡任務紀錄
 
 這是跨對話接續用的任務範圍、候選與驗收狀態，不是第二份代理政策。
 政策以各 repository 的 `AGENTS.md` 為準；Core 入口為 [AGENTS.md](../AGENTS.md)。
-目標是六個自有程式 repository 與部署 workspace 的整體精簡：先檢查功能必要性、
-責任、狀態與重複工作，刪除不必要實作並降低維護負擔。分開記錄 runtime、tests、
+目標是六個自有程式 repository 與部署 workspace 的內部責任分割與整體精簡：
+集中完整功能的 ownership，隨相關分割刪除已確認的重複實作，不以先證明大量減碼
+作為開始分割的前提。分開記錄 runtime、tests、
 dev tooling 與 generated code 的增減；LOC 不是唯一指標，但不能以搬檔或加速冒充減碼。
 優先在正確 ownership 的 repository 內建立內聚子套件；只有獨立使用／發布邊界
 和淨收益成立時才考慮 PyPI 拆包，不把相同 schema、交易或生命週期切成多個發行單位。
@@ -13,6 +14,47 @@ R02 共用 session／page validation 已整合，runtime 淨減 83 行。
 2026-10-10 使用者要求提高每輪的實質維護收益；不再機械式優先處理 R07 小型 helper。
 R15 收斂完整 CBZ 解析責任並建立 Ingest 內部 artifact 子套件，驗收狀態見下節。
 第二次 page verification 經故障反例確認保留；全系統審核與模組邊界決策仍未完成。
+
+## 目前任務快照
+
+2026-10-10：使用者確認主要方向為專案內部責任分割，並要求檢討新對話交接。
+本輪完成最新 log 分析、七個 workspace 來源重查與接續流程修正；不啟動大型
+runtime 搬移。下一輪以 **Core cleanup 的完整內部責任分割** 為主要交付，
+細節見「下一輪入口」；R03 的效能定位另行驗收。舊 R 編號是證據索引，不是執行順序。
+Analysis／R16 保留但順序後移；不要重回先找小 helper 或以減行數篩選所有工作。
+
+新對話使用 `$h2hdb-simplify`，其顯示名稱改為「h2hdb 分割與精簡」。先讀本快照、
+下一輪入口及範圍表，再按責任查閱歷史實驗。Skill 負責接續流程，本紀錄保存
+當前狀態，原 `AGENTS.md` 與 executable checks 仍是各庫政策來源。
+新對話不保證自動保留舊聊天；不可用聊天記憶代替上述來源。
+
+本輪開始時六個主要 checkout 均乾淨，refs／versions 為：
+
+| Repository | 已核對 HEAD | Version | Runtime 模組／實體 LOC |
+| --- | --- | --- | --- |
+| Core | `c583a8979948a6e857bf9f78ffeccdba96738a7c` | `0.45.8` | 96／117,031，含 generated 24 |
+| Ingest | `3ce26cd8e7c19ab0db7df15b2828c801efb48356` | `0.30.4` | 53／20,006 |
+| OPDS | `03be557ebd78763b74288f7c39a9e4934934148b` | `0.24.2` | 23／6,384 |
+| Komga | `0182984a1357f5a1345d3dd78ff8dca94f0cf597` | `0.18.2` | 7／1,511 |
+| Downloader | `e6fbe969a3300dd90bb4174fa3e08e7e7b4e3053` | `0.23.2` | 3／1,367 |
+| hbrowser | `b8bf1ba306f3222ca12cb589d4d10e08e7a25fc3` | `0.44.2` | 49／18,827 |
+
+六庫非 generated runtime 合計 165,102 行，比初始盤點少 138 行；這是 R01、R02、
+R15 的累積結果，不是本輪刪碼。R01 `e9422d7`、R02 `d375614`、Core R15 `1010ec2`
+及措辭澄清 `eaed02d` 均為 Core HEAD ancestors，Ingest R15 `3ce26cd` 即其 HEAD。
+Core HEAD 的 documentation receipt 有效；歷史 full gate 結果見 R15，不冒稱本輪重跑。
+部署仍無 Git，其 23 個自有控制檔、5,598 行及下節 SHA-256 重算未變；未讀 secrets
+或查執行中 images。Core `formal/close-production-blockers` 與 Ingest
+`feat/page-worker-decision-log` 的既有 branch／worktree 保留，沒有接管其修改。
+
+本輪以品質優先修正接續入口，不受最小修改或向後相容限制；僅有任務文件與個人
+skill 變更，沒有 runtime 介面、資料格式或 compatibility path 變更，屬「品質優先後
+恰好向後相容」。Core 維持 `0.45.8`、impact none、依賴未變，不重跑 dependency audit。
+Runtime／tests／dev tooling／generated code 的本輪增減均為零。提交與整合依
+documentation profile 驗證，不將它當作 runtime、效能、Compose 或 production 驗收。
+個人 skill 的 `quick_validate.py`、UI YAML 欄位檢查及 repository-local Markdown
+檢查通過；已安裝並逐 byte 核對兩份來源。沒有舊聊天背景的唯讀接續演練正確選到
+cleanup 分割、原驗收邊界與剩餘事項；這是交接可讀性驗證，不保證未來代理不會偏移。
 
 ## 已核對基線
 
@@ -104,7 +146,7 @@ Komga Java server、H@H、galleryinfo parser 及其他第三方套件是外部�
 | 階段 | 工作範圍 | 目前狀態 |
 | --- | --- | --- |
 | S0 | 七個 workspace 的來源與依賴盤點 | 本次建立基線；功能必要性仍未審核 |
-| S1 | Core／Ingest 的責任、狀態與重複工作 | R01／R02 已整合；R15 artifact 規則收斂與內部分割採用，正式整合以 Git／receipt 核對；其餘範圍未完成 |
+| S1 | Core／Ingest 的內部責任分割與相關精簡 | R01／R02／R15 已整合；下一單元為 Core cleanup，其餘範圍未完成 |
 | S2 | OPDS、Komga sync、Downloader、hbrowser 的自身設計 | 待審核；不以 S1 是否碰到它們作為啟動條件 |
 | S3 | 部署控制流程與跨 repository 工程工具重複責任 | 待審核；按實際契約和維護成本選單元 |
 | S4 | 全系統重查與逐項拆包決定 | 待 S1–S3 的證據；不是自動發布套件 |
@@ -194,14 +236,15 @@ S3 開始時由各基線的 tracked 輔助程式和設定建立逐檔歸屬，�
 
 狀態區分待審核、調查中、待實驗、待決策、採用待驗收、完成、拒絕、延期。
 拒絕與延期不是實作完成；保留理由及新證據下的重開條件。
-R01／R02 已整合；R15 採用單一 archive parser 與內部責任分割，正式整合以 Git 核對。
+R01／R02／R15 已整合，2026-10-10 已核對 Git ancestry；R15 為單一 archive parser
+與內部責任分割。下列歷史候選以目前任務快照及下一輪入口決定優先序。
 其他 analysis stages 與其餘範圍仍未完成。整合狀態由 Git ancestry 與 receipt 核對。
 
 | ID | 候選／狀態 | 持久證據入口 | 結案或重開條件 |
 | --- | --- | --- | --- |
 | R01 | 同交易 family 共讀已整合；第二次 verify 保留，移除候選拒絕 | C02／C04、I04；下方實驗、故障反例與持久報告；merge `e9422d7` | 相關 authority／plan ownership 改變或新工作負載違反局部契約時重開；其他 analysis stages 待審核 |
 | R02 | 相同 session／page predicates 共用；已整合 `d375614` | C01／C04；`_ingest/validation.py`；下方雙 backend 與 consumer 驗證 | 各信任邊界保留驗證；authority 欄位、分頁語意或 caller lifecycle 改變時重查 |
-| R03 | READY audit／cleanup 重複工作；cleanup 已重現既有成本超標、待定位 | C05、C07；`catalog_refinement.py`、`vnext_cleanup_repository.py`；R01 全流程回歸報告 | 沿用既有預算定位可省工作；不得以 READY audit 通過覆蓋 cleanup 失敗 |
+| R03 | Cleanup 成本定位優先；READY audit 分開處理，兩者未完成 | C05、C07；R01 成本違反與本輪 log-4 證據；下一單元先建立 cleanup 內部責任邊界 | 沿用既有預算定位可省工作；分割或 READY audit 通過不能覆蓋 cleanup 成本失敗 |
 | R04 | 純 codecs distribution；延期至邊界審核 | C08；`vnext_identity.py`、`catalog_search.py`、`catalog_writer.py`、`database_audit.py` | 先確認 byte／Unicode／guard ownership／audit 失效契約；邊界與收益成立後再決定拆包 |
 | R05 | Media distribution 暫不採用；R15 先完成內部分割 | I02 與 I01／I03 使用點；Ingest `artifact/` | 有獨立使用／發布需求及可降低耦合的證據才重開 PyPI 拆包；現有 renderer 仍接 source authority、storage 與 Core evidence |
 | R06 | Transport／telemetry／contracts；延期 | C08、C10、C11、I05；實際 import 與 consumer 使用點 | 有獨立使用需求、可減少依賴或發布耦合的證據再開；檔案大小不是理由 |
@@ -213,8 +256,8 @@ R01／R02 已整合；R15 採用單一 archive parser 與內部責任分割，�
 | R12 | 部署解析／啟動／驗收／操作責任；待審核 | P01–P07，包含全部 profile jobs 與共用 build stage | 驗證 resolver、啟動 probes、隔離驗收與 deploy 各自的責任；不得以讀過來源宣稱可部署 |
 | R13 | 跨庫工程工具收斂；待逐檔盤點 | E01–E02；既有 scripts、hooks、workflow 與驗收 fixture | 先比較執行語意與 ownership，列出真正重複者；不能以抽共用套件取代各庫應有驗收 |
 | R14 | Source append SQL 成本；已重現超標、待定位 | C01／C04；R01 完整流程的 source attribution | 沿用既有 source 預算，固定代表形狀與退化反例，驗證重複工作後採用或拒絕 |
-| R15 | Canonical CBZ 單一解析與 artifact 內部責任分割；採用 | I02、E02；Ingest `artifact/`、Core deployment acceptance probe；下節驗收 | 保留每個信任邊界的驗證，刪重複解析／狀態；格式、writer 或 source/cache 邊界變更時重查 |
-| R16 | Analysis overlay 四組 BUILD／VALIDATE 與 replay 責任；待驗證 | C02；`vnext_analysis_repository.py`、`vnext_analysis_overlay_family.py` | 比較 content candidate／owner、GID candidate／winner 的規則與 durable authority，驗證能否收斂完整 family；不可用大量 flags 掩蓋差異 |
+| R15 | Canonical CBZ 單一解析與 artifact 內部分割；完成已整合 | I02、E02；Ingest `artifact/`、Core deployment acceptance probe；下節驗收 | 格式、writer 或 source/cache 邊界變更時重查；不另建平行 presentation package |
+| R16 | 完整 analysis 內部 ownership；待實作，順序後移 | C02／C04；`vnext_analysis_repository.py`、overlay families 與 facade 編排 | 四組 BUILD／VALIDATE／replay 隨各 family 集中；保留各信任邊界，不用大量 flags 掩蓋差異，不以先減碼為門檻 |
 
 ## R01：file decision validation step 調查（歷史紀錄）
 
@@ -674,25 +717,138 @@ Git metadata；本段措辭澄清另走 documentation profile，不冒稱再次�
 完整 deep、效能矩陣、cleanup-acceptance、Compose build／隔離部署流程或 production
 驗收；不宣稱端到端加速或正式可部署，沒有 push、publish 或 deploy。
 
+## 2026-10-10 log-4：清理階段與接續排序
+
+來源為使用者提供的 `/Users/kuanlun_wang/Downloads/exhentai-h2hdb-ingest-4.html`，
+36,267,767 bytes，SHA-256：
+`74185d4e82a40eaa0fcccad5ca6916e8a83132d97e6b519d3e6b790d389be6c4`。
+Startup 明列 Core `0.45.8`、Ingest `0.30.4`、MariaDB，版本符合上述變更後版本；
+log 不能證明 installed bytes 等於本機 checkout 或構成相同工作負載的前後比較。
+
+重建方法：依 HTML 表格讀取 4,990 個 rows 並反轉為時間正序，解碼 entities，
+將不含新事件時間／level 前綴的 continuation 接回上一事件，保留 JSON 內容；
+得到 3,676 events，1,410 個 database JSON 全數可解析。只統計 unique operation ID
+的 completed roots（1 個 audit、1,313 個 cleanup），不累加 95 個 progress snapshots。
+逐筆核對 root exclusive 加所有 phase exclusive 等於 elapsed，最大誤差為零。
+第二次獨立 HTML 解析得到相同 rows；本文數值可按原檔與以上規則重新計算，
+不以暫存分析程式的存續作為證據前提。
+
+| 不重疊的壁鐘區間（log 時間） | 所需時間 |
+| --- | --- |
+| 01:44:59–01:45:09.204，啟動至選定 audit | 約 10.204 s，起點僅秒精度 |
+| 01:45:09.204–03:06:18.313，完整 audit | 4,869.109 s＝81 分 9 秒 |
+| 03:06:18.313–03:07:05.910，啟動尾段，含第一次 cleanup | 47.597 s |
+| 03:07:05.910–15:51:21.294，resident maintenance | 45,855.384 s＝12 小時 44 分 15 秒 |
+
+全段約 14 小時 6 分；沒有進入 ingestion、render 或 publication，排除圖片
+壓縮／縮放／預檢後仍是這段 foreground 工時。沒有 WARNING／ERROR 不代表
+達成完整流程或成本目標。Audit 因 validators changed 啟動，其 DB scope
+4,868.837 s、4,221,910 SQL calls、SQL 2,810.351 s；semantic validators exclusive
+4,287.349 s，最昂貴單一 validator `catalog.discovery-exactness.v1` 為 1,952.327 s。
+Core `database_audit._validator_version()` 包含 project version，不是 validator
+原始碼的 fingerprint；因此此原因不能證明本次實際修改了 validator。後續升版也
+可能要求 full audit，分割版本的部署成本須另評估，不在本輪放寬 audit 契約。
+
+Cleanup 1,313 次全部 `PROGRESSED`、零 `DONE`，每次 16 batches，共 21,008
+committed batches、182,269 committed logical rows。Logical rows 不是 gallery 數、
+physical deletes 或剩餘工作量。Cleanup active elapsed 合計 45,450.753 s，含啟動
+尾段第一次工作；這是上述壁鐘的子集，不能另外相加。809,602 SQL calls 花費
+44,743.871 s，占 cleanup active **98.44%**。
+
+| Cleanup exclusive phase | 秒 | Cleanup active 占比 |
+| --- | --- | --- |
+| 全部 maintenance eligibility | 39,340.733 | 86.56% |
+| 其中 CANONICAL_VALUE | 25,021.064 | 55.05% |
+| 其中 CONTENT_BLOB | 6,545.766 | 14.40% |
+| 其中 FILE_NAME_IDENTITY | 2,622.514 | 5.77% |
+| cleanup_phase | 4,009.350 | 8.82% |
+| next_cycle 自身 | 1,742.575 | 3.83% |
+
+前三個 eligibility targets 合計 75.22%。CANONICAL_VALUE 為 4,636 SQL calls；
+後兩者各為 4,636 phase calls、1,567 SQL calls，已存在 absence proof 重用，
+不能把 phase 次數當成 SQL 次數或宣稱尚未有快取。SQL parent／phase 成本不可重複加總。
+依時間等量分四組，logical rows／active second 為 4.171→4.121→3.917→3.826，
+每 batch rows 為 9.304→8.829→8.396→8.177；CANONICAL_VALUE 每 SQL 約
+5.481→5.347→5.372→5.384 s，沒有持續變慢的證據。每次都有 committed rows，
+不是已證實的無進度死循環；吞吐變化伴隨每批有效工作量下降。
+
+Ingest `resident.py` 在 Core 回傳 `PROGRESSED` 後直接回報 maintenance，未走
+`try_claim_ingest`，符合紀錄。Filesystem `library_cleanup_io` 最後累積 snapshot
+僅 24.072 s／1,312 calls，全部 library outcome DONE，不能當成 DB cleanup DONE。
+487 次背景 source inventory 每次觀測 132,277 markers，中位數 61.044 s；它和
+foreground 並行，不另加壁鐘，也不能從 logical bytes 推定實體磁碟工作量。
+
+結論：足以選定 cleanup eligibility SQL 為效能熱點，無須再固定等一小時。
+尚無初始 backlog、剩餘候選總量／可推算的 durable 進度分母、query plans 與
+資料形狀，無法估清完 ETA 或可信的理論最佳時間。即使不切實際地將 eligibility
+全部降至零，也仍剩 6,110 s；約 7.44 倍只是該假設的加速上限，不是可達承諾。
+後續應以合成、可拋棄的代表 workload、既有成本預算與退化反例驗證可省工作，
+不直接對 production 執行 SQL probe，也不因觀測結果調高預算。
+
+R01／R02／R15 對應的 ingest／CBZ 路徑未執行，不能判定其加速成功或失敗。
+若要驗證端到端，需看到 **DB cleanup DONE → next claim → 完整 ingestion／
+publication／activation → 後續 cleanup DONE**；缺乏剩餘量，現在不能給等待時數。
+81 分鐘 audit 屬獨立責任，不因 cleanup 分割就視為解決。
+
 ## 下一輪入口
 
-接續時先核對七個 workspace 的來源、政策、Git ancestry 與本輪 exact-tree receipt。
-R01／R02 已整合，不重做。R15 Ingest／Core 已分別整合 `3ce26cd`／`1010ec2`，
-核對 candidate wheel、手動驗收、Ingest hook 結果及 Core exact-tree receipt；
-本輪相容性措辭修正的文件整合另由 Git ancestry 核對，不重開已完成的 runtime。
-下一輪先驗證 R16 的完整 analysis overlay family：現有四組 BUILD／VALIDATE entry
-共約 786 行、replay helpers 約 132 行，先比較 durable owners／keyspace／exactness，
-再判定能收斂哪些真正相同責任。這些是調查範圍，不是已證實可刪行數；不能為合併
-造出 flags framework。R07 不再是預設第一順位；library 整體 I/O ownership 或其他
-高維護負擔的完整功能可依證據調整排序，不能每輪自動挑最小 helper。
-R14 source SQL 與 R03 cleanup 仍是已知成本未達標事項；保留原預算與重新驗收要求，
-但使用者現在優先要求程式精簡，不能再默認以效能工具增量代替減碼工作。
-R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未完成，不得從
-總範圍刪除。每輪以一個內聚候選完成處置，不因只更新文件而提早停止。
+先重核目前快照的七個來源、涉及庫政策、Git ancestry 與既有驗收；新變更須重驗
+受影響結論。下一單元為 **Core cleanup 完整內部分割**，不先要求可大量減行。
+依 Core `c583a89` 的責任盤點，建議下列 owner；檔名於實作前核對 import DAG：
+
+| 內部 owner | 現有責任與來源 |
+| --- | --- |
+| `_ingest/maintenance.py` | `vnext_ingest_facade.py` current-only attempt：lease／最多 16 次交易、adapter release、outcome 與補償；facade 保留公開入口 |
+| `_cleanup/model.py`、`cycle.py` | `vnext_cleanup_repository.py` cycle values、checkpoint／receipt／replay／completion；維持單一 durable cycle owner |
+| `_cleanup/selection.py`、`eligibility.py` | Maintenance classification、open-cycle resume、target／shard 選擇；既有 absence proof 的 attempt ownership |
+| `_cleanup/static.py`、`roots.py` | Bounded keyset／delete／cursor、bind／row budget、frozen root load／freeze／validation |
+| `_cleanup/targets/`、`registry.py` | Source-owned closed plans 與各 family retention SQL／mutation／recovery，publication commit 恢復作完整單元 |
+
+依賴由 facade → maintenance → selection／cycle → registry → targets → static／roots
+→ model；cycle 傳入已選 plan，底層不得反向讀 registry。這是待實作的責任邊界，
+不是已驗證的最終檔案分配。Canonical persistence 是多 workflow 共用的低層 owner，
+不移入 cleanup；Ingest filesystem lifecycle 也留在 adapter。
+
+同 connector／managed transaction、exact fencing、bounded child-first reachability、
+response-loss replay 及 transaction 外 adapter I/O 必須維持；分割不延長 transaction
+local operation 或 attempt absence proof 的生命週期。Audit scheduler／validators
+維持獨立 oracle，不直接借用 writer eligibility 代替其判斷。
+同步更新 `catalog_writer.py` 的 installed method identity 登記、physical domain／
+state-machine bindings、`verification/invariants.toml`、測試 patch 接點與 cleanup
+成本工具的 private instrumentation；移除舊 private owner，不保留轉接 shim，
+不放寬 writer 登記以遷就任意 free functions。
+
+驗收包含受影響雙 backend cleanup／lease／reconnect／replay／READY tests、
+`scripts/run-pytest.py cleanup-acceptance`、正式 review／full gate 與 distribution。
+核對 Ingest resident／progress／e2e consumers；涉及跨 ingest 發布／清理流程時，
+按原政策補實際 Compose 衍生的隔離 `--instrumented --cleanup-faults` 驗收。
+分割成果、LOC、效能各自回報，R03 成本未經相稱實測通過仍未完成；只加工具
+或只寫 docs 不算完成此分割單元。發布／部署不在本輪授權內。
+
+## 重查後仍未完成
+
+下表為 2026-10-10 的來源與責任重查結果；未宣稱逐檔重新審核所有未變模組。
+
+| 範圍 | 狀態與下一步 |
+| --- | --- |
+| C05／C04 cleanup，R03 | 下一單元：上述完整內部分割；另定位 eligibility SQL、工作量與 durable 進度，既有成本違反未解決 |
+| C07 READY audit，R03 | 仍需：scheduler／validator ownership 與約 81 分鐘成本獨立調查；不能由 cleanup 結果結案 |
+| C02／C04 analysis，R16 | 順序後移：完整 run／authority／preparation／file／content／GID／snapshot ownership；各 family 擁有 BUILD／VALIDATE／replay，shared batch 不反向 dispatch family |
+| 其餘 Core，含 C08 codecs、publication 與 canonical persistence | 仍需邊界審核；codecs 可內部分組但控制 persisted bytes，canonical persistence 不歸 cleanup |
+| I03 library／R07、I01 source 與 resident 編排 | 仍需完整 lifecycle 分割；小 JSON／hash helper 隨 owner 收斂，不單獨作預設工作；qualification 與 schedule 不全塞入純 source engine |
+| C01／C04 source SQL，R14 | 已知成本未達標，仍需按原契約驗證；本 log 未進入 ingest，沒有新修正證據 |
+| R01／R02／R15 | 已完成當輪範圍；受影響契約改變時重查，保留現有 artifact package，不為換名重搬 |
+| S2：OPDS、Komga、Downloader、hbrowser，R08–R11 | 仍需各自 reader fencing、protocol mapping、batch／root／browser resource ownership 審核 |
+| S3：部署 P01–P07／R12、工程工具 E01–E02／R13 | 仍需逐責任審核與工具分類；部署控制來源未變不代表 runtime 可部署 |
+| S4／R04–R06 PyPI | 獨立發行暫緩至使用／發布邊界及淨收益成立；全系統最終重查仍未完成 |
+
+目前無任何完整 C／I／O／K／D／H／P／E 分組可宣告全部審核完成。
+每輪修改後重查受影響待辦，說明仍需、順序改變、已涵蓋或拒絕／延期與重開條件；
+最終回覆列具體剩餘項目，不能只寫「全系統尚未完成」。
 
 ## 每輪交付與證據
 
-- 一個內聚候選的問題、必要責任、行為變化、假設、反例、採用或不採用理由。
+- 一個完整功能邊界的問題、owner／依賴、行為變化、假設、反例及設計取捨。
 - 涉及修改時，記錄實作 commit、影響範圍及實際執行的既有檢查；未跑、skip 分開列明。
 - 明列刪除的重複實作／狀態／責任及保留原因，分開計算 runtime、tests、dev tooling、
   generated code 增減；揭露總差異和新增抽象成本，不能只以搬檔、拆包或加速宣稱精簡。
@@ -702,7 +858,7 @@ R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未
 - 本輪完成前回寫候選、範圍審核狀態與下一個入口；只改 ledger 不代表 runtime 通過。
   實作 commit 可先記錄，最後 merge 由 Git history 核對，避免自我引用 commit hash。
 
-預設一輪完成一個候選的完整處置：先說明具體修改方案、預期收益及驗證方法，
+預設一輪完成一個功能邊界的完整處置：先說明具體修改方案、預期收益及驗證方法，
 完成相稱的調查／實驗；證據支持採用時接續實作、必要驗收、整合及受影響範圍重查。
 充分證據支持拒絕或保留時，可附理由與重開條件結案，不強迫修改或刪碼。
 調查是候選內的步驟，列出下一步、提交文件或上下文壓縮都不是正常停止條件；
@@ -732,7 +888,6 @@ R01 其他 analysis stages 及 S2／S3 仍需審核；缺失 workspace 保持未
 5. 內部模組化與獨立拆包各自有決定及依據；說明實際消除的重複責任和維護成本，
    列出分類 LOC 與總增減。不能只以減行數判定完成，也不能隱去沒有減碼的結果。
 
-目前進度：R01 family 共讀與 R02 validation 已整合；R15 完成單一 CBZ parser 與
-artifact 內部分割實作，整合結果以 Git 與 receipt 為準。受影響 callers、Core probe
-及 consumer byte 邊界已重查；其他
-analysis stages、runtime／部署審核與工程工具細分仍待做，S1–S4 及全系統尚未完成。
+目前進度：R01、R02、R15 已整合並重核 ancestry；下一輪先完成 cleanup 內部分割。
+最新 log 只涵蓋 startup audit／maintenance，不是 ingest 端到端效能驗收。
+具體剩餘工作以上表為準，S1–S4 及全系統尚未完成。
