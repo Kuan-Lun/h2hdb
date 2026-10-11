@@ -224,3 +224,21 @@ with closing(open_database(load_config("core-reader.json"))) as catalog:
 ## 授權
 
 [GNU General Public License version 3](LICENSE)。
+
+## Shared development tools
+
+Common script implementations are generated from the independent `h2h-dev-tools`
+Python package into `scripts/_shared/h2h_dev_tools/`. Hooks use that committed
+snapshot offline; no submodule, sibling checkout or installed toolkit is needed
+for normal development. The fast gate verifies the complete source manifest.
+
+To update the shared tools, install a reviewed version or an explicitly supplied
+candidate wheel in a separate environment, then run:
+
+```bash
+h2h-dev-tools sync --repository /absolute/path/to/this/checkout
+h2h-dev-tools verify --repository /absolute/path/to/this/checkout
+```
+
+Review and commit the generated changes through this repository's task workflow.
+Do not edit generated snapshots directly. Core-specific checks remain in `scripts/`.

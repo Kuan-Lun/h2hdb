@@ -94,7 +94,8 @@ def test_release_receipt_requires_the_exact_profile_tree_and_checks() -> None:
         version=Version("1.2.3"),
         scope=gate.GateScope("base-tree", "full"),
     )
-    assert gate.RELEASE_PROFILE == "h2hdb-release-v6"
+    assert gate.RELEASE_PROFILE == "h2hdb-release-v7"
+    assert "shared-tools-source-bundle" in gate.REQUIRED_CHECKS
     assert "exact-candidate-code-review" in gate.REQUIRED_CHECKS
     for previous_profile in (
         "h2hdb-release-v3",

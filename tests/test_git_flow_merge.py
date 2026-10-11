@@ -179,7 +179,7 @@ def _fixture(
     _git(primary, "init", "--initial-branch=master")
     _git(primary, "config", "user.name", "Review Flow Test")
     _git(primary, "config", "user.email", "review-flow@example.invalid")
-    _write(primary / ".gitignore", ".venv/\n")
+    _write(primary / ".gitignore", ".venv/\n__pycache__/\n")
     _write(primary / "shared.txt", "base\n")
     _write(primary / "README.md", "# Base\n")
     for name in (
@@ -190,6 +190,11 @@ def _fixture(
         path = primary / "scripts" / name
         path.parent.mkdir(exist_ok=True)
         shutil.copy2(ROOT / "scripts" / name, path)
+    shutil.copytree(
+        ROOT / "scripts/_shared",
+        primary / "scripts/_shared",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     if reviewer:
         _write(primary / "scripts" / "review-code.py", REVIEWER)
     for name, phase in (

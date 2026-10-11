@@ -16,7 +16,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from dependency_manifest import dependency_manifest
+from _shared.h2h_dev_tools.dependency_manifest import dependency_manifest
 
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _IGNORED_PATHS = (

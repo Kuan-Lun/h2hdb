@@ -112,6 +112,16 @@
 - 不得依賴 system-wide lint、format、type-check或 Markdown工具。
 - `requires-python` 使用 `>=3.14`；只有經驗證的壞版本可使用 `!=`。
 
+## 共用開發工具
+
+- `scripts/_shared/h2h_dev_tools/` 是 `h2h-dev-tools` 套件生成的來源快照，
+  唯一手動維護來源是該獨立 repository 的 `src/h2h_dev_tools/`。
+- 以明確版本或 candidate wheel 安裝工具，再執行 `h2h-dev-tools sync --repository`
+  更新快照；不得手改 generated files。格式化工具須排除快照，唯讀 gate 仍檢查。
+- Hooks 使用本 repository tree 的快照並離線驗證 manifest 與完整來源雜湊；
+  不依賴 sibling checkout、submodule 或已安裝的最新版，不在 gate 自動同步。
+- Schema、formal、process supervision 與業務驗收仍由 Core 擁有。
+
 ## 品質工具
 
 - `pyproject.toml` 是 Ruff與 mypy的唯一規則來源。

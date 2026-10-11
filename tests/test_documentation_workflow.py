@@ -68,7 +68,6 @@ def _repository(tmp_path: Path, *, install_hooks: bool = True) -> Path:
         "scripts/check_change_scope.py",
         "scripts/check-docs.py",
         "scripts/check-version.py",
-        "scripts/dependency_manifest.py",
         "scripts/release-gate.py",
         ".githooks/run-release-gate",
         ".githooks/pre-commit",
@@ -79,6 +78,11 @@ def _repository(tmp_path: Path, *, install_hooks: bool = True) -> Path:
         destination = repository / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(_ROOT / name, destination)
+    shutil.copytree(
+        _ROOT / "scripts/_shared",
+        repository / "scripts/_shared",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     _write(repository, ".gitignore", ".venv/\nnode_modules/\n__pycache__/\n")
     _write(repository, "README.md", "# Fixture\n")
     _write(

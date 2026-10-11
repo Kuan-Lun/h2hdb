@@ -9,7 +9,10 @@ import pytest
 
 @pytest.fixture
 def manifest() -> ModuleType:
-    path = Path(__file__).resolve().parents[1] / "scripts/dependency_manifest.py"
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/_shared/h2h_dev_tools/dependency_manifest.py"
+    )
     specification = importlib.util.spec_from_file_location("manifest_under_test", path)
     assert specification is not None
     assert specification.loader is not None

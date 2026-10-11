@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,11 @@ def _fixture_installer(tmp_path: Path, manifest: str) -> Path:
     scripts.mkdir(parents=True)
     installer = scripts / _INSTALLER.name
     installer.write_bytes(_INSTALLER.read_bytes())
+    shutil.copytree(
+        _INSTALLER.parent / "_shared",
+        scripts / "_shared",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     (repository / "pyproject.toml").write_text(manifest, encoding="utf-8")
     return installer
 
@@ -47,6 +53,7 @@ dev = ["pytest>=99,!=99.1", "hypothesis>=88,<89", "unrelated-dev-tool>=42"]
 required_plugins = ["pytest-xdist>=77,<78", "pytest-custom>=66"]
 """,
     )
+    monkeypatch.syspath_prepend(str(installer.parent))
     calls = _capture_pip(monkeypatch)
     arguments = [str(installer), "pytest", "hypothesis", "Example_Package"]
     if pytest_plugins:
@@ -80,6 +87,7 @@ dev = ["pytest<10"]
 required_plugins = ["pytest>=9"]
 """,
     )
+    monkeypatch.syspath_prepend(str(installer.parent))
     calls = _capture_pip(monkeypatch)
     monkeypatch.setattr(sys, "argv", [str(installer), "--pytest-plugins", "pytest"])
 
@@ -100,6 +108,7 @@ def test_ci_install_rejects_missing_declarations_before_installing(
         tmp_path,
         '[project.optional-dependencies]\ndev = ["pytest-xdist>=77"]\n',
     )
+    monkeypatch.syspath_prepend(str(installer.parent))
     calls = _capture_pip(monkeypatch)
     monkeypatch.setattr(sys, "argv", [str(installer), *arguments])
 
@@ -116,6 +125,8 @@ def test_ci_install_propagates_pip_failure(
     installer = _fixture_installer(
         tmp_path, '[project.optional-dependencies]\ndev = ["pytest>=99"]\n'
     )
+
+    monkeypatch.syspath_prepend(str(installer.parent))
 
     def fail(command: list[str], *, check: bool) -> subprocess.CompletedProcess[str]:
         assert check is True
