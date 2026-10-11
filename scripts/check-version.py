@@ -16,6 +16,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from dependency_manifest import dependency_manifest
+
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _IGNORED_PATHS = (
     ".Codex/**",
@@ -74,23 +76,6 @@ def _release_metadata(document: dict[str, Any]) -> dict[str, Any]:
         "project": project,
         "wheel": document.get("tool", {}).get("hatch", {}).get("build", {}),
     }
-
-
-def _dependency_manifest(document: dict[str, Any], package: dict[str, Any]) -> bytes:
-    project = document.get("project", {})
-    manifest = {
-        "build": document.get("build-system", {}).get("requires", []),
-        "dependency-groups": document.get("dependency-groups", {}),
-        "optional": project.get("optional-dependencies", {}),
-        "runtime": project.get("dependencies", []),
-        "node-dev": package.get("devDependencies", {}),
-    }
-    return json.dumps(
-        manifest,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
 
 
 def _matches(path: str, patterns: tuple[str, ...] | list[str]) -> bool:
@@ -188,7 +173,7 @@ def _validate_audit(tree: str, document: dict[str, Any], version: str) -> None:
         raise ValueError(
             "version bump requires a valid .release/dependency-audit.json"
         ) from error
-    digest = hashlib.sha256(_dependency_manifest(document, package)).hexdigest()
+    digest = hashlib.sha256(dependency_manifest(document, package)).hexdigest()
     if receipt.get("schema") != "h2h.dependency-audit.v1":
         raise ValueError("dependency audit receipt has an unsupported schema")
     if receipt.get("project_version") != version:

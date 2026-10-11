@@ -16,26 +16,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
+from dependency_manifest import dependency_manifest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
-
-
-def _dependency_manifest(document: dict[str, Any], package: dict[str, Any]) -> bytes:
-    project = document.get("project", {})
-    manifest = {
-        "build": document.get("build-system", {}).get("requires", []),
-        "dependency-groups": document.get("dependency-groups", {}),
-        "optional": project.get("optional-dependencies", {}),
-        "runtime": project.get("dependencies", []),
-        "node-dev": package.get("devDependencies", {}),
-    }
-    return json.dumps(
-        manifest,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
 
 
 def _python_requirements(document: dict[str, Any]) -> list[tuple[str, str]]:
@@ -164,7 +148,7 @@ def main() -> int:
     receipt = {
         "checked_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
         "manifest_sha256": hashlib.sha256(
-            _dependency_manifest(document, package)
+            dependency_manifest(document, package)
         ).hexdigest(),
         "node": node_audit,
         "project_version": document["project"]["version"],
