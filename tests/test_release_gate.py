@@ -101,6 +101,7 @@ def test_release_receipt_requires_the_exact_profile_tree_and_checks() -> None:
         "h2hdb-release-v3",
         "h2hdb-release-v4",
         "h2hdb-release-v5",
+        "h2hdb-release-v6",
     ):
         old_profile = dict(document, profile=previous_profile)
         assert not gate._receipt_matches(

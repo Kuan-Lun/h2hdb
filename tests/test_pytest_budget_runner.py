@@ -662,7 +662,8 @@ def test_release_receipt_names_the_bounded_merge_evidence(
         ROOT / "scripts" / "release-gate.py",
     )
 
-    assert release_gate.RELEASE_PROFILE == "h2hdb-release-v6"
+    assert release_gate.RELEASE_PROFILE == "h2hdb-release-v7"
+    assert "shared-tools-source-bundle" in release_gate.REQUIRED_CHECKS
     assert "exact-candidate-code-review" in release_gate.REQUIRED_CHECKS
     assert "sqlite-merge-tests-parallel" in release_gate.REQUIRED_CHECKS
     assert "mariadb-10.11.11-smoke-single-worker" in release_gate.REQUIRED_CHECKS
