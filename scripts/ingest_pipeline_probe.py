@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -34,6 +33,7 @@ import collect_mariadb_performance as mariadb_performance  # noqa: E402 - dev di
 from mysql.connector.abstracts import (  # noqa: E402 - driver type.
     MySQLConnectionAbstract,
 )
+from probe_reports import write_report  # noqa: E402 - checkout report helper.
 from vnext_fault_harness import (  # noqa: E402 - private backend version probe.
     open_connector,
 )
@@ -1039,30 +1039,10 @@ def database(
             )
 
 
-def write_report(output: Path, report: dict[str, Any]) -> None:
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=output.parent,
-            prefix=".pipeline-report-",
-            delete=False,
-        ) as stream:
-            temporary = Path(stream.name)
-            json.dump(report, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def source_provenance() -> dict[str, Any]:
     files = sorted((ROOT / "src" / "h2hdb").rglob("*.py")) + [
         Path(__file__).resolve(),
+        ROOT / "scripts" / "probe_reports.py",
         ROOT / "tests" / "vnext_pipeline.py",
         ROOT / "tests" / "vnext_fault_harness.py",
         ROOT / "pyproject.toml",

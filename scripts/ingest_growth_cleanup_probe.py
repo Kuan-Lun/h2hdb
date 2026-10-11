@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import signal
 import sqlite3
 import subprocess
@@ -35,6 +34,7 @@ from compaction_contracts import (  # noqa: E402 - checkout evidence helper.
     current_compaction_layout,
     retained_compaction_roots,
 )
+from probe_reports import write_report  # noqa: E402 - checkout report helper.
 from vnext_fault_harness import (  # noqa: E402 - checkout fixture paths are set above.
     backend_of,
     open_connector,
@@ -377,28 +377,6 @@ def new_report(backend: str, gallery_count: int) -> dict[str, Any]:
     }
 
 
-def write_report(output: Path, report: dict[str, Any]) -> None:
-    """Replace complete JSON atomically; interruption keeps the previous report."""
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=output.parent,
-            prefix=".report-",
-            delete=False,
-        ) as stream:
-            temporary = Path(stream.name)
-            json.dump(report, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def record_failure(output: Path, report: dict[str, Any], error: BaseException) -> None:
     report["status"] = "failed"
     report["failure"] = {
@@ -423,6 +401,7 @@ def source_provenance() -> dict[str, Any]:
     ).stdout.strip()
     files = (
         Path(__file__).relative_to(ROOT),
+        Path("scripts/probe_reports.py"),
         Path("scripts/ingest_maintenance_mariadb.py"),
         Path("tests/vnext_pipeline.py"),
         Path("tests/vnext_fault_harness.py"),

@@ -12,6 +12,7 @@ AUDIT_DEPENDENCIES = ROOT / "scripts" / "audit-dependencies.py"
 
 
 def _load_module(name: str, path: Path) -> ModuleType:
+    sys.path.insert(0, str(path.parent))
     specification = importlib.util.spec_from_file_location(name, path)
     assert specification is not None
     assert specification.loader is not None

@@ -26,6 +26,7 @@ def test_version_gate_enforces_three_part_base_and_candidate(
     error: str | None,
 ) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts" / "check-version.py"
+    monkeypatch.syspath_prepend(script.parent)
     specification = importlib.util.spec_from_file_location("version_contract", script)
     assert specification is not None
     assert specification.loader is not None

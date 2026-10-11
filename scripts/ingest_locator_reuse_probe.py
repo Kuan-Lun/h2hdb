@@ -26,6 +26,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 
 import ingest_batch_scaling_probe as scaling  # noqa: E402 - dev-only public pipeline.
 import ingest_pipeline_probe as pipeline  # noqa: E402 - load evidence registry first.
+from probe_reports import write_report  # noqa: E402 - checkout report helper.
 
 from h2hdb import vnext_ingest_facade as facade  # noqa: E402 - scoped candidate.
 from h2hdb import (  # noqa: E402 - scoped candidate.
@@ -209,7 +210,7 @@ def main() -> None:
         "experiment_sources_sha256": scaling.experiment_source_hashes(),
         "notes": "Dev-only monkeypatch, not a production change. Unique synthetic content, public pipeline and final READY. Counts/SQL families, not a wall-clock SLO. One original and one candidate case; no claim of timing stationarity.",
     }
-    pipeline.write_report(args.output, report)
+    write_report(args.output, report)
     try:
         report["original"] = scaling.run_case(
             args.backend,
@@ -220,7 +221,7 @@ def main() -> None:
                 json.dumps({"variant": "original", **row}), flush=True
             ),
         )
-        pipeline.write_report(args.output, report)
+        write_report(args.output, report)
         with candidate():
             report["candidate"] = scaling.run_case(
                 args.backend,
@@ -243,7 +244,7 @@ def main() -> None:
         report.update(status="failed", error=type(error).__name__)
         raise
     finally:
-        pipeline.write_report(args.output, report)
+        write_report(args.output, report)
 
 
 if __name__ == "__main__":

@@ -126,6 +126,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 import ingest_batch_scaling_probe as batch_probe  # noqa: E402 - checkout-only tool.
 import ingest_pipeline_probe as probe  # noqa: E402 - shared exact SQL observer.
 from performance_attribution import assess_attribution  # noqa: E402
+from probe_reports import write_report  # noqa: E402 - checkout report helper.
 from vnext_pipeline import (  # noqa: E402 - public protocol fixtures.
     MemoryLibrary,
     MemorySource,
@@ -751,7 +752,7 @@ def main() -> int:
         report["runtime_loading"] = fresh_runtime_evidence()
         report["provenance"] = probe.source_provenance()
         report["experiment_sources_sha256"] = source_hashes()
-        probe.write_report(args.output, report)
+        write_report(args.output, report)
         checkpoint_written = True
         stage = "pipeline execution or checkpoint report"
         report["imported_sources"] = imported_sources()
@@ -773,7 +774,7 @@ def main() -> int:
             for turn in result["turns"]:
                 turn["acceptance"] = assess_turn(turn, pages=pages)
             report["cases"].append(result)
-            probe.write_report(args.output, report)
+            write_report(args.output, report)
         for pages, cycles in args.replacement_case:
             report["cases"].append(
                 run_replacement(
@@ -783,7 +784,7 @@ def main() -> int:
                     progress=print_progress,
                 )
             )
-            probe.write_report(args.output, report)
+            write_report(args.output, report)
         if (
             report["provenance"] != probe.source_provenance()
             or report["experiment_sources_sha256"] != source_hashes()
@@ -799,7 +800,7 @@ def main() -> int:
             ),
         }
         stage = "final report"
-        probe.write_report(args.output, report)
+        write_report(args.output, report)
     except Exception as error:
         report["status"] = "error"
         report["acceptance"]["status"] = "incomplete"
@@ -810,7 +811,7 @@ def main() -> int:
             # replace. A failed retry preserves the last successful checkpoint;
             # never unlink the destination or discard completed case evidence.
             try:
-                probe.write_report(args.output, report)
+                write_report(args.output, report)
             except OSError as write_error:
                 _diagnostic(
                     f"could not persist incomplete report to {args.output}: "

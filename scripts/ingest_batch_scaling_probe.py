@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
 
 import ingest_pipeline_probe as probe  # noqa: E402 - checkout diagnostic helpers.
+from probe_reports import write_report  # noqa: E402 - checkout report helper.
 from test_vnext_source_marker import MarkerSource  # noqa: E402 - exact marker fixture.
 from vnext_pipeline import (  # noqa: E402 - public protocol fixture.
     LEASE_MICROSECONDS,
@@ -381,10 +382,11 @@ def run_case(
 
 
 def experiment_source_hashes() -> dict[str, str]:
-    """Bind the two experiment drivers and the marker fixture to their output."""
+    """Bind experiment drivers, report writer and marker fixture to their output."""
     files = (
         "scripts/ingest_batch_scaling_probe.py",
         "scripts/ingest_locator_reuse_probe.py",
+        "scripts/probe_reports.py",
         "tests/test_vnext_source_marker.py",
     )
     return {name: sha256((ROOT / name).read_bytes()).hexdigest() for name in files}
@@ -418,7 +420,7 @@ def main() -> None:
             "which is not rechecked for cleanup DONE or READY."
         ),
     }
-    probe.write_report(args.output, report)
+    write_report(args.output, report)
     try:
         for galleries, batch, pages in args.case:
             report["cases"].append(
@@ -431,7 +433,7 @@ def main() -> None:
                     progress=lambda row: print(json.dumps(row), flush=True),
                 )
             )
-            probe.write_report(args.output, report)
+            write_report(args.output, report)
         if (
             report["provenance"] != probe.source_provenance()
             or report["experiment_sources_sha256"] != experiment_source_hashes()
@@ -442,7 +444,7 @@ def main() -> None:
         report.update(status="failed", error=type(error).__name__)
         raise
     finally:
-        probe.write_report(args.output, report)
+        write_report(args.output, report)
 
 
 if __name__ == "__main__":
