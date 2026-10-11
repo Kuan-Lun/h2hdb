@@ -475,23 +475,7 @@ def test_failure_report_is_atomic_and_preserves_exception(
     assert saved["status"] == "failed"
     assert saved["failure"]["reason"] == "RuntimeError"
     assert "synthetic startup failure" not in output.read_text()
-    assert not list(tmp_path.glob(".pipeline-report-*"))
-
-
-def test_atomic_write_failure_keeps_previous_report(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    output = tmp_path / "report.json"
-    probe.write_report(output, {"status": "incomplete"})
-
-    def fail_replace(*args: Any) -> None:
-        raise OSError("replace failed")
-
-    monkeypatch.setattr(probe.os, "replace", fail_replace)
-    with pytest.raises(OSError, match="replace failed"):
-        probe.write_report(output, {"status": "completed"})
-    assert json.loads(output.read_text()) == {"status": "incomplete"}
-    assert not list(tmp_path.glob(".pipeline-report-*"))
+    assert not list(tmp_path.glob(".report-*"))
 
 
 @pytest.mark.parametrize("kind", ["file", "symlink", "dangling_symlink", "directory"])

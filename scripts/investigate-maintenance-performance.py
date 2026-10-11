@@ -31,12 +31,12 @@ from compaction_contracts import (  # noqa: E402 - read-only fixture oracle.
 )
 from ingest_growth_cleanup_probe import (  # noqa: E402 - checkout-only fixtures.
     database,
-    write_report,
 )
 from ingest_pipeline_probe import (  # noqa: E402 - shared synthetic shape generator.
     Shape,
     source_for,
 )
+from probe_reports import write_report  # noqa: E402 - checkout report helper.
 from vnext_pipeline import (  # noqa: E402 - production public API driver.
     LEASE_MICROSECONDS,
     MemoryGallery,
@@ -564,6 +564,7 @@ def provenance(output: Path) -> dict[str, str]:
         ROOT / "scripts" / "ingest_pipeline_probe.py",
         ROOT / "scripts" / "ingest_growth_cleanup_probe.py",
         ROOT / "scripts" / "ingest_maintenance_mariadb.py",
+        ROOT / "scripts" / "probe_reports.py",
     ]
     source_directory = output.with_suffix(".sources")
     source_directory.mkdir(parents=True, exist_ok=True)

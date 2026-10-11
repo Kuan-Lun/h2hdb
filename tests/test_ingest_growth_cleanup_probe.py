@@ -730,19 +730,6 @@ def test_initial_report_survives_failure_without_config_secret(
     assert "do-not-save-this" not in output.read_text()
 
 
-def test_interrupted_report_replace_keeps_last_complete_json(
-    probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    output = tmp_path / "report.json"
-    initial = {"status": "incomplete", "cases": []}
-    probe.write_report(output, initial)
-    monkeypatch.setattr(probe.os, "replace", Mock(side_effect=TimeoutError("alarm")))
-    with pytest.raises(TimeoutError):
-        probe.write_report(output, {"status": "completed"})
-    assert json.loads(output.read_text()) == initial
-    assert not list(tmp_path.glob(".report-*"))
-
-
 @pytest.mark.parametrize("failure", ["startup", "startup_and_stop", "teardown"])
 def test_private_container_stops_after_startup_or_body_failure(
     probe: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str

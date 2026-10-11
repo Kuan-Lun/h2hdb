@@ -411,7 +411,7 @@ def test_report_io_failure_is_incomplete_and_preserves_last_atomic_output(
     monkeypatch.setattr(
         acceptance, "assess_turn", lambda *_args, **_kwargs: {"status": "violated"}
     )
-    original = acceptance.probe.write_report
+    original = acceptance.write_report
     writes = 0
 
     def fail_output(path: Path, report: dict[str, Any]) -> None:
@@ -421,7 +421,7 @@ def test_report_io_failure_is_incomplete_and_preserves_last_atomic_output(
             raise OSError(error_number, "injected output failure")
         original(path, report)
 
-    monkeypatch.setattr(acceptance.probe, "write_report", fail_output)
+    monkeypatch.setattr(acceptance, "write_report", fail_output)
     assert acceptance.main() == 2
     assert "acceptance incomplete" in capsys.readouterr().err
     if failure_at == 1:
