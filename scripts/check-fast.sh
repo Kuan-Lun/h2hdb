@@ -14,6 +14,7 @@ cd "$repository_root"
     exit 1
 }
 
+.venv/bin/python scripts/_shared/h2h_dev_tools/bundle_verify.py --repository .
 .venv/bin/ruff check --no-cache .
 .venv/bin/ruff format --no-cache --check .
 .venv/bin/mypy --no-incremental --cache-dir=/dev/null

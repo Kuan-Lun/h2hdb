@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
-from dependency_manifest import dependency_manifest
+from _shared.h2h_dev_tools.dependency_manifest import dependency_manifest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version

@@ -16,12 +16,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from check_change_scope import ChangeScopeError, classify_changes, resolve_tree
+from _shared.h2h_dev_tools.change_scope import (
+    ChangeScopeError,
+    classify_changes,
+    resolve_tree,
+)
 from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 2
-RELEASE_PROFILE = "h2hdb-release-v6"
+RELEASE_PROFILE = "h2hdb-release-v7"
 DOCUMENTATION_PROFILE = "h2hdb-documentation-v1"
 DOCUMENTATION_CHECKS = (
     "candidate-whitespace",
@@ -31,6 +35,7 @@ DOCUMENTATION_CHECKS = (
 )
 REQUIRED_CHECKS = (
     "exact-candidate-code-review",
+    "shared-tools-source-bundle",
     "ruff-lint",
     "ruff-format",
     "mypy",

@@ -1,0 +1,15 @@
+{
+  "files": {
+    "__init__.py": "03d1963265f288085b4351cfc6ca61fc3beb73b2d65ad7cd0098ee6a080db094",
+    "bundle_verify.py": "061fe1ab4acc6840c4b0838b92ab03b561085f80b126c91adf12c89a38ddc9a6",
+    "change_scope.py": "3b3ae0cace8c284a5d49af5ac2d59d1f724acc937b13cb811cdc2149b818b7fc",
+    "ci_dependencies.py": "fadaf7aa85852eb4e43b60cfdddbe5ae88743dad15746729417dab7b6a623853",
+    "dependency_manifest.py": "b3a2d2d9b71741cd710a477f1ca41ed2787885908016e6ec078c5b46df5dbb62",
+    "documentation.py": "c54c95c72107967cfd2884cf7552754ea928302148f39f347117461f4a1f03c2",
+    "publish_version.py": "e8bb40546cefb0da8f82dee0ef33eab80edc3aae074c0015969f42713382f481"
+  },
+  "payload_sha256": "ae2933768cec39f1cfe5cf02bb89f02ab96edcd67785b0193b5eac9982921673",
+  "schema_version": 1,
+  "toolkit_name": "h2h-dev-tools",
+  "toolkit_version": "0.1.0"
+}
